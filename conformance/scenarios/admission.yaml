@@ -1,0 +1,149 @@
+# §3.2 A backend may declare a capability ONLY if it passes that capability's scenarios.
+# Every scenario runs against every backend, in both languages.
+#
+# ROUND 32j — THIS FILE IS NOW EXECUTED. Round 32i found it was executed by NOTHING:
+# `crates/headgate-conformance/src` and `go/conformance` were empty directories and
+# `scripts/verify.sh` only `yaml.safe_load`ed it, i.e. proved it parsed. AGENTS.md cites it
+# as trap 0's regression guard, so that citation pointed at a guard that did not run.
+# `scripts/run-scenarios.py` now interprets this file against a live Postgres and a live
+# Redis through BOTH languages' store ports (4 cells), and verify.sh runs it.
+#
+# The `then:` clauses were half prose ("the skewed worker claimed 0") and prose cannot be
+# executed, so they were rewritten into the runner's check grammar. Every `why:` block is
+# preserved VERBATIM — the prose is what records the measurement and the reason the obvious
+# implementation is wrong, and it is the half worth keeping.
+capability: admission
+scenarios:
+  - id: rate_limit_is_fleet_wide
+    why: "All three surveyed queues limit per process. This is the differentiator."
+    given:
+      rate_class: {name: stripe, limit: 5, window_ms: 1000, burst: 5}
+      jobs: [{count: 20, prefix: u, rate_class: stripe}]
+    when:  [{admit: {worker: w1, capacity: 100}}]
+    then:
+      - claimed == 5
+      - rate_bucket(stripe).tokens == 0
+
+  - id: rate_limit_holds_across_workers
+    why: "Two workers must share one budget, not get one each."
+    given:
+      rate_class: {name: stripe, limit: 5, window_ms: 1000, burst: 5}
+      jobs: [{count: 20, prefix: u, rate_class: stripe}]
+    when:  [{admit: {worker: w1, capacity: 100}}, {admit: {worker: w2, capacity: 100}}]
+    then:
+      - claimed_total == 5
+      # The second worker got NOTHING, which is the half a total alone cannot distinguish
+      # from "the first worker got 5 and the second was never called".
+      - step[0].claimed == 5
+      - step[1].claimed == 0
+
+  - id: rate_limit_refills
+    why: |
+      The budget is a token bucket, not a one-shot allowance: after one full window the
+      class is spendable again. Asserted against real elapsed time on the STORE's clock
+      (the runner sleeps; it has no way to move the store's clock, which is the point).
+    given:
+      rate_class: {name: stripe, limit: 5, window_ms: 1000, burst: 5}
+      jobs: [{count: 20, prefix: u, rate_class: stripe}]
+    when:
+      - {admit: {worker: w1, capacity: 100}}
+      - {sleep_ms: 1200}
+      - {admit: {worker: w2, capacity: 100}}
+    then:
+      - step[0].claimed == 5
+      - step[2].claimed == 5
+
+  - id: fairness_survives_a_flooding_tenant
+    why: |
+      REGRESSION GUARD. A flat score-ordered candidate window returns only the flooding
+      tenant's jobs, so quiet tenants never enter the candidate set: fairness silently
+      degrades to FIFO *and* throughput collapses to one partition's share. Both the
+      Postgres and Redis implementations failed this before the per-partition draw.
+      Use a large flood (5000) — a small one passes accidentally.
+    given:
+      jobs:
+        - {count: 5000, prefix: n, partition_key: tenant-noisy}
+        - {count: 3,    prefix: a, partition_key: tenant-A}
+        - {count: 3,    prefix: b, partition_key: tenant-B}
+    when:  [{admit: {worker: w1, capacity: 9, quantum: 3}}]
+    then:
+      - "claimed_partitions == {tenant-noisy: 3, tenant-A: 3, tenant-B: 3}"
+      - claimed_total == 9
+
+  - id: quarantined_fingerprint_is_skipped
+    why: |
+      §5.2 x invariant 2. A quarantined fingerprint is REJECTED, and a rejected job is
+      never locked: it stays visible to other workers and to the inspector.
+    given:
+      quarantine: [fp-BOMB]
+      jobs:
+        - {count: 5, prefix: bomb, fingerprint: fp-BOMB}
+        - {count: 5, prefix: ok,   fingerprint: fp-OK}
+    when:  [{admit: {worker: w1, capacity: 100}}]
+    then:
+      - claimed == 5
+      - claimed_id_prefixes == [ok]
+      # rejected, NOT locked and NOT consumed — still `available` to the next worker.
+      - jobs_with_fingerprint(fp-BOMB).states == [available]
+
+  - id: no_double_claim_under_concurrency
+    why: |
+      REGRESSION GUARD. Under READ COMMITTED, SKIP LOCKED only skips rows locked at that
+      instant; a row another worker claimed and COMMITTED mid-statement passes straight
+      through unless the claim re-checks state after taking the lock. The Postgres
+      implementation double-claimed 80 of 500 jobs before that re-check was added, and
+      no CHECK constraint caught it.
+    given:
+      jobs: [{count: 500, prefix: j}]
+    when:  [{admit_concurrently: {workers: 8, capacity: 80}}]
+    then:
+      - claimed_total > 0
+      - distinct_claimed == claimed_total
+      - the_store_running_set_is_exactly_what_was_claimed
+      - no_job_holds_a_lease_outside_running
+
+  - id: lease_is_atomic_with_claim
+    why: "asynq's ExtendLease uses ZADD XX — a no-op when no lease exists, stranding jobs in ACTIVE since 2022."
+    given:
+      jobs: [{count: 20, prefix: l}]
+    when: [{admit: {worker: w1, capacity: 10, lease_ms: 30000}}]
+    then:
+      - claimed == 10
+      - every_claim_carries_a_lease_id
+      - every_claim_carries_a_fence_above_zero
+      - no_job_holds_a_lease_outside_running
+
+  - id: a_skewed_worker_cannot_inflate_the_limit
+    why: |
+      REGRESSION GUARD. `now_ms` was a parameter supplied by the calling worker, which made
+      every fleet-wide limit a function of that worker's clock. Measured: a worker 60s fast
+      computed 60 extra seconds of token refill and admitted a second full bucket in the
+      same real second — 10 against a limit of 5. Time must come from the store:
+      clock_timestamp() on SQL, redis.call('TIME') in Lua.
+
+      EXECUTABLE FORM. There is no caller clock left to skew — that is the fix — so the
+      scenario asserts the property that removal buys: a bucket stamped EMPTY at the
+      STORE's own clock refills nothing over the seconds a real admit takes, even though a
+      full backlog is waiting. A gate reading a 60s-fast caller's clock would compute 60s
+      of refill against this 10s window and admit a whole second bucket.
+    given:
+      rate_class: {name: api, limit: 5, window_ms: 10000, burst: 5, empty_at_store_now: true}
+      jobs: [{count: 100, prefix: sk, rate_class: api}]
+    when:
+      - {admit: {worker: honest, capacity: 100}}
+      - {admit: {worker: skewed, capacity: 100}}
+    then:
+      - claimed_total == 0
+      - step[1].claimed == 0
+
+  - id: lease_expiry_ignores_worker_clocks
+    why: "Same root cause: a skewed worker writing lease_expires_at_ms causes early expiry (double-claim) or late expiry (stranded job)."
+    given:
+      jobs: [{count: 5, prefix: le}]
+    when: [{admit: {worker: w1, capacity: 5, lease_ms: 30000}}]
+    then:
+      - claimed == 5
+      # Read from a SECOND connection, against the store's own clock. A gate stamping from
+      # a caller's clock would need that caller inside this tolerance of the store — which
+      # is exactly the NTP assumption trap 0 exists to remove.
+      - lease_expiry_tracks_the_store_clock(lease_ms=30000, tolerance_ms=5000)

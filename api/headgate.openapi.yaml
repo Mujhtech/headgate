@@ -1,0 +1,816 @@
+openapi: 3.1.0
+info:
+  title: headgate control API
+  version: 0.1.0
+  description: |
+    §10.1 The control contract. The web UI is one client of this API and gets no
+    privileged access — asynqmon reads Redis directly, which is why its compatibility
+    note is three minor versions stale.
+
+    Both the Go and Rust implementations serve this spec, and the conformance suite
+    asserts identical responses. Every list endpoint is bounded (§4.5, §10.7): asynq's
+    GetQueueInfo is O(number of groups) and has pinned Redis CPU for seconds in
+    production. Monitoring caused the outage.
+
+    DERIVED FROM THE ARCHITECTURE, NOT FROM A PREDECESSOR'S UI. The first draft of this
+    spec was the asynq Inspector surface -- list by state, act on one job, pause a queue
+    -- with new nouns bolted on. That inherited three problems: it omitted bulk
+    operations, history, and enqueue (which asynq and apalis-board respectively DO have),
+    and more importantly it had no endpoint for the question this system's own design
+    creates. When dequeue is an admission decision, the operator's first question is not
+    "what is in the queue" but "why is THIS job not running" -- see /jobs/{id}/admission.
+    No predecessor needs that endpoint because no predecessor has a gate.
+servers: [{url: /api/v1}]
+
+paths:
+  /queues:
+    get:
+      summary: List queues with backlog derivatives
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/QueueStats'}}
+  /queues/{queue}:
+    put:
+      summary: Change a queue's fleet-wide selection weight.
+      description: |
+        Weight chooses BETWEEN queues inside the atomic admission gate. It never changes
+        per-job priority ordering within a queue and is unrelated to a job envelope's
+        rate-budget weight.
+      parameters: [{$ref: '#/components/parameters/Queue'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [weight]
+              properties:
+                weight: {type: integer, minimum: 1}
+      responses: {'200': {description: Updated}}
+    delete:
+      summary: Delete an empty queue, or start an audited bounded deletion with force.
+      parameters:
+        - {$ref: '#/components/parameters/Queue'}
+        - {name: force, in: query, schema: {type: boolean, default: false}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      responses:
+        '204': {description: Empty queue metadata removed}
+        '202': {description: Forced asynchronous deletion accepted}
+        '400': {description: Queue is non-empty and force was not supplied}
+  /queues/actions/sample-memory:
+    post:
+      summary: Refresh bounded, explicitly-triggered queue memory samples.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      responses: {'200': {description: Samples refreshed}}
+  /queues/{queue}/enqueue-limit:
+    put:
+      summary: Bound exact unfinished jobs accepted for a queue.
+      description: |
+        Store-evaluated producer backpressure. The verdict and enqueue are one atomic
+        unit and use maintained scalar counters, never an O(queue depth) count. A limit
+        below current depth is valid and stops growth until drain catches up. Zero is an
+        intake kill switch; it does not pause workers.
+      parameters: [{$ref: '#/components/parameters/Queue'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [max_unfinished_jobs]
+              properties:
+                max_unfinished_jobs: {type: integer, minimum: 0}
+      responses: {'200': {description: Updated}}
+    delete:
+      summary: Disable enqueue backpressure for a queue.
+      parameters: [{$ref: '#/components/parameters/Queue'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      responses: {'204': {description: Disabled}}
+  /queues/{queue}/pause:
+    post: {parameters: [{$ref: '#/components/parameters/Queue'}], responses: {'204': {description: Paused}}}
+  /queues/{queue}/resume:
+    post: {parameters: [{$ref: '#/components/parameters/Queue'}], responses: {'204': {description: Resumed}}}
+
+  /jobs:
+    get:
+      summary: List jobs. ALWAYS paginated; `limit` is capped server-side.
+      parameters:
+        - name: q
+          in: query
+          schema: {type: string}
+          description: |
+            Search grammar, from River UI's search bar — the single most useful thing in
+            any of the three interfaces. Space-separated `field:value` terms, ANDed:
+            `id:123`, `kind:EmailSender`, `queue:default`, `priority:3`,
+            `partition:acme`, `rate_class:stripe`, `fingerprint:abc123`, `state:retryable`.
+            A bare term matches job kind by prefix. Discrete params below remain for
+            programmatic callers; `q` is what a human types.
+        - {name: queue,  in: query, schema: {type: string}}
+        - {name: state,  in: query, schema: {$ref: '#/components/schemas/State'}}
+        - {name: kind,   in: query, schema: {type: string}}
+        - {name: partition_key, in: query, schema: {type: string}}
+        - {name: tags_all, in: query, schema: {type: string}, description: Comma-separated tags; every tag must match.}
+        - {name: tags_any, in: query, schema: {type: string}, description: Comma-separated tags; at least one tag must match.}
+        - name: include_payload
+          in: query
+          schema: {type: boolean, default: false}
+          description: |
+            SECURITY. Payloads routinely carry PII, tokens, and customer data, and this
+            spec previously returned them unconditionally on a console that mounts at
+            /admin. River hides job args by default behind
+            RIVER_JOB_LIST_HIDE_ARGS_BY_DEFAULT; here the safe value IS the default.
+            Server config may forbid opting in at all.
+        - {name: cursor, in: query, schema: {type: string}}
+        - {name: limit,  in: query, schema: {type: integer, default: 50, maximum: 200}}
+      responses:
+        '200':
+          content: {application/json: {schema: {$ref: '#/components/schemas/JobPage'}}}
+    post:
+      summary: Enqueue over HTTP.
+      description: |
+        §2 carries River's polyglot insert, and apalis-board's ONLY mutation is enqueue —
+        yet the first draft of this spec had no way to enqueue at all. This is how a
+        Python or TypeScript service submits work without a native client, and how an
+        operator re-submits a repaired payload. Requires Idempotency-Key: a retried POST
+        must not create a second job.
+
+        An embedding application may install ordered enqueue middleware. The first
+        registered component is outermost; it may mutate an owned envelope copy or veto
+        before authorization/store I/O, and terminal errors unwind in reverse order.
+        Direct enqueue and manual periodic run use the same configured chain.
+
+        An embedding application may install a per-kind EnqueueAuthorizer. Authentication
+        happens upstream and supplies an established identity; headgate never trusts an
+        identity header. The backward-compatible default is allow-all. A policy rejection
+        happens before store I/O and returns the structured 403 below.
+
+        An optional process-local availability circuit is evaluated after authorization.
+        It counts only typed store-unavailable results; backpressure and other policy
+        responses prove the store is reachable. An open or probe-saturated circuit does
+        no store I/O and returns the structured 503 below.
+
+        Embedders may also install non-wrapping insert hooks. After authorization and a
+        circuit permit, each actual store attempt emits one begin and one end event in
+        registration order, including duplicate and id-conflict results. Middleware
+        retries create one hook lifecycle per store attempt; pre-store vetoes create none.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, payload]
+              properties:
+                kind: {type: string}
+                schema_version: {type: integer, default: 1}
+                payload: {type: string, contentEncoding: base64}
+                queue: {type: string, default: default}
+                priority: {type: integer}
+                partition_key: {type: string}
+                rate_class: {type: string}
+                weight:
+                  type: integer
+                  minimum: 1
+                  default: 1
+                  description: §11.2 estimated rate-budget cost; unrelated to queue-selection weight.
+                scheduled_at_ms: {type: integer}
+                unique_key: {type: string, contentEncoding: base64}
+                unique_window_ms: {type: integer, minimum: 0}
+                unique_debounce_ms: {type: integer, minimum: 0, description: Trailing-edge coalescing window measured from store time; replaces payload and tags on conflict.}
+                unique_exclude_kind: {type: boolean, default: false, description: Use a fleet-global uniqueness namespace instead of the default kind-scoped namespace.}
+                tags: {type: array, maxItems: 32, items: {type: string, minLength: 1, maxLength: 64}}
+                pending: {type: boolean, default: false, description: Insert durably but keep ineligible until operator promotion.}
+                sticky_worker: {type: string, maxLength: 255, description: Exact stable worker identity allowed to claim the job; empty means any worker.}
+                unique_replace:
+                  type: integer
+                  minimum: 0
+                  maximum: 15
+                  description: Bitmask allowlist for replacing an existing non-running unique holder — payload bundle=1, scheduled_at_ms=2, priority=4, max_attempts=8.
+      responses:
+        '201': {description: Enqueued}
+        '409':
+          description: §4.4 duplicate unique key. Body carries the EXISTING job id and whether an allowlisted replacement was applied.
+        '423': {description: §5.2 fingerprint is quarantined}
+        '403': {description: Enqueue authorizer rejected this job kind before store I/O}
+        '503':
+          description: Store unavailable, or local enqueue circuit open/half-open probe budget occupied. Circuit body carries state and retry_after_ms.
+  /jobs/{id}:
+    get:
+      summary: Job detail — attempts timeline, errors, and per-attempt logs.
+      description: |
+        River's detail view shows a timeline plus a per-attempt section with timing, the
+        error, and execution logs (its `riverlog` middleware persists them to the job).
+        Per-attempt logs are the difference between "it failed again" and knowing why, so
+        the envelope carries them rather than sending the operator to a log aggregator
+        with a job id and hope. `include_payload` applies here too.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - {name: include_payload, in: query, schema: {type: boolean, default: false}}
+      responses: {'200': {description: OK}}
+    delete: {parameters: [{$ref: '#/components/parameters/Id'}], responses: {'204': {description: Deleted}}}
+  /jobs/{id}/retry:
+    post: {parameters: [{$ref: '#/components/parameters/Id'}], responses: {'204': {description: Moved to available}}}
+  /jobs/{id}/promote:
+    post:
+      summary: Make an explicitly pending job available.
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      responses: {'204': {description: Promoted}, '400': {description: Job is not pending}}
+  /jobs/{id}/result:
+    get:
+      summary: Explicitly read versioned result bytes recorded by a successful job.
+      description: Result bytes are never included in job detail or list responses. They remain available only while the retained terminal job exists.
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200':
+          description: Recorded result.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [schema_version, bytes]
+                properties:
+                  schema_version: {type: integer, minimum: 1, maximum: 2147483647}
+                  bytes: {type: string, contentEncoding: base64}
+        '404': {description: Job missing or no result was recorded}
+        '501': {description: Backend does not implement result storage}
+  /jobs/{id}/output:
+    get:
+      summary: Explicitly read the latest versioned output persisted by a running attempt.
+      description: |
+        Output writes replace the previous value only under the current job lease and
+        fence. `fence` identifies the attempt that authored the visible value and
+        `updated_at_ms` is store-clock time. Ordinary job detail/list responses never
+        include output bytes.
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200':
+          description: Latest persisted output.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [schema_version, bytes, fence, updated_at_ms]
+                properties:
+                  schema_version: {type: integer, minimum: 1, maximum: 2147483647}
+                  bytes: {type: string, contentEncoding: base64}
+                  fence: {type: integer, minimum: 1}
+                  updated_at_ms: {type: integer, minimum: 1}
+        '404': {description: Job missing or no output was persisted}
+        '501': {description: Backend does not implement mid-run output storage}
+  /jobs/{id}/progress:
+    get:
+      summary: Read the latest operator-facing progress reported by a running attempt.
+      description: |
+        Progress is an exact `current / total` pair with an optional short status
+        message. Writes replace the previous report only under the current job lease and
+        fence. The report may outlive its writing attempt; `fence` identifies that
+        attempt and `updated_at_ms` is store-clock time. Ordinary job detail/list
+        responses omit progress messages.
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200':
+          description: Latest reported progress.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [current, total, message, fence, updated_at_ms]
+                properties:
+                  current: {type: integer, minimum: 0, maximum: 9007199254740991}
+                  total: {type: integer, minimum: 1, maximum: 9007199254740991}
+                  message: {type: [string, 'null'], maxLength: 512}
+                  fence: {type: integer, minimum: 1}
+                  updated_at_ms: {type: integer, minimum: 1}
+        '404': {description: Job missing or no progress was reported}
+        '501': {description: Backend does not implement progress storage}
+  /jobs/{id}/cancel:
+    post:
+      summary: Cancel a RUNNING job. apalis dropped this capability between 0.7.4 and 1.0-rc.
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses: {'204': {description: Cancellation signalled}}
+  /jobs/{id}/reschedule:
+    post: {parameters: [{$ref: '#/components/parameters/Id'}], responses: {'204': {description: Rescheduled}}}
+  /jobs/{id}/payload:
+    put:
+      summary: Edit-then-retry. Supplying a schema_version with no upcast path is a 422.
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses: {'204': {description: Updated}, '422': {description: No upcast path}}
+
+  /rate-classes:
+    get:
+      summary: §5.1 Live fleet-wide budgets. No surveyed queue can render this.
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/RateClassState'}}
+  /rate-classes/{name}:
+    put:
+      summary: Change a fleet-wide limit at runtime. §5.1 was READ-ONLY until now.
+      description: |
+        The flagship feature of this system is a shared rate limit, and the first version
+        of this API could only display it. During an incident the operator's action is to
+        raise, lower, or drain a limit — and if that requires a redeploy, the honest
+        summary is that the feature does not exist operationally. River UI edits queue
+        concurrency from its queue detail page; this is the equivalent for the gate.
+      parameters: [{$ref: '#/components/parameters/Name'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                limit: {type: integer}
+                window_ms: {type: integer}
+                burst: {type: integer}
+                paused: {type: boolean, description: Admit nothing in this class. The kill switch.}
+      responses: {'200': {description: Updated}}
+
+  /concurrency-limits/{name}:
+    put:
+      summary: Change a global concurrency ceiling at runtime.
+      parameters: [{$ref: '#/components/parameters/Name'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [queue, max_concurrent, on_saturated]
+              properties:
+                queue: {type: string}
+                max_concurrent: {type: integer, minimum: 1}
+                on_saturated:
+                  type: string
+                  enum: [queue, discard, cancel_running, cancel_incoming]
+      responses: {'200': {description: Updated}}
+  /concurrency-limits:
+    get:
+      summary: List global concurrency ceilings and their saturation strategies.
+      responses: {'200': {description: OK}}
+
+  /partitions:
+    get:
+      summary: §5.3 Fair-share state — which tenants are being throttled and by how much.
+      parameters: [{name: queue, in: query, required: true, schema: {type: string}}]
+      responses: {'200': {description: OK}}
+  /quarantine:
+    get: {summary: §5.2 Fingerprints that have killed workers, responses: {'200': {description: OK}}}
+  /quarantine/{fingerprint}:
+    delete:
+      summary: Release a quarantined fingerprint. Deliberate operator action.
+      parameters: [{name: fingerprint, in: path, required: true, schema: {type: string}}]
+      responses: {'204': {description: Released}}
+
+  /workers:
+    get: {responses: {'200': {description: OK}}}
+  /cluster:
+    get:
+      summary: §11.2 the fleet view — which queues have ZERO live workers.
+      description: |
+        The registry answers "what is each worker doing"; this answers the fleet-level
+        question an operator asks during an incident. A queue with a growing backlog and
+        no consumer looks exactly like a slow queue until you know it is unserved, so
+        `queues` lists every queue the store knows about UNIONED with every queue a live
+        worker claims — an unserved queue appears WITH `live_workers: 0` rather than
+        being absent, because "not in the list" is indistinguishable from "not looked
+        at". Staleness uses the same 15-minute heartbeat grace as `GET /workers`.
+
+        §5.5's autoscaling SIGNAL rides along: `utilization` = inflight/capacity and
+        `empty_poll_ratio` = admits returning zero / total admits over each worker's
+        rolling window. Both are ratios of SUMS, not averages of per-worker ratios, so a
+        1-slot worker does not weigh the same as a 64-slot one. Scale UP on high
+        utilization with a growing time-to-drain; scale DOWN on a high empty-poll ratio.
+        headgate publishes the signal and never sizes the fleet.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workers:
+                    type: object
+                    properties:
+                      live: {type: integer}
+                      stale: {type: integer}
+                      total: {type: integer}
+                  capacity_total: {type: integer}
+                  inflight_total: {type: integer}
+                  utilization: {type: number}
+                  empty_poll_ratio: {type: number}
+                  polls_total: {type: integer}
+                  empty_polls_total: {type: integer}
+                  queues:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        queue: {type: string}
+                        live_workers: {type: integer}
+  /workers/{worker_id}/signal:
+    post:
+      summary: §11.2 server→worker control, delivered on the worker's next heartbeat.
+      description: |
+        Faktory's BEAT carries quiet/terminate; here it is one column on the worker row,
+        read back by the heartbeat upsert. `quiet` pauses admission (in-flight work
+        finishes), `resume` resumes, `terminate` shuts the worker down gracefully, and
+        `resign` releases only this worker's singleton duty leases for immediate takeover. An
+        operator drains a fleet without a deploy. null clears a pending signal.
+      parameters:
+        - {name: worker_id, in: path, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                command: {type: [string, "null"], enum: [quiet, resume, restart, terminate, resign, null]}
+      responses:
+        '204': {description: Signal set}
+        '404': {description: No such worker}
+  /events:
+    get:
+      summary: SSE. ONE subscription for the whole UI — never per-panel polling (§10.7).
+      responses: {'200': {content: {text/event-stream: {schema: {type: string}}}}}
+
+  /meta:
+    get:
+      summary: §3.1 Capability discovery. The UI MUST NOT offer what this backend lacks.
+      description: |
+        Backends declare capabilities and a backend that cannot honor one does not have
+        it. The UI needs that at runtime or it will render a "enqueue in transaction"
+        affordance against Redis. apalis ships a `reenqueue_orphaned_after()` knob that
+        is never called; this endpoint is the antidote to that class of lie.
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [version, backend, capabilities]
+                properties:
+                  version:  {type: string}
+                  backend:  {type: string, enum: [postgres, mysql, redis]}
+                  capabilities:
+                    type: array
+                    items: {type: string, enum: [transactional, notifying, inspect, aggregation]}
+                  limits:
+                    type: object
+                    properties:
+                      max_page_size: {type: integer}
+                      approximate_count_threshold: {type: integer}
+
+  /jobs/counts:
+    get:
+      summary: Counts by state, for the state sidebar.
+      description: |
+        Both River UI and apalis-board lead with a state filter carrying live counts.
+        Served from incrementally-maintained aggregates (§4.5) and honest about it:
+        `approximate` is set rather than paying for an exact scan.
+      parameters:
+        - {name: queue, in: query, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  counts: {type: object, additionalProperties: {type: integer}}
+                  approximate: {type: boolean}
+
+  /jobs/{id}/admission:
+    get:
+      summary: §5.1 Why is this job not running? The endpoint only this design needs.
+      description: |
+        When dequeue is a policy decision, "it is available but not running" has a
+        specific, knowable cause. Without this, a job held back by a misconfigured rate
+        class is indistinguishable from a slow worker -- which is the failure mode that
+        makes operators distrust a limiter and turn it off.
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [admissible]
+                properties:
+                  admissible: {type: boolean}
+                  blocked_by:
+                    type: string
+                    enum: [rate_class, concurrency_limit, fairness, quarantine, schedule, queue_paused]
+                  detail:
+                    type: object
+                    description: State of the blocking policy — tokens left, position in the partition queue, crash count.
+                  estimated_admission_ms:
+                    type: [integer, "null"]
+                    description: null when the block will not clear on its own (quarantine, paused queue).
+
+  /jobs/actions:
+    post:
+      summary: Act on an explicit list of job IDs. The common case.
+      description: |
+        River UI lets you tick 12 rows and hit Retry. The selector-based /jobs/bulk
+        below cannot express that, and it was the only bulk route this spec had —
+        selecting specific rows is what operators actually do, while filter-based bulk is
+        the rarer and far more dangerous operation. Synchronous, because the set is
+        bounded by max_ids.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, ids]
+              properties:
+                action: {type: string, enum: [retry, archive, delete, cancel]}
+                ids: {type: array, items: {type: string}, maxItems: 1000}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  succeeded: {type: array, items: {type: string}}
+                  failed:
+                    type: array
+                    description: Per-id failure — a job that finished before the click is not an error for the whole batch.
+                    items:
+                      type: object
+                      properties: {id: {type: string}, reason: {type: string}}
+
+  /jobs/bulk:
+    post:
+      summary: Bulk retry/archive/delete/cancel. ASYNCHRONOUS by construction.
+      description: |
+        asynq has RunAllScheduledTasks/DeleteAllRetryTasks/ArchiveAllPendingTasks and this
+        spec originally had no equivalent — retrying 100k jobs one HTTP call at a time is
+        not an API. But a synchronous unbounded write violates §4.5, so a bulk request
+        returns an operation to poll rather than blocking. Requires Idempotency-Key.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, selector]
+              properties:
+                action:   {type: string, enum: [retry, archive, delete, cancel]}
+                selector:
+                  type: object
+                  description: Same filters as GET /jobs. An empty selector is rejected — no accidental delete-everything.
+                  properties:
+                    queue: {type: string}
+                    state: {$ref: '#/components/schemas/State'}
+                    kind:  {type: string}
+                    partition_key: {type: string}
+                    older_than_ms: {type: integer}
+                dry_run: {type: boolean, default: false, description: Return the count that WOULD be affected.}
+      responses:
+        '202':
+          content: {application/json: {schema: {$ref: '#/components/schemas/Operation'}}}
+        '400': {description: Empty selector, or no Idempotency-Key}
+
+  /operations/{id}:
+    get:
+      summary: Progress of a bulk operation.
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200':
+          content: {application/json: {schema: {$ref: '#/components/schemas/Operation'}}}
+
+  /queues/{queue}/history:
+    get:
+      summary: §5.5 Time series. An instant value cannot be graphed as a derivative.
+      description: |
+        §10.6 says the UI leads with time-to-drain rather than depth. That is a rate, and
+        a rate needs history — which the first draft of this spec had no way to serve.
+        Backed by the incrementally-maintained counters from §4.5, never by a scan.
+      parameters:
+        - {$ref: '#/components/parameters/Queue'}
+        - {name: since_ms, in: query, schema: {type: integer}}
+        - {name: bucket_ms, in: query, schema: {type: integer, default: 60000}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    at_ms:     {type: integer}
+                    arrived:   {type: integer}
+                    completed: {type: integer}
+                    failed:    {type: integer}
+                    depth:     {type: integer}
+                    admission_rejections:
+                      type: object
+                      description: §5.1 rejections by policy. A misconfigured limit looks exactly like a slow worker without this.
+                      additionalProperties: {type: integer}
+
+  /periodic:
+    get:
+      summary: Registered periodic/cron entries.
+      responses: {'200': {description: OK}}
+  /periodic/{id}:
+    put:
+      summary: Idempotent schedule upsert (§11.2, BullMQ's upsertJobScheduler).
+      description: |
+        Re-upserting with an unchanged spec keeps the schedule's phase (next_run is not
+        reset); a changed spec re-anchors it. Specs are "@every:<ms>" (epoch-aligned) or
+        a cron expression, five-field or six-field with seconds (§4.7 sub-minute).
+
+        A cron spec may carry a `CRON_TZ=<IANA zone>` prefix and is then evaluated on
+        that zone's LOCAL calendar — `CRON_TZ=America/New_York 0 9 * * *`. The zone
+        lives IN the spec string rather than in a field of its own, so changing the zone
+        is a changed spec and re-anchors the phase like any other edit. A local time
+        that does not exist (spring forward) is SKIPPED; one that occurs twice (fall
+        back) fires ONCE, at the first occurrence. "@every" is always epoch-aligned UTC
+        and REJECTS a `CRON_TZ=` prefix — an interval has no wall clock. An unknown
+        zone is a 400 here, never a surprise at fire time.
+
+        Invariant 16 applies to schedules too: the gate's periodic work is writable at
+        runtime, not baked into a deploy.
+
+        The enqueue authorizer evaluates the schedule's kind and payload before the
+        durable definition is written, preventing a future periodic authorization bypass.
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, spec]
+              properties:
+                kind: {type: string}
+                spec: {type: string}
+                payload: {type: string, contentEncoding: base64}
+                queue: {type: string, default: default}
+                partition_key: {type: string}
+                rate_class: {type: string}
+                priority: {type: integer}
+                max_attempts: {type: integer}
+                retention_ms: {type: integer}
+                on_missed: {type: string, enum: [skip, run_once, backfill]}
+                backfill_limit: {type: integer}
+                paused: {type: boolean}
+      responses: {'200': {description: Upserted}, '400': {description: Bad spec or policy}, '403': {description: Enqueue kind forbidden}}
+    delete:
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      responses: {'204': {description: Deleted}, '404': {description: No such schedule}}
+  /periodic/{id}/run:
+    post:
+      summary: Fire a periodic entry now, out of schedule.
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      responses: {'202': {description: Enqueued}, '403': {description: Enqueue kind forbidden}, '503': {description: Store unavailable or enqueue circuit rejected without store I/O}}
+
+  /periodic/{id}/enqueue-events:
+    get:
+      summary: Newest durable scheduler enqueue attempts for one periodic entry.
+      description: |
+        Bounded to the newest 100 records per schedule and ordered newest first. History
+        survives schedule deletion. `enqueued` means the Store confirmed the exact job
+        is durable and includes an idempotent same-ID replay; `deduplicated` is a unique
+        key or changed-content ID collision. Reasons are stable classifications and never
+        raw backend errors or payloads.
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 30}}
+        - {name: cursor, in: query, description: Opaque event id returned by the previous page., schema: {type: integer, minimum: 1}}
+      responses:
+        '200':
+          description: Newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events, next_cursor]
+                properties:
+                  next_cursor: {type: integer, nullable: true}
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      required: [event_id, schedule_id, tick_ms, job_id, outcome, reason, recorded_at_ms]
+                      properties:
+                        event_id: {type: integer}
+                        schedule_id: {type: string}
+                        tick_ms: {type: integer}
+                        job_id: {type: string}
+                        outcome: {type: string, enum: [enqueued, deduplicated, failed, skipped]}
+                        reason: {type: string, maxLength: 64}
+                        recorded_at_ms: {type: integer}
+
+  /healthz:
+    get:
+      summary: Liveness. Never touches the store.
+      responses: {'200': {description: OK}}
+  /readyz:
+    get:
+      summary: Readiness. Cheapest possible store round-trip, never a count.
+      responses: {'200': {description: Ready}, '503': {description: Store unreachable}}
+
+components:
+  parameters:
+    Queue: {name: queue, in: path, required: true, schema: {type: string}}
+    Id:    {name: id,    in: path, required: true, schema: {type: string}}
+    Name:  {name: name,  in: path, required: true, schema: {type: string}}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {type: string}
+      description: |
+        Required on every mutating request. A double-clicked Retry, or a proxy retrying a
+        POST, must not enqueue the job twice. Keys are retained long enough to cover a
+        client retry window and the response is replayed verbatim.
+  schemas:
+    State:
+      type: string
+      enum: [pending, scheduled, available, running, retryable, completed, archived, cancelled, quarantined, undecodable]
+    QueueStats:
+      type: object
+      required: [queue, weight, unfinished_jobs, by_state, arrival_rate, drain_rate, paused, count_is_approximate]
+      properties:
+        queue:        {type: string}
+        weight:
+          type: integer
+          minimum: 1
+          description: Fleet-wide queue-selection weight; unrelated to per-job rate-budget weight.
+        unfinished_jobs:
+          type: integer
+          minimum: 0
+          description: Exact O(1) count of pending, scheduled, available, running, and retryable jobs.
+        max_unfinished_jobs:
+          type: [integer, "null"]
+          minimum: 0
+          description: Null disables producer backpressure; zero rejects all new unfinished work.
+        by_state:     {type: object, additionalProperties: {type: integer}}
+        arrival_rate: {type: number, description: jobs/sec over a 1m window}
+        drain_rate:   {type: number}
+        time_to_drain_ms:
+          type: [integer, "null"]
+          description: §5.5 null when arrival >= drain. THIS is the alert condition, not depth.
+        oldest_available_ms:
+          type: [integer, "null"]
+          description: §5.5 store-clock age of the oldest available job; null when none is available.
+        quiet_groups:
+          $ref: '#/components/schemas/QuietGroupMetrics'
+        paused: {type: boolean}
+        memory_bytes:
+          type: [integer, "null"]
+          minimum: 0
+          description: Last explicitly requested bounded sample; null until sampled.
+        count_is_approximate:
+          type: boolean
+          description: §10.7 true when a bound was hit. An approximate count rendered instantly beats a precise one that costs an incident.
+    QuietGroupMetrics:
+      type: object
+      required: [arrival_rate, drain_rate, noisy_partitions, approximate]
+      description: §5.5 queue signals excluding partitions with disproportionate in-flight work.
+      properties:
+        arrival_rate: {type: number}
+        drain_rate: {type: number}
+        time_to_drain_ms: {type: [integer, "null"]}
+        oldest_available_ms: {type: [integer, "null"]}
+        noisy_partitions: {type: integer, minimum: 0}
+        approximate: {type: boolean}
+    RateClassState:
+      type: object
+      properties:
+        name: {type: string}
+        tokens_available: {type: integer}
+        burst: {type: integer}
+        limit_per_window: {type: integer}
+        window_ms: {type: integer}
+        jobs_waiting: {type: integer}
+    Operation:
+      type: object
+      required: [id, status, affected]
+      properties:
+        id: {type: string}
+        status: {type: string, enum: [pending, running, completed, failed]}
+        affected: {type: integer}
+        total_estimated: {type: integer}
+        dry_run: {type: boolean}
+        error: {type: [string, "null"]}
+    JobPage:
+      type: object
+      required: [jobs, count_is_approximate]
+      properties:
+        jobs: {type: array, items: {type: object}}
+        next_cursor: {type: [string, "null"]}
+        count_is_approximate: {type: boolean}

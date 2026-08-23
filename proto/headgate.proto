@@ -1,0 +1,185 @@
+syntax = "proto3";
+package headgate.v1;
+
+option go_package = "github.com/mujhtech/headgate/proto/headgatev1";
+
+// The wire contract. Field numbers are PERMANENT. Removal means `reserved`, never reuse.
+// Both the Go and Rust implementations generate from this file and nothing else.
+
+message Envelope {
+  string id              = 1;   // ULID: lexicographically sortable, no coordination
+  string kind            = 2;   // task type name; the dispatch key
+  uint32 schema_version  = 3;   // payload versioning payload versioning — free now, impossible later
+  bytes  payload         = 4;   // opaque to headgate; codec is the caller's choice
+  string queue           = 5;
+
+  string partition_key   = 6;   // tenant fairness fair queuing (tenant/customer). "" = default partition
+  string rate_class      = 7;   // admission policy fleet-wide limiter bucket. "" = unlimited
+  string fingerprint     = 8;   // crash quarantine quarantine key: hash(kind, payload)
+
+  uint32 attempt         = 9;   // failures the handler RETURNED
+  uint32 crash_attempt   = 10;  // crash quarantine failures where the worker DIED. counted separately.
+  uint32 max_attempts    = 11;
+  int32  priority        = 12;  // higher runs first within a queue
+
+  int64  enqueued_at_ms  = 13;  // wire-time contract every duration and instant is milliseconds
+  int64  scheduled_at_ms = 14;
+  int64  timeout_ms      = 15;  // per attempt
+  int64  deadline_ms     = 16;  // absolute, across all attempts. 0 = none
+  int64  retention_ms    = 17;
+
+  bytes  unique_key      = 18;  // job uniqueness null = not unique
+  uint32 unique_states   = 19;  // bitmask of States uniqueness applies in
+
+  map<string, string> headers  = 20;
+  repeated AttemptError errors = 21;
+  // job uniqueness uniqueness mode. 0 = LIFECYCLE (one live job per key, released by terminal
+  // state). > 0 = THROTTLE (at most one per this many ms, released by the clock).
+  int64  unique_window_ms      = 22;
+  Checkpoint checkpoint        = 23;  // step replay step replay
+
+  // surveyed policy behavior estimated rate-budget cost. This is NOT queue-selection weight. Proto3's
+  // omitted zero is normalized to the default 1 by every store; an ack may report an
+  // actual value (including zero) and atomically reconcile the estimate.
+  uint32 weight                = 24;
+
+  // Typed durable periodic origin. Empty/zero means an ordinary enqueue; both fields
+  // are set together so clients never parse ids or opaque headers.
+  string periodic_schedule_id  = 25;
+  int64  periodic_tick_ms      = 26;
+
+  // Request-only bitmask for atomic replacement on a unique-key conflict. Allowed
+  // fields are defined by the language SDK constants; unknown bits are rejected.
+  uint32 unique_replace        = 27;
+
+  // Trailing-edge debounce. Requires unique_key and a positive millisecond window.
+  // The store schedules the holder at store-now + this window on both the first insert
+  // and every conflict; it never trusts a producer clock.
+  int64  unique_debounce_ms    = 28;
+  // River-compatible uniqueness scope. false includes kind in the effective key;
+  // true deliberately coalesces equal keys across task kinds.
+  bool   unique_exclude_kind   = 29;
+  // Operator-indexed labels. Canonicalized by SDKs; never smuggled through headers.
+  repeated string tags         = 30;
+  // Insert durably without becoming admission-eligible until explicitly promoted.
+  bool   pending               = 31;
+
+  // Exact stable worker identity allowed to claim this job. Empty means any worker.
+  // Enforced atomically by the store and retained across retry/reclaim transitions.
+  string sticky_worker         = 32;
+
+}
+
+// step replay Step replay. River persists this only after the worker returns, which loses it in
+// exactly the mid-step crash the feature exists for; Sidekiq autosaves every 5s. Here the
+// checkpoint rides the lease renewal that is already happening, so step boundaries are
+// exact and cursor updates are bounded by the renewal interval.
+message Checkpoint {
+  string last_completed_step = 1;
+  string cursor_step         = 2;  // the step a cursor belongs to, if any
+  bytes  cursor              = 3;  // opaque, caller-serialized
+  int64  updated_at_ms       = 4;
+  // payload versioning × step replay: what the step set looked like when this was written. A resumed job whose
+  // step set no longer matches goes to UNDECODABLE rather than silently restarting from
+  // step one and re-running completed side effects. No other queue has to answer this,
+  // because no other queue has both step replay and payload versioning.
+  uint32 schema_version      = 5;
+  string step_set_hash       = 6;
+  map<string, uint32> crashes_by_step = 7;  // crash quarantine step-level crash attribution
+}
+
+message AttemptError {
+  uint32 attempt      = 1;
+  int64  at_ms        = 2;
+  string message      = 3;
+  Outcome outcome     = 4;
+  bool   was_panic    = 5;
+  string worker       = 6;
+  string step         = 7;  // step replay which step failed, when the job has steps
+}
+
+// lifecycle state machine The state machine is a declared table, not a match with holes.
+enum State {
+  STATE_UNSPECIFIED = 0;
+  STATE_SCHEDULED   = 1;  // scheduled_at in the future
+  STATE_AVAILABLE   = 2;  // ready to be admitted
+  STATE_RUNNING     = 3;  // claimed, lease held
+  STATE_RETRYABLE   = 4;  // failed, will return to AVAILABLE
+  STATE_COMPLETED   = 5;  // terminal, retained per policy
+  STATE_ARCHIVED    = 6;  // terminal, inspectable, re-runnable (the DLQ)
+  STATE_CANCELLED   = 7;  // terminal, operator action
+  STATE_QUARANTINED = 8;  // crash quarantine terminal, fingerprint blocked
+  STATE_UNDECODABLE = 9;  // payload versioning terminal, no upcast path for this schema_version
+  STATE_PENDING     = 10; // durable but ineligible until explicit promotion
+}
+
+enum Outcome {
+  OUTCOME_UNSPECIFIED = 0;
+  OUTCOME_SUCCESS     = 1;
+  OUTCOME_RETRY       = 2;  // handler returned an error
+  OUTCOME_SKIP        = 3;  // handler said: stop retrying, archive
+  OUTCOME_REVOKE      = 4;  // handler said: drop entirely
+  OUTCOME_SNOOZE      = 5;  // reschedule without consuming an attempt
+  OUTCOME_LEASE_LOST  = 6;  // crash quarantine crash-attributed: worker died, never acked
+  OUTCOME_UNDECODABLE = 7;  // payload versioning payload could not be decoded
+  OUTCOME_RATE_LIMITED = 8; // surveyed policy behavior NOT a failure: re-queue without consuming an attempt
+}
+
+message Claim {
+  Envelope envelope = 1;
+  string   lease_id = 2;  // lease fencing created atomically with the claim, never separately
+  int64    lease_expires_at_ms = 3;
+  uint64   fence = 4;     // monotonic per job; rejects writes from a superseded holder
+}
+
+message WorkerInfo {
+  string worker_id    = 1;
+  string host         = 2;
+  int32  pid          = 3;
+  string version      = 4;
+  repeated string queues = 5;
+  uint32 concurrency  = 6;
+  int64  started_at_ms = 7;
+  int64  heartbeat_at_ms = 8;
+}
+
+// admission policy Admission policy, evaluated store-side inside the claim.
+message RateClass {
+  string name      = 1;
+  uint64 limit     = 2;   // tokens per window
+  int64  window_ms = 3;
+  uint64 burst     = 4;
+}
+
+message ConcurrencyLimit {
+  string name          = 1;
+  string partition_by  = 2;  // "" = global, else an envelope field name
+  uint64 max_concurrent = 3;
+  string queue          = 4;
+  string on_saturated   = 5;  // queue|discard|cancel_running|cancel_incoming
+}
+
+// backlog metrics Backlog derivatives — a read, not a Prometheus recording rule.
+message QueueStats {
+  string queue            = 1;
+  map<string, uint64> by_state = 2;
+  double arrival_rate     = 3;  // jobs/sec, 1m window
+  double drain_rate       = 4;  // jobs/sec, 1m window
+  int64  time_to_drain_ms = 5;  // -1 when arrival >= drain: the alert condition
+  bool   paused           = 6;
+  bool   count_is_approximate = 7;  // bounded live-control contract true when a bound was hit
+  int64  oldest_available_ms = 8;   // -1 when no job is currently available
+  QuietGroupMetrics quiet_groups = 9;
+  uint32 weight = 10;                // queue-selection weight; unrelated to Envelope.weight
+  uint64 unfinished_jobs = 11;       // exact producer-depth counter, never approximate
+  optional uint64 max_unfinished_jobs = 12; // absent = enqueue backpressure disabled
+}
+
+message QuietGroupMetrics {
+  double arrival_rate = 1;
+  double drain_rate = 2;
+  int64 time_to_drain_ms = 3;       // -1 when arrival >= drain
+  int64 oldest_available_ms = 4;    // -1 when no quiet job is available
+  uint32 noisy_partitions = 5;
+  bool approximate = 6;
+}

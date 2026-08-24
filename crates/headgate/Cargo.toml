@@ -1,0 +1,55 @@
+[package]
+name = "headgate"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+
+# The worker runtime, generic over any Store. No driver, no exporter — tracing is the
+# telemetry facade; concrete exporters live in opt-in crates.
+[dependencies]
+headgate-core = { workspace = true }
+headgate-macros = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process", "io-util"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+tracing = "0.1"
+libc = "0.2"
+# The default JSON payload codec for #[derive(Task)]. Reached by generated code via
+# `headgate::__private`, so user crates only add serde themselves.
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+base64 = "0.22"
+# Schedule-spec evaluation ("@every:<ms>" and cron). Tick times feed unique
+# keys, so both languages must derive them identically — see schedule_spec docs.
+cron = "0.15"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+# Per-schedule timezone support (`CRON_TZ=<IANA> <cron>`). The IANA database lands
+# HERE, in the runtime crate, and never in headgate-core — core keeps its two pure
+# dependencies (scripts/check-deps.sh reads core's tree). Go's side
+# is stdlib time.LoadLocation; chrono-tz is the equivalent embedded database so a Rust
+# node in a scratch container resolves the same zone names a Go node does.
+chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+headgate-postgres = { workspace = true }
+# The assert-enqueued helpers let `EnqueuedJobs` be exercised
+# over a LIVE store in a test rather than only over the in-memory double. Dev-only, and
+# the reverse edge (testkit -> headgate) is dev-only too, so this is a dev-dep cycle,
+# which cargo allows and which scripts/check-deps.sh (headgate-core's tree) never sees.
+headgate-testkit = { workspace = true }
+# `tokio::time` virtual clock verifies that the worker loop really
+# SLEEPS the empty-poll backoff it computes. Timing successive polls on a loaded machine
+# is a stopwatch race — which is exactly why that half stayed unasserted through round
+# 32k — so the test runs on a paused clock where the deltas are exact. Dev-only: feature
+# unification applies to test builds, never to `cargo build`.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "test-util"] }
+# Test-only: the eviction-observability duty test implements the `Store` port with a stub,
+# and the port is an `#[async_trait]`. Dev-only, so scripts/check-deps.sh (which reads
+# headgate-core's tree) is untouched.
+async-trait = { workspace = true }

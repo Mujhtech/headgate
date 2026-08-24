@@ -1,0 +1,17 @@
+[package]
+name = "headgate-proto"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+
+# Generated from proto/headgate.proto by scripts/gen-proto.sh and CHECKED IN, so
+# downstream builds need no protoc (AGENTS.md Phase 1 step 3).
+[dependencies]
+prost = "0.13"

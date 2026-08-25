@@ -1,0 +1,35 @@
+[package]
+name = "headgate-postgres"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+
+[dependencies]
+headgate-core = { workspace = true }
+headgate-sql = { workspace = true }
+# For the harness binary's `drain` command (cross-language execution conformance).
+# Cycle-safe: headgate's dependency on this crate is dev-only.
+headgate = { workspace = true }
+async-trait = { workspace = true }
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
+deadpool-postgres = "0.14"
+serde_json = "1"
+# rt + macros are for the harness binary and tests; the library itself only needs
+# what tokio-postgres already pulls in.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+[[bin]]
+name = "hg-pg-harness"
+path = "src/bin/hg_pg_harness.rs"
+
+[dev-dependencies]
+headgate-migrate = { workspace = true }
+headgate-testkit = { workspace = true }

@@ -1,0 +1,35 @@
+[package]
+name = "headgate-redis"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+
+# The Redis adapter is the boundary test for the store port: Lua and SQL
+# express the admission gate very differently, so if this crate forces a port change,
+# the boundary was wrong. Implements Store + Inspect + Notifying (pub/sub); no
+# Transactions are structurally unavailable in Redis, so that method does not exist.
+[dependencies]
+headgate-core = { workspace = true }
+async-trait = { workspace = true }
+redis = { version = "0.27", features = ["tokio-comp", "script", "connection-manager", "cluster-async", "sentinel"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
+# on_message is a Stream; same minimal footprint as the other crates
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# The harness bin's cross-language drain runs the REAL runtime (same pattern as
+# headgate-postgres; legal because headgate's reverse dep on this crate is dev-only).
+headgate = { workspace = true }
+
+[dev-dependencies]
+headgate-testkit = { workspace = true }
+
+[[bin]]
+name = "hg-redis-harness"
+path = "src/bin/hg_redis_harness.rs"

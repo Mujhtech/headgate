@@ -1,0 +1,36 @@
+[package]
+name = "headgate-mysql"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+
+# The MySQL backend: same tier as Postgres for the feature that matters most —
+# InnoDB transactions make transactional enqueue work identically. Two loud, permanent
+# differences: no push wakeup (poll only), and uniqueness rides
+# generated columns instead of partial indexes. The admission gate is a READ COMMITTED
+# transaction whose policy step is queries/eligible.sql (see its header).
+[dependencies]
+headgate-core = { workspace = true }
+async-trait = { workspace = true }
+mysql_async = { version = "0.35", default-features = false, features = ["minimal"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+# the harness bin's cross-language drain runs the REAL runtime (same pattern as the
+# other adapters; legal because headgate's reverse dep on this crate is dev-only)
+headgate = { workspace = true }
+
+[[bin]]
+name = "hg-mysql-harness"
+path = "src/bin/hg_mysql_harness.rs"
+
+[dev-dependencies]
+headgate-migrate = { workspace = true }
+headgate-testkit = { workspace = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }

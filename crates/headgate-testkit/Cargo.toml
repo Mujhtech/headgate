@@ -1,0 +1,28 @@
+[package]
+name = "headgate-testkit"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+
+# The in-process test double: a complete in-memory Store so handler code, retries, and
+# runner wiring are testable with no database (River's rivertest). The Go twin is
+# go/headgatetest — the two keep the same fidelity/simplification split.
+[dependencies]
+headgate-core = { workspace = true }
+headgate-migrate = { workspace = true }
+async-trait = { workspace = true }
+mysql_async = { version = "0.35", default-features = false, features = ["minimal"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+tokio = { version = "1", features = ["rt"] }
+tokio-postgres = "0.7"
+
+[dev-dependencies]
+headgate = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

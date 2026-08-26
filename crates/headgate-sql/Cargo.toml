@@ -1,0 +1,18 @@
+[package]
+name = "headgate-sql"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+
+# Pure SQL-name rendering shared by the Postgres driver and migration package. It owns
+# no connection and links no driver, so schema qualification cannot create a dependency
+# cycle between those two independently publishable crates.
+[dependencies]
+sha2 = { workspace = true }

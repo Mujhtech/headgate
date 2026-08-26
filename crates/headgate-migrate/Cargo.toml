@@ -1,0 +1,25 @@
+[package]
+name = "headgate-migrate"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+
+# Deliberately its own crate: applications using core do not pull SQL drivers, while
+# operators and test helpers can share one version/checksum contract.
+[dependencies]
+headgate-sql = { workspace = true }
+mysql_async = { version = "0.35", default-features = false, features = ["minimal"] }
+sha2 = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio-postgres = "0.7"
+
+[[bin]]
+name = "hg-migrate"
+path = "src/bin/hg_migrate.rs"

@@ -143,9 +143,10 @@ func (t *Telemetry) jobSpan(event headgate.Event) {
 			attribute.String("headgate.outcome", event.Outcome),
 		),
 	)
-	if event.Outcome == "success" {
+	switch event.Outcome {
+	case "success":
 		span.SetStatus(codes.Ok, "")
-	} else if event.Outcome == "retry" || event.Outcome == "undecodable" {
+	case "retry", "undecodable":
 		span.SetStatus(codes.Error, event.Outcome)
 	}
 	span.End(trace.WithTimestamp(start.Add(event.Duration)))

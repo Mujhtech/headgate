@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	headgate "github.com/mujhtech/headgate"
+	headgate "github.com/mujhtech/headgate/go"
 )
 
 // RequireStickyRouting is the six-cell live-driver proof for strict worker affinity.

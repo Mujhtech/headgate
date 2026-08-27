@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mujhtech/headgate/headgatemigrate"
+	"github.com/mujhtech/headgate/go/headgatemigrate"
 )
 
 func noenv(string) string { return "" }

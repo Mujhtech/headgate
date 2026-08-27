@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	headgate "github.com/mujhtech/headgate"
+	headgate "github.com/mujhtech/headgate/go"
 )
 
 func TestSchedulerEnqueueEventsAreDurableAndBoundedOnGoRedis(t *testing.T) {

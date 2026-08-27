@@ -20,8 +20,8 @@ import (
 	"testing"
 	"time"
 
-	headgate "github.com/mujhtech/headgate"
-	"github.com/mujhtech/headgate/headgatetest"
+	headgate "github.com/mujhtech/headgate/go"
+	"github.com/mujhtech/headgate/go/headgatetest"
 )
 
 func TestEnqueueBackpressureHotPathUsesConstantSizeCounters(t *testing.T) {

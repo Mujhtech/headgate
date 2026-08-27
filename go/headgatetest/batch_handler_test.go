@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mujhtech/headgate"
+	"github.com/mujhtech/headgate/go"
 )
 
 type batchRuntimeArgs struct {

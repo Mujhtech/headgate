@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	headgate "github.com/mujhtech/headgate"
+	headgate "github.com/mujhtech/headgate/go"
 )
 
 // ormScope is a per-run suffix. $-scoped so two runs (or a crashed previous run) can

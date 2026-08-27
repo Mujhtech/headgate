@@ -1,6 +1,6 @@
-module github.com/mujhtech/headgate
+module github.com/mujhtech/headgate/go
 
-go 1.24
+go 1.24.0
 
 // Core has no driver or exporter dependencies.
 // This is a CI gate, not a guideline: scripts/check-deps.sh fails the build if

@@ -13,12 +13,12 @@ import (
 	"os"
 	"strings"
 
-	headgate "github.com/mujhtech/headgate"
-	headgatemysql "github.com/mujhtech/headgate/driver/headgatemysql"
-	headgatepgx "github.com/mujhtech/headgate/driver/headgatepgx"
-	headgateredis "github.com/mujhtech/headgate/driver/headgateredis"
-	headgateapi "github.com/mujhtech/headgate/headgateapi"
-	headgateui "github.com/mujhtech/headgate/headgateui"
+	headgate "github.com/mujhtech/headgate/go"
+	headgatemysql "github.com/mujhtech/headgate/go/driver/headgatemysql"
+	headgatepgx "github.com/mujhtech/headgate/go/driver/headgatepgx"
+	headgateredis "github.com/mujhtech/headgate/go/driver/headgateredis"
+	headgateapi "github.com/mujhtech/headgate/go/headgateapi"
+	headgateui "github.com/mujhtech/headgate/go/headgateui"
 )
 
 func main() {

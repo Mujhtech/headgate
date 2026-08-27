@@ -11,7 +11,7 @@ import (
 	"errors"
 
 	"github.com/go-sql-driver/mysql"
-	headgate "github.com/mujhtech/headgate"
+	headgate "github.com/mujhtech/headgate/go"
 )
 
 type MysqlTx struct{ tx *sql.Tx }

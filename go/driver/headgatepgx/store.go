@@ -21,7 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	headgate "github.com/mujhtech/headgate"
+	headgate "github.com/mujhtech/headgate/go"
 )
 
 //go:embed admit.sql

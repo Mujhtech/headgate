@@ -3,7 +3,7 @@
 headgate ships the same embedded migration line in two independently usable packages:
 
 - Rust: `headgate-migrate`, with the `hg-migrate` binary.
-- Go: `github.com/mujhtech/headgate/headgatemigrate`, with
+- Go: `github.com/mujhtech/headgate/go/headgatemigrate`, with
   `go run ./cmd/hg-migrate` from that module.
 
 Both packages support Postgres and MySQL. Redis has no DDL schema and is deliberately not

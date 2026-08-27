@@ -90,8 +90,8 @@ import (
     "encoding/json"
     "time"
 
-    headgate "github.com/mujhtech/headgate"
-    "github.com/mujhtech/headgate/driver/headgatepgx"
+    headgate "github.com/mujhtech/headgate/go"
+    "github.com/mujhtech/headgate/go/driver/headgatepgx"
 )
 
 type DeliverMail struct {

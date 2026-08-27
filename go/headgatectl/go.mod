@@ -1,4 +1,4 @@
-module github.com/mujhtech/headgate/headgatectl
+module github.com/mujhtech/headgate/go/headgatectl
 
 go 1.24
 

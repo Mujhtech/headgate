@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	headgate "github.com/mujhtech/headgate"
+	headgate "github.com/mujhtech/headgate/go"
 )
 
 type workflowInspect struct {

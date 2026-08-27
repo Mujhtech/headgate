@@ -6,7 +6,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/mujhtech/headgate/postgressql"
+	"github.com/mujhtech/headgate/go/postgressql"
 )
 
 // postgresNamespace is a narrow driver adapter around the dependency-free renderer

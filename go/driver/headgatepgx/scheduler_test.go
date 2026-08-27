@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	headgate "github.com/mujhtech/headgate"
+	headgate "github.com/mujhtech/headgate/go"
 )
 
 // Round 32: a PER-SCHEDULE TIMEZONE, live through the Go store and SchedulerSweep. The

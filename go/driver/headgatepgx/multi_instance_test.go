@@ -8,9 +8,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	headgate "github.com/mujhtech/headgate"
-	"github.com/mujhtech/headgate/headgatemigrate"
-	"github.com/mujhtech/headgate/headgatetest"
+	headgate "github.com/mujhtech/headgate/go"
+	"github.com/mujhtech/headgate/go/headgatemigrate"
+	"github.com/mujhtech/headgate/go/headgatetest"
 )
 
 func multiInstanceEnvelope(kind string) headgate.Envelope {

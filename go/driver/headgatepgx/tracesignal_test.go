@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	headgate "github.com/mujhtech/headgate"
+	headgate "github.com/mujhtech/headgate/go"
 )
 
 // captureTelemetry is the telemetry and trace context facade under test. A bridge switches on Type and ignores

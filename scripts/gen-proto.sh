@@ -11,7 +11,7 @@ export PATH="$PATH:$(go env GOPATH 2>/dev/null || echo "$HOME/go")/bin"
 
 echo "== go =="
 protoc --proto_path=proto \
-  --go_out=go --go_opt=module=github.com/mujhtech/headgate \
+  --go_out=go --go_opt=module=github.com/mujhtech/headgate/go \
   proto/headgate.proto
 echo " ok go/proto/headgatev1/headgate.pb.go"
 

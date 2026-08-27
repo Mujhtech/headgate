@@ -17,7 +17,7 @@ import (
 	"strconv"
 	"strings"
 
-	headgate "github.com/mujhtech/headgate"
+	headgate "github.com/mujhtech/headgate/go"
 	"github.com/redis/go-redis/v9"
 )
 

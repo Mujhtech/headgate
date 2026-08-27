@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	headgate "github.com/mujhtech/headgate"
+	headgate "github.com/mujhtech/headgate/go"
 )
 
 func keyring(t *testing.T) *StaticKeyring {

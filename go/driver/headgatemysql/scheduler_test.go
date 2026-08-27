@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	headgate "github.com/mujhtech/headgate"
+	headgate "github.com/mujhtech/headgate/go"
 )
 
 // Round 32's per-schedule timezone, live through the Go MySQL store and SchedulerSweep.

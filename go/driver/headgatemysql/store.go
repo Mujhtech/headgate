@@ -24,7 +24,7 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
-	headgate "github.com/mujhtech/headgate"
+	headgate "github.com/mujhtech/headgate/go"
 )
 
 import _ "embed"

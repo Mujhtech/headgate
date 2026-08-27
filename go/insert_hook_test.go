@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	headgate "github.com/mujhtech/headgate"
-	"github.com/mujhtech/headgate/headgatetest"
+	headgate "github.com/mujhtech/headgate/go"
+	"github.com/mujhtech/headgate/go/headgatetest"
 )
 
 func hookEnvelope(id, kind string) headgate.Envelope {

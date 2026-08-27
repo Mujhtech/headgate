@@ -13,7 +13,7 @@ import (
 
 	mysqlDriver "github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5"
-	"github.com/mujhtech/headgate/headgatemigrate"
+	"github.com/mujhtech/headgate/go/headgatemigrate"
 	"github.com/redis/go-redis/v9"
 )
 

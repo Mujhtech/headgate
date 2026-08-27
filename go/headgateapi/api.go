@@ -22,7 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	headgate "github.com/mujhtech/headgate"
+	headgate "github.com/mujhtech/headgate/go"
 )
 
 type api struct {

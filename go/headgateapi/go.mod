@@ -1,22 +1,22 @@
-module github.com/mujhtech/headgate/headgateapi
+module github.com/mujhtech/headgate/go/headgateapi
 
-go 1.24
+go 1.24.0
 
-require github.com/mujhtech/headgate v0.0.0
+require github.com/mujhtech/headgate/go v0.1.0
 
-replace github.com/mujhtech/headgate => ../
+replace github.com/mujhtech/headgate/go => ../
 
-require github.com/mujhtech/headgate/driver/headgatepgx v0.0.0
+require github.com/mujhtech/headgate/go/driver/headgatepgx v0.1.0
 
-require github.com/mujhtech/headgate/driver/headgateredis v0.0.0
+require github.com/mujhtech/headgate/go/driver/headgateredis v0.1.0
 
-require github.com/mujhtech/headgate/driver/headgatemysql v0.0.0
+require github.com/mujhtech/headgate/go/driver/headgatemysql v0.1.0
 
-require github.com/mujhtech/headgate/headgateui v0.0.0
+require github.com/mujhtech/headgate/go/headgateui v0.1.0
 
 require (
-	filippo.io/edwards25519 v1.1.0 // indirect
-	github.com/cespare/xxhash/v2 v2.2.0 // indirect
+	filippo.io/edwards25519 v1.2.0 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/go-sql-driver/mysql v1.9.3 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
@@ -29,10 +29,10 @@ require (
 	golang.org/x/text v0.21.0 // indirect
 )
 
-replace github.com/mujhtech/headgate/driver/headgatepgx => ../driver/headgatepgx
+replace github.com/mujhtech/headgate/go/driver/headgatepgx => ../driver/headgatepgx
 
-replace github.com/mujhtech/headgate/driver/headgateredis => ../driver/headgateredis
+replace github.com/mujhtech/headgate/go/driver/headgateredis => ../driver/headgateredis
 
-replace github.com/mujhtech/headgate/driver/headgatemysql => ../driver/headgatemysql
+replace github.com/mujhtech/headgate/go/driver/headgatemysql => ../driver/headgatemysql
 
-replace github.com/mujhtech/headgate/headgateui => ../headgateui
+replace github.com/mujhtech/headgate/go/headgateui => ../headgateui

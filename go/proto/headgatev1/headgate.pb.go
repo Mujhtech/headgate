@@ -1339,7 +1339,7 @@ const file_headgate_proto_rawDesc = "" +
 	"\x0eOUTCOME_SNOOZE\x10\x05\x12\x16\n" +
 	"\x12OUTCOME_LEASE_LOST\x10\x06\x12\x17\n" +
 	"\x13OUTCOME_UNDECODABLE\x10\a\x12\x18\n" +
-	"\x14OUTCOME_RATE_LIMITED\x10\bB/Z-github.com/mujhtech/headgate/proto/headgatev1b\x06proto3"
+	"\x14OUTCOME_RATE_LIMITED\x10\bB2Z0github.com/mujhtech/headgate/go/proto/headgatev1b\x06proto3"
 
 var (
 	file_headgate_proto_rawDescOnce sync.Once

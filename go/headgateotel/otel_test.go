@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mujhtech/headgate"
-	"github.com/mujhtech/headgate/headgateotel"
+	"github.com/mujhtech/headgate/go"
+	"github.com/mujhtech/headgate/go/headgateotel"
 	"go.opentelemetry.io/otel/codes"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"

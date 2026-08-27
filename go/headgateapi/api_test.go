@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	headgate "github.com/mujhtech/headgate"
+	headgate "github.com/mujhtech/headgate/go"
 )
 
 // errStore answers every Inspect call the API can make with one canned error. It

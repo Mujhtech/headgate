@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mujhtech/headgate"
+	"github.com/mujhtech/headgate/go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -15,7 +15,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const instrumentationName = "github.com/mujhtech/headgate/headgateotel"
+const instrumentationName = "github.com/mujhtech/headgate/go/headgateotel"
 
 // Telemetry translates headgate events into OpenTelemetry spans and metrics.
 // SDK configuration, sampling, resources, and exporters remain application-owned.

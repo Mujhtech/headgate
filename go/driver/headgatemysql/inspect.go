@@ -31,7 +31,7 @@ import (
 	"strconv"
 	"strings"
 
-	headgate "github.com/mujhtech/headgate"
+	headgate "github.com/mujhtech/headgate/go"
 )
 
 const (

@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	headgate "github.com/mujhtech/headgate"
-	headgatepgx "github.com/mujhtech/headgate/driver/headgatepgx"
+	headgate "github.com/mujhtech/headgate/go"
+	headgatepgx "github.com/mujhtech/headgate/go/driver/headgatepgx"
 )
 
 func kv() (string, map[string]string) {

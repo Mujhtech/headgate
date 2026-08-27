@@ -12,8 +12,8 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5"
-	"github.com/mujhtech/headgate/headgatemigrate"
-	"github.com/mujhtech/headgate/postgressql"
+	"github.com/mujhtech/headgate/go/headgatemigrate"
+	"github.com/mujhtech/headgate/go/postgressql"
 )
 
 type command string

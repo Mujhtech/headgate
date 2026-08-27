@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
-	headgate "github.com/mujhtech/headgate"
-	"github.com/mujhtech/headgate/headgatemigrate"
-	"github.com/mujhtech/headgate/headgatetest"
+	headgate "github.com/mujhtech/headgate/go"
+	"github.com/mujhtech/headgate/go/headgatemigrate"
+	"github.com/mujhtech/headgate/go/headgatetest"
 )
 
 func isolatedMySQL(t *testing.T, dsn string) *sql.DB {

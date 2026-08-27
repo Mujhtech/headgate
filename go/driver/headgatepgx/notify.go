@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	headgate "github.com/mujhtech/headgate"
+	headgate "github.com/mujhtech/headgate/go"
 )
 
 type listener struct {

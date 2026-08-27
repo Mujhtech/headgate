@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/mujhtech/headgate/postgressql"
+	"github.com/mujhtech/headgate/go/postgressql"
 )
 
 const createPostgresHistory = `

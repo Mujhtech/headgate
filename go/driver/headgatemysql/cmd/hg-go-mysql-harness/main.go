@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	headgate "github.com/mujhtech/headgate"
-	headgatemysql "github.com/mujhtech/headgate/driver/headgatemysql"
+	headgate "github.com/mujhtech/headgate/go"
+	headgatemysql "github.com/mujhtech/headgate/go/driver/headgatemysql"
 )
 
 func kv() (string, map[string]string) {

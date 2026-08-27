@@ -13,7 +13,7 @@ import (
 	"io"
 	"time"
 
-	headgate "github.com/mujhtech/headgate"
+	headgate "github.com/mujhtech/headgate/go"
 )
 
 var magic = []byte{'H', 'G', 'E', 'C', 1}

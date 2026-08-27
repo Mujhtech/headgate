@@ -1,7 +1,7 @@
 syntax = "proto3";
 package headgate.v1;
 
-option go_package = "github.com/mujhtech/headgate/proto/headgatev1";
+option go_package = "github.com/mujhtech/headgate/go/proto/headgatev1";
 
 // The wire contract. Field numbers are PERMANENT. Removal means `reserved`, never reuse.
 // Both the Go and Rust implementations generate from this file and nothing else.

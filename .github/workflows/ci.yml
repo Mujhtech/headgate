@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify workspace
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: hg
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_USER: postgres
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d hg"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      redis:
+        image: redis:7.4
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: hg
+          MYSQL_ROOT_PASSWORD: hg
+        ports:
+          - 3307:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -phg"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+
+    env:
+      CARGO_TERM_COLOR: always
+      HG_MYSQL: mysql://root:hg@127.0.0.1:3307/hg
+      HG_TEST_MYSQL: mysql://root:hg@127.0.0.1:3307/hg
+      HG_TEST_PG: host=127.0.0.1 port=5433 user=postgres dbname=hg
+      HG_TEST_REDIS: redis://127.0.0.1:6380
+      PGDATABASE: hg
+      PGHOST: 127.0.0.1
+      PGPORT: 5433
+      REDIS_PORT: 6380
+      RUST_BACKTRACE: 1
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup default stable
+
+      - name: Install Go toolchain
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go/go.work
+          cache-dependency-path: "**/go.sum"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.0
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes default-mysql-client postgresql-client protobuf-compiler redis-tools
+          python3 -m pip install --break-system-packages PyYAML
+
+      - name: Install UI dependencies
+        run: pnpm --dir ui install --frozen-lockfile
+
+      - name: Apply database migrations
+        run: |
+          for migration in crates/headgate-postgres/migrations/*.sql; do
+            psql --set ON_ERROR_STOP=1 --file "$migration"
+          done
+          for migration in crates/headgate-mysql/migrations/*.sql; do
+            mysql --protocol TCP --host 127.0.0.1 --port 3307 --user root --password=hg hg < "$migration"
+          done
+
+      - name: Check formatting
+        run: |
+          cargo fmt --all -- --check
+          unformatted="$(git ls-files -z '*.go' | xargs -0 gofmt -l)"
+          test -z "$unformatted" || { printf '%s\n' "$unformatted"; exit 1; }
+
+      - name: Run the verification gate
+        run: scripts/verify.sh

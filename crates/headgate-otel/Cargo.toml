@@ -1,0 +1,19 @@
+[package]
+name = "headgate-otel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+
+[dependencies]
+headgate-core.workspace = true
+opentelemetry = { version = "0.32", features = ["metrics", "trace"] }
+
+[dev-dependencies]
+opentelemetry_sdk = { version = "0.32", features = ["metrics", "testing", "trace"] }

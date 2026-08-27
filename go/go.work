@@ -1,4 +1,4 @@
-go 1.24
+go 1.24.0
 
 use (
 	.
@@ -10,6 +10,5 @@ use (
 	./headgatetest
 	./headgateui
 	./headgatectl
-// add each driver module as it is implemented:
-// ./driver/headgatemysql
+	./headgateotel
 )

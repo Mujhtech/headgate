@@ -1,0 +1,1 @@
+import{Zt as e}from"./tooltip-CNzURqG2.js";import{s as t}from"./console-Cyvbrj01.js";import{n}from"./index-D8qZ1VdH.js";import{t as r}from"./jobs-UlSXrIx_.js";var i=e();function a(){let{jobId:e}=n.useParams(),a=n.useNavigate(),o=t();return(0,i.jsx)(r,{id:e,open:!0,setOpen:e=>{e||a({to:`/jobs`})},refresh:o.refresh,notify:o.notify})}export{a as component};

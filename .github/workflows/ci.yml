@@ -66,6 +66,7 @@ jobs:
       PGDATABASE: hg
       PGHOST: 127.0.0.1
       PGPORT: 5433
+      PGUSER: postgres
       REDIS_PORT: 6380
       RUST_BACKTRACE: 1
 

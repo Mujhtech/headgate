@@ -37,12 +37,12 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
 
 [dev-dependencies]
-headgate-postgres = { workspace = true }
+headgate-postgres = { path = "../headgate-postgres" }
 # The assert-enqueued helpers let `EnqueuedJobs` be exercised
 # over a LIVE store in a test rather than only over the in-memory double. Dev-only, and
-# the reverse edge (testkit -> headgate) is dev-only too, so this is a dev-dep cycle,
-# which cargo allows and which scripts/check-deps.sh (headgate-core's tree) never sees.
-headgate-testkit = { workspace = true }
+# the reverse edge (testkit -> headgate) is dev-only too. Keep both edges path-only so
+# Cargo omits the cycle from crates.io metadata while retaining it for workspace tests.
+headgate-testkit = { path = "../headgate-testkit" }
 # `tokio::time` virtual clock verifies that the worker loop really
 # SLEEPS the empty-poll backoff it computes. Timing successive polls on a loaded machine
 # is a stopwatch race — which is exactly why that half stayed unasserted through round

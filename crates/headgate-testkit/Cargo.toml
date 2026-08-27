@@ -24,5 +24,5 @@ tokio = { version = "1", features = ["rt"] }
 tokio-postgres = "0.7"
 
 [dev-dependencies]
-headgate = { workspace = true }
+headgate = { path = "../headgate" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

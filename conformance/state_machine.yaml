@@ -1,0 +1,48 @@
+# §4.2 The state machine as a TABLE, not a match with holes.
+# apalis shipped `// Error::Abort(_) => State::Killed,` commented out; a task that said
+# "stop, do not retry" was retried to max_attempts. A commented-out row here is a failing
+# test. Both implementations GENERATE their transition function from this file.
+version: 1
+transitions:
+  - {from: pending,    on: operator_promote, to: available}
+  - {from: scheduled,  on: schedule_due,   to: available}
+  - {from: available,  on: admitted,       to: running}
+
+  - {from: running,    on: success,        to: completed, when: "retention_ms > 0"}
+  - {from: running,    on: success,        to: deleted,   when: "retention_ms == 0"}
+  - {from: running,    on: retry,          to: retryable, when: "attempt + 1 < max_attempts"}
+  - {from: running,    on: retry,          to: archived,  when: "attempt + 1 >= max_attempts"}
+  - {from: running,    on: skip,           to: archived}    # explicit: do not retry
+  - {from: running,    on: revoke,         to: deleted}     # explicit: drop entirely
+  - {from: running,    on: snooze,         to: scheduled}   # does NOT consume an attempt
+  - {from: running,    on: undecodable,    to: undecodable} # §5.4 no upcast path; never retry
+  # §11.2 rate-limited is NOT a failure. BullMQ's RateLimitError and Sidekiq's OverLimit
+  # both treat it this way; asynq makes you fake it with IsFailure + RetryDelayFunc.
+  - {from: running,    on: rate_limited,   to: available,  note: "attempt is NOT incremented"}
+
+  # §5.2 crash-attributed failure. Counted apart from `retry` on purpose.
+  - {from: running,    on: lease_lost,     to: retryable,    when: "crash_attempt + 1 < crash_limit"}
+  - {from: running,    on: lease_lost,     to: quarantined,  when: "crash_attempt + 1 >= crash_limit"}
+
+  - {from: retryable,  on: backoff_due,    to: available}
+  # §5.7 a resumed job whose step set changed under it must NOT silently restart
+  - {from: running,    on: checkpoint_stale, to: undecodable}
+  - {from: archived,   on: operator_retry, to: available}
+  - {from: quarantined, on: operator_release, to: available}
+  - {from: available,  on: operator_cancel,  to: cancelled}
+  - {from: scheduled,  on: operator_cancel,  to: cancelled}
+  - {from: pending,    on: operator_cancel,  to: cancelled}
+  - {from: running,    on: operator_cancel,  to: cancelled}
+
+invariants:
+  - "a job in `running` has a non-null lease_id and lease_expires_at_ms"
+  - "a job not in `running` has a null lease_id"
+  - "`fence` increases by exactly 1 on every transition into `running`"
+  - "`attempt` counts handler-returned failures only; `crash_attempt` counts lease losses"
+  - "`rate_limited` increments neither counter — it is a scheduling outcome, not a failure"
+  - "a checkpoint is durable before the step's side effects, never after the worker returns"
+  - "resuming re-verifies the fence before the next step; a lost lease stops at the boundary"
+  - "queue weight selects the queue; priority orders within it; neither overrides the other"
+  - "pending jobs never auto-transition; only operator_promote makes them eligible"
+  - "terminal states (completed, archived, cancelled, quarantined, undecodable) never auto-transition"
+  - "no transition may be added without a conformance scenario that exercises it"

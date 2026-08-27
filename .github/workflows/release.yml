@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: SemVer to validate and package without publishing
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify release candidate
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Package and publish
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Install Go toolchain
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go/go.work
+          cache-dependency-path: "**/go.sum"
+
+      - name: Install protobuf generators
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes protobuf-compiler
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+
+      - name: Resolve release version
+        id: release
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            version=${GITHUB_REF_NAME#v}
+          else
+            version=${DISPATCH_VERSION#v}
+          fi
+          if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "invalid release version: $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check release metadata
+        run: scripts/release.sh check "${{ steps.release.outputs.version }}"
+
+      - name: Verify generated sources are current
+        run: |
+          scripts/gen-proto.sh
+          git diff --exit-code
+
+      - name: Package Rust crates
+        run: scripts/release.sh package-rust "${{ steps.release.outputs.version }}"
+
+      - name: Package headgatectl
+        run: scripts/release.sh package-cli "${{ steps.release.outputs.version }}" dist
+
+      - name: Stop after manual dry run
+        if: github.event_name == 'workflow_dispatch'
+        run: echo "manual release validation completed; no tags or packages were published"
+
+      - name: Publish Rust crates
+        if: github.event_name == 'push'
+        run: scripts/release.sh publish-rust "${{ steps.release.outputs.version }}"
+
+      - name: Tag Go modules
+        if: github.event_name == 'push'
+        run: scripts/release.sh tag-go "${{ steps.release.outputs.version }}"
+
+      - name: Create GitHub release
+        if: github.event_name == 'push'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          args=(--title "headgate v$VERSION" --generate-notes)
+          [[ $VERSION == *-* ]] && args+=(--prerelease)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* "${args[@]}"
+          fi

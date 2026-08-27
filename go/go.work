@@ -1,0 +1,15 @@
+go 1.24
+
+use (
+	.
+	./driver/headgatepgx
+	./driver/headgatemysql
+	./driver/headgateredis
+	./headgateapi
+	./headgatemigrate
+	./headgatetest
+	./headgateui
+	./headgatectl
+// add each driver module as it is implemented:
+// ./driver/headgatemysql
+)

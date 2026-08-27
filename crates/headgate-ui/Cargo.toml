@@ -1,0 +1,24 @@
+[package]
+name = "headgate-ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+
+# The console is a language-neutral static build. It is embedded behind the host
+# application's authentication and reaches the store only through the public API.
+[dependencies]
+axum = "0.8"
+include_dir = "0.7"
+serde_json = "1"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

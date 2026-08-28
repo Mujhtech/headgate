@@ -599,6 +599,15 @@ async fn the_scheduler_duty_fires_over_mysql() {
         assert_eq!(pair[0].1, pair[1].1, "both events identify one tick");
     }
     insp.delete_schedule("mis-s1").await.unwrap(); // hygiene: leave nothing ticking
+    // Stop the background duty before invoking scheduler_sweep directly below. If both
+    // sweepers overlap, MySQL correctly skips the schedule locked by the worker and this
+    // deterministic assertion can observe it before that worker commits the advance.
+    handle.shutdown();
+    tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .expect("worker did not stop before the direct scheduler sweep")
+        .expect("worker task panicked")
+        .expect("worker returned an error");
 
     // Round 32, surveyed policy behavior per-schedule timezone over MySQL. The zone rides INSIDE the spec
     // string, so this VARCHAR(255) column is the entire storage story — there is no
@@ -647,6 +656,4 @@ async fn the_scheduler_duty_fires_over_mysql() {
         "advance is at {utc_hour}:00Z — 09:00 New York is 14:00Z (EST) or 13:00Z (EDT)"
     );
     insp.delete_schedule("mis-s2").await.unwrap(); // hygiene: leave nothing ticking
-    handle.shutdown();
-    let _ = tokio::time::timeout(Duration::from_secs(10), running).await;
 }

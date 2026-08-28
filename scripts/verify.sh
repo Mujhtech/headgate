@@ -43,6 +43,7 @@ echo "== go =="           && (cd go && go vet ./... ./driver/headgatepgx/... ./d
                                     && go test -p 1 -v ./... ./driver/headgatepgx/... ./driver/headgatemysql/... ./driver/headgateredis/... ./headgateapi/... ./headgatemigrate/... ./headgatetest/... ./headgateui/... 2>&1 \
                                        | tee "$GOLOG" \
                                        | awk '/^(---|===) (SKIP|FAIL)/ || /^(ok|FAIL|\?)[ \t]/ || /^ *--- SKIP/ {print}')
+echo "== examples =="     && ./scripts/test-examples.sh
 echo "== shared sql ==" && cmp crates/headgate-postgres/queries/admit.sql go/driver/headgatepgx/admit.sql \
                           && cmp crates/headgate-postgres/queries/admit_direct.sql go/driver/headgatepgx/admit_direct.sql \
                           && cmp crates/headgate-mysql/queries/eligible.sql go/driver/headgatemysql/eligible.sql \

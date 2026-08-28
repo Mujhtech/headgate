@@ -24,11 +24,10 @@ Prefer the reason itself over a section reference:
 // between candidate selection and row locking.
 ```
 
-Avoid comments such as `Round 32 fixed this` or `See §5.1`. A link to architecture or
+Avoid comments such as `Round 32 fixed this` or `See architecture section 5.1`. A link to architecture or
 conformance material is useful only after the local comment explains the constraint.
 Stable named anchors and file paths are preferable to section numbers.
 
 Generated files are never edited by hand. Improve comments in their schema or generator
 input, then regenerate the outputs. Admission SQL and Lua comments are intentionally
 detailed because they protect concurrency behavior that looks redundant in isolation.
-

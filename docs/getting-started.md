@@ -133,6 +133,11 @@ graceful drain as the Rust runtime.
 
 ## Next steps
 
+- [Mintlify documentation](introduction.mdx) provides the navigable developer portal,
+  language-specific SDK guides, examples, operations material, and generated API reference.
+- [Runnable Rust and Go examples](../examples/README.md) cover typed workers, retries,
+  results, progress, uniqueness, scheduling, routing, priority, fairness, and rate limits
+  without requiring a database.
 - [Testing](testing.md) covers the in-memory store and isolated live-store fixtures.
 - [Connection budgeting](connection-budget.md) explains pool sizing and dedicated
   Postgres notification connections.

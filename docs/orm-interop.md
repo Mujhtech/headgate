@@ -1,4 +1,4 @@
-# ORM interop (§9.4b)
+# ORM interoperability
 
 Transactional enqueue is the headline feature, and it is worth nothing if it cannot join
 the transaction the application already has open. A service on GORM, Bun, or SeaORM has
@@ -23,7 +23,7 @@ Each cell runs the same three cases:
   exists, and the job is not admittable. This is the assertion the feature exists for: a
   job that survives its caller's rollback has published work that never happened.
 - **(c) handler side** — the effect-key claim, an application write, and the
-  fence-verified completion in one caller transaction (§5.6, the machinery behind `Once`).
+  fence-verified completion in one caller transaction, using the same machinery as `Once`.
   A crash *after* that commit re-delivers the job; the redelivery claims nothing and
   writes nothing, so the effect is applied exactly once.
 
@@ -119,9 +119,9 @@ are:
    enqueue, and keep sqlx/SeaORM for everything else. Two pools, one of them small.
 2. Enqueue *after* the commit, on a separate connection, and accept that a crash in the
    window loses the job — which is precisely the failure transactional enqueue exists to
-   remove. Do not write your own `INSERT INTO headgate_job`: uniqueness (§4.4), the
-   quarantine check (§5.2), active-partition maintenance (§5.3/§13), and the arrival
-   counters (§5.5) are all part of `enqueue`, and a hand-rolled insert silently skips them.
+   remove. Do not write your own `INSERT INTO headgate_job`: uniqueness enforcement,
+   quarantine checks, active-partition maintenance, and arrival counters are all part of
+   `enqueue`, and a hand-rolled insert silently skips them.
 
 Closing this properly means a headgate adapter written against sqlx, not a shim inside the
 existing ones. That is not in this round and is not claimed anywhere.
@@ -131,6 +131,6 @@ existing ones. That is not in this round and is not claimed anywhere.
 - No ORM's own API is exercised — only the driver handles they expose. The GORM and Bun
   rows above are documentation of where the handle lives, not tests.
 - Redis is absent by design: it declines `Transactional` rather than approximating it
-  (§3.1).
+  through the advertised backend capability mask.
 - `database/sql`-over-pgx on Postgres, and sqlx/SeaORM on either backend, are named as
   gaps above rather than covered.

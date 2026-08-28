@@ -11,6 +11,11 @@ screen owns its URL and search state. Current routes include `/queues`, `/jobs`,
 `/jobs/{id}`, `/workflows`, `/workflows/{workflow-id}`, `/rate-classes`,
 `/quarantine`, `/periodic`, and `/workers`.
 
+TanStack Query owns control-API reads, polling, cancellation, mutation state, and cache
+invalidation. React effects are reserved for browser subscriptions such as server-sent
+events and responsive media queries. Form controls use the shadcn components backed by
+Base UI rather than unstyled native checkboxes or selects.
+
 The workflow screens use the existing job API: the list filters for
 `headgate:workflow` coordinators, while the detail screen explicitly requests the
 coordinator payload and performs bounded point reads for its children. It renders the
@@ -19,6 +24,22 @@ static DAG and live task states without introducing a backend-specific graph end
 Neither Rust nor Go runs a JavaScript server. Each SDK embeds the HTML shell, hashed
 JavaScript and CSS, and fonts into its binary. Application routes fall back to the shell;
 missing `/assets/...` requests return 404 instead of HTML.
+
+## Try every view locally
+
+Run the real embedded console against the example's realistic, read-only API:
+
+```bash
+cd examples/go
+GOWORK=off go run ./ui_demo
+```
+
+Open `http://127.0.0.1:8080`. The example includes active and blocked jobs, queue
+history, partition fairness, rate classes, quarantine entries, periodic schedules,
+worker coverage, progress, admission explanations, and a connected workflow DAG. It
+needs no database or JavaScript development server. The fixture API is read-only and
+exists only to demonstrate the operator experience; use the mounts below with a real
+control API in an application.
 
 ## Build and verify
 

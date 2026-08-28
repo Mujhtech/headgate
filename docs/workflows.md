@@ -13,6 +13,12 @@ Enqueue that batch through the normal client/store path. Workers serving the coo
 queue must install `register_coordinator` / `RegisterCoordinator` and also register the
 application task handlers.
 
+Runnable fan-out/fan-in construction examples are available for
+[Rust](../examples/rust/src/bin/workflow.rs) and [Go](../examples/go/workflow/main.go).
+They validate the graph and print the atomic coordinator-plus-children batch without
+requiring a database. The live coordinator execution proof is
+[`crates/headgate-workflow/tests/live.rs`](../crates/headgate-workflow/tests/live.rs).
+
 The coordinator performs bounded point reads—one per graph node. Roots are promoted
 first. A node is promoted only after every dependency is `completed`; fan-out and fan-in
 therefore use the same mechanism. While work is active the coordinator snoozes without

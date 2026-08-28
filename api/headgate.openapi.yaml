@@ -3,12 +3,13 @@ info:
   title: headgate control API
   version: 0.1.0
   description: |
-    §10.1 The control contract. The web UI is one client of this API and gets no
+    The web UI is one client of this control API and gets no
     privileged access — asynqmon reads Redis directly, which is why its compatibility
     note is three minor versions stale.
 
     Both the Go and Rust implementations serve this spec, and the conformance suite
-    asserts identical responses. Every list endpoint is bounded (§4.5, §10.7): asynq's
+    asserts identical responses. Every list endpoint is bounded to prevent inspection
+    from becoming an unbounded store operation: asynq's
     GetQueueInfo is O(number of groups) and has pinned Redis CPU for seconds in
     production. Monitoring caused the outage.
 
@@ -28,6 +29,7 @@ paths:
       summary: List queues with backlog derivatives
       responses:
         '200':
+          description: Queue backlog and throughput summaries.
           content:
             application/json:
               schema: {type: array, items: {$ref: '#/components/schemas/QueueStats'}}
@@ -125,11 +127,12 @@ paths:
         - {name: limit,  in: query, schema: {type: integer, default: 50, maximum: 200}}
       responses:
         '200':
+          description: Paginated jobs matching the supplied filters.
           content: {application/json: {schema: {$ref: '#/components/schemas/JobPage'}}}
     post:
       summary: Enqueue over HTTP.
       description: |
-        §2 carries River's polyglot insert, and apalis-board's ONLY mutation is enqueue —
+        River supports polyglot insertion, and apalis-board's only mutation is enqueue —
         yet the first draft of this spec had no way to enqueue at all. This is how a
         Python or TypeScript service submits work without a native client, and how an
         operator re-submits a repaired payload. Requires Idempotency-Key: a retried POST
@@ -174,7 +177,7 @@ paths:
                   type: integer
                   minimum: 1
                   default: 1
-                  description: §11.2 estimated rate-budget cost; unrelated to queue-selection weight.
+                  description: Estimated rate-budget cost; unrelated to queue-selection weight.
                 scheduled_at_ms: {type: integer}
                 unique_key: {type: string, contentEncoding: base64}
                 unique_window_ms: {type: integer, minimum: 0}
@@ -191,8 +194,8 @@ paths:
       responses:
         '201': {description: Enqueued}
         '409':
-          description: §4.4 duplicate unique key. Body carries the EXISTING job id and whether an allowlisted replacement was applied.
-        '423': {description: §5.2 fingerprint is quarantined}
+          description: Duplicate unique key. Body carries the existing job ID and whether an allowlisted replacement was applied.
+        '423': {description: The job fingerprint is quarantined.}
         '403': {description: Enqueue authorizer rejected this job kind before store I/O}
         '503':
           description: Store unavailable, or local enqueue circuit open/half-open probe budget occupied. Circuit body carries state and retry_after_ms.
@@ -300,15 +303,16 @@ paths:
 
   /rate-classes:
     get:
-      summary: §5.1 Live fleet-wide budgets. No surveyed queue can render this.
+      summary: List live fleet-wide rate budgets.
       responses:
         '200':
+          description: Current fleet-wide rate class budgets.
           content:
             application/json:
               schema: {type: array, items: {$ref: '#/components/schemas/RateClassState'}}
   /rate-classes/{name}:
     put:
-      summary: Change a fleet-wide limit at runtime. §5.1 was READ-ONLY until now.
+      summary: Change a fleet-wide rate limit at runtime.
       description: |
         The flagship feature of this system is a shared rate limit, and the first version
         of this API could only display it. During an incident the operator's action is to
@@ -354,11 +358,11 @@ paths:
 
   /partitions:
     get:
-      summary: §5.3 Fair-share state — which tenants are being throttled and by how much.
+      summary: Show which partitions are being throttled and by how much.
       parameters: [{name: queue, in: query, required: true, schema: {type: string}}]
       responses: {'200': {description: OK}}
   /quarantine:
-    get: {summary: §5.2 Fingerprints that have killed workers, responses: {'200': {description: OK}}}
+    get: {summary: List fingerprints that have repeatedly crashed workers., responses: {'200': {description: OK}}}
   /quarantine/{fingerprint}:
     delete:
       summary: Release a quarantined fingerprint. Deliberate operator action.
@@ -369,7 +373,7 @@ paths:
     get: {responses: {'200': {description: OK}}}
   /cluster:
     get:
-      summary: §11.2 the fleet view — which queues have ZERO live workers.
+      summary: Show fleet capacity and queues with no live workers.
       description: |
         The registry answers "what is each worker doing"; this answers the fleet-level
         question an operator asks during an incident. A queue with a growing backlog and
@@ -379,7 +383,7 @@ paths:
         being absent, because "not in the list" is indistinguishable from "not looked
         at". Staleness uses the same 15-minute heartbeat grace as `GET /workers`.
 
-        §5.5's autoscaling SIGNAL rides along: `utilization` = inflight/capacity and
+        Autoscaling signals ride along: `utilization` = inflight/capacity and
         `empty_poll_ratio` = admits returning zero / total admits over each worker's
         rolling window. Both are ratios of SUMS, not averages of per-worker ratios, so a
         1-slot worker does not weigh the same as a 64-slot one. Scale UP on high
@@ -414,7 +418,7 @@ paths:
                         live_workers: {type: integer}
   /workers/{worker_id}/signal:
     post:
-      summary: §11.2 server→worker control, delivered on the worker's next heartbeat.
+      summary: Send control to a worker on its next heartbeat.
       description: |
         Faktory's BEAT carries quiet/terminate; here it is one column on the worker row,
         read back by the heartbeat upsert. `quiet` pauses admission (in-flight work
@@ -437,12 +441,12 @@ paths:
         '404': {description: No such worker}
   /events:
     get:
-      summary: SSE. ONE subscription for the whole UI — never per-panel polling (§10.7).
-      responses: {'200': {content: {text/event-stream: {schema: {type: string}}}}}
+      summary: Stream control-plane events over one shared SSE subscription.
+      responses: {'200': {description: Server-sent control-plane events., content: {text/event-stream: {schema: {type: string}}}}}
 
   /meta:
     get:
-      summary: §3.1 Capability discovery. The UI MUST NOT offer what this backend lacks.
+      summary: Discover the active backend's supported capabilities.
       description: |
         Backends declare capabilities and a backend that cannot honor one does not have
         it. The UI needs that at runtime or it will render a "enqueue in transaction"
@@ -450,6 +454,7 @@ paths:
         is never called; this endpoint is the antidote to that class of lie.
       responses:
         '200':
+          description: Server version, backend, capabilities, and limits.
           content:
             application/json:
               schema:
@@ -472,12 +477,13 @@ paths:
       summary: Counts by state, for the state sidebar.
       description: |
         Both River UI and apalis-board lead with a state filter carrying live counts.
-        Served from incrementally-maintained aggregates (§4.5) and honest about it:
+        Served from incrementally maintained aggregates and honest about it:
         `approximate` is set rather than paying for an exact scan.
       parameters:
         - {name: queue, in: query, schema: {type: string}}
       responses:
         '200':
+          description: Maintained job counts by state.
           content:
             application/json:
               schema:
@@ -488,7 +494,7 @@ paths:
 
   /jobs/{id}/admission:
     get:
-      summary: §5.1 Why is this job not running? The endpoint only this design needs.
+      summary: Explain why a job is not running.
       description: |
         When dequeue is a policy decision, "it is available but not running" has a
         specific, knowable cause. Without this, a job held back by a misconfigured rate
@@ -497,6 +503,7 @@ paths:
       parameters: [{$ref: '#/components/parameters/Id'}]
       responses:
         '200':
+          description: Current admission decision and blocking policy details.
           content:
             application/json:
               schema:
@@ -536,6 +543,7 @@ paths:
                 ids: {type: array, items: {type: string}, maxItems: 1000}
       responses:
         '200':
+          description: Per-job action results.
           content:
             application/json:
               schema:
@@ -555,7 +563,7 @@ paths:
       description: |
         asynq has RunAllScheduledTasks/DeleteAllRetryTasks/ArchiveAllPendingTasks and this
         spec originally had no equivalent — retrying 100k jobs one HTTP call at a time is
-        not an API. But a synchronous unbounded write violates §4.5, so a bulk request
+        not an API. A synchronous unbounded write is unsafe, so a bulk request
         returns an operation to poll rather than blocking. Requires Idempotency-Key.
       parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
@@ -579,8 +587,9 @@ paths:
                 dry_run: {type: boolean, default: false, description: Return the count that WOULD be affected.}
       responses:
         '202':
+          description: Bulk operation accepted.
           content: {application/json: {schema: {$ref: '#/components/schemas/Operation'}}}
-        '400': {description: Empty selector, or no Idempotency-Key}
+        '400': {description: "Empty selector, or no Idempotency-Key."}
 
   /operations/{id}:
     get:
@@ -588,21 +597,23 @@ paths:
       parameters: [{$ref: '#/components/parameters/Id'}]
       responses:
         '200':
+          description: Current operation status.
           content: {application/json: {schema: {$ref: '#/components/schemas/Operation'}}}
 
   /queues/{queue}/history:
     get:
-      summary: §5.5 Time series. An instant value cannot be graphed as a derivative.
+      summary: Return queue history for backlog and throughput trends.
       description: |
-        §10.6 says the UI leads with time-to-drain rather than depth. That is a rate, and
+        The UI leads with time-to-drain rather than depth. That is a rate, and
         a rate needs history — which the first draft of this spec had no way to serve.
-        Backed by the incrementally-maintained counters from §4.5, never by a scan.
+        Backed by incrementally maintained counters, never by a queue-depth scan.
       parameters:
         - {$ref: '#/components/parameters/Queue'}
         - {name: since_ms, in: query, schema: {type: integer}}
         - {name: bucket_ms, in: query, schema: {type: integer, default: 60000}}
       responses:
         '200':
+          description: Queue history buckets.
           content:
             application/json:
               schema:
@@ -617,7 +628,7 @@ paths:
                     depth:     {type: integer}
                     admission_rejections:
                       type: object
-                      description: §5.1 rejections by policy. A misconfigured limit looks exactly like a slow worker without this.
+                      description: Rejections grouped by policy. Without this, a misconfigured limit looks exactly like a slow worker.
                       additionalProperties: {type: integer}
 
   /periodic:
@@ -626,11 +637,11 @@ paths:
       responses: {'200': {description: OK}}
   /periodic/{id}:
     put:
-      summary: Idempotent schedule upsert (§11.2, BullMQ's upsertJobScheduler).
+      summary: Idempotently create or update a schedule.
       description: |
         Re-upserting with an unchanged spec keeps the schedule's phase (next_run is not
         reset); a changed spec re-anchors it. Specs are "@every:<ms>" (epoch-aligned) or
-        a cron expression, five-field or six-field with seconds (§4.7 sub-minute).
+        a cron expression with five fields, or six fields when second-level precision is needed.
 
         A cron spec may carry a `CRON_TZ=<IANA zone>` prefix and is then evaluated on
         that zone's LOCAL calendar — `CRON_TZ=America/New_York 0 9 * * *`. The zone
@@ -763,10 +774,10 @@ components:
         drain_rate:   {type: number}
         time_to_drain_ms:
           type: [integer, "null"]
-          description: §5.5 null when arrival >= drain. THIS is the alert condition, not depth.
+          description: Null when arrival is greater than or equal to drain; alert on this condition rather than depth alone.
         oldest_available_ms:
           type: [integer, "null"]
-          description: §5.5 store-clock age of the oldest available job; null when none is available.
+          description: Store-clock age of the oldest available job; null when none is available.
         quiet_groups:
           $ref: '#/components/schemas/QuietGroupMetrics'
         paused: {type: boolean}
@@ -776,11 +787,11 @@ components:
           description: Last explicitly requested bounded sample; null until sampled.
         count_is_approximate:
           type: boolean
-          description: §10.7 true when a bound was hit. An approximate count rendered instantly beats a precise one that costs an incident.
+          description: True when a maintained bound was hit and the returned count is approximate.
     QuietGroupMetrics:
       type: object
       required: [arrival_rate, drain_rate, noisy_partitions, approximate]
-      description: §5.5 queue signals excluding partitions with disproportionate in-flight work.
+      description: Queue signals excluding partitions with disproportionate in-flight work.
       properties:
         arrival_rate: {type: number}
         drain_rate: {type: number}

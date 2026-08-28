@@ -81,7 +81,9 @@ pub use headgate_core::{
     MAX_OPAQUE_SCHEMA_VERSION, MAX_PROGRESS_MESSAGE_BYTES, MAX_PROGRESS_VALUE, NoopTelemetry,
     Outcome, OutputInspect, OutputStore, ProgressInspect, ProgressStore, ProgressUpdate, Reclaimed,
     ResultInspect, ResultStore, Store, StoreError, TRACEPARENT, TRACESTATE, Task, TaskOptions,
-    Telemetry, Transactional, TxHandle, fingerprint, validate_kind, validate_progress,
+    Telemetry, Transactional, TxHandle, UNIQUE_REPLACE_ALL, UNIQUE_REPLACE_MAX_ATTEMPTS,
+    UNIQUE_REPLACE_PAYLOAD, UNIQUE_REPLACE_PRIORITY, UNIQUE_REPLACE_SCHEDULED_AT, fingerprint,
+    validate_kind, validate_progress,
 };
 pub use headgate_macros::Task;
 

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/headgate-core", "crates/headgate-postgres", "crates/headgate", "crates/headgate-proto", "crates/headgate-macros", "crates/headgate-api", "crates/headgate-redis", "crates/headgate-testkit", "crates/headgate-mysql", "crates/headgate-ui", "crates/headgate-migrate", "crates/headgate-sql", "crates/headgate-workflow", "crates/headgate-crypto", "crates/headgate-otel"]
+members = ["crates/headgate-core", "crates/headgate-postgres", "crates/headgate", "crates/headgate-proto", "crates/headgate-macros", "crates/headgate-api", "crates/headgate-redis", "crates/headgate-testkit", "crates/headgate-mysql", "crates/headgate-ui", "crates/headgate-migrate", "crates/headgate-sql", "crates/headgate-workflow", "crates/headgate-crypto", "crates/headgate-otel", "examples/rust"]
 
 [workspace.package]
 version = "0.1.0"

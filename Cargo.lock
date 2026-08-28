@@ -821,6 +821,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "headgate-examples"
+version = "0.1.0"
+dependencies = [
+ "headgate",
+ "headgate-testkit",
+ "headgate-workflow",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "headgate-macros"
 version = "0.1.0"
 dependencies = [

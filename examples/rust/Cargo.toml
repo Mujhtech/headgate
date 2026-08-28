@@ -1,0 +1,20 @@
+[package]
+name = "headgate-examples"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+headgate = { path = "../../crates/headgate" }
+headgate-testkit = { path = "../../crates/headgate-testkit" }
+headgate-workflow = { path = "../../crates/headgate-workflow" }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[[bin]]
+name = "job-result"
+path = "src/bin/job_result.rs"
+
+[[bin]]
+name = "tenant-fairness"
+path = "src/bin/tenant_fairness.rs"

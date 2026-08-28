@@ -3,8 +3,9 @@
 # Downstream builds never need protoc (AGENTS.md Phase 1 step 3) — run this only when
 # the .proto changes, and commit the output.
 #
-# Requires: protoc, protoc-gen-go (go install google.golang.org/protobuf/cmd/protoc-gen-go),
-# and cargo (a throwaway prost-build generator is built in a temp dir).
+# Requires: protoc, protoc-gen-go
+# (go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12), and cargo (a
+# throwaway prost-build generator is built in a temp dir).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$PATH:$(go env GOPATH 2>/dev/null || echo "$HOME/go")/bin"
@@ -13,6 +14,17 @@ echo "== go =="
 protoc --proto_path=proto \
   --go_out=go --go_opt=module=github.com/mujhtech/headgate/go \
   proto/headgate.proto
+# protoc and protoc-gen-go versions are build-environment details, not part of the
+# generated API. Removing their banner keeps checked-in output byte-stable across the
+# supported local and CI protoc distributions while preserving every generated symbol.
+GO_PROTO=go/proto/headgatev1/headgate.pb.go
+GO_PROTO_NORMALIZED=$(mktemp)
+awk '
+  $0 == "// versions:" { skipping_versions = 1; next }
+  skipping_versions && /^\/\/ source:/ { skipping_versions = 0 }
+  !skipping_versions { print }
+' "$GO_PROTO" > "$GO_PROTO_NORMALIZED"
+mv "$GO_PROTO_NORMALIZED" "$GO_PROTO"
 echo " ok go/proto/headgatev1/headgate.pb.go"
 
 echo "== rust =="

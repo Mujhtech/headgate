@@ -1,0 +1,31 @@
+---
+title: "Rust tasks"
+description: "Derive typed JSON tasks and create durable envelopes."
+icon: "braces"
+---
+
+```rust
+use headgate::Task;
+
+#[derive(serde::Serialize, serde::Deserialize, Task)]
+#[task(kind = "invoice.generate", version = 1)]
+struct GenerateInvoice { invoice_id: String }
+
+let task = GenerateInvoice { invoice_id: "inv-42".into() };
+let payload = task.encode()?;
+let envelope = headgate::Envelope {
+    id: "invoice-job-42".into(),
+    kind: GenerateInvoice::TYPE.into(),
+    schema_version: GenerateInvoice::VERSION,
+    fingerprint: headgate::fingerprint(GenerateInvoice::TYPE, &payload),
+    payload,
+    queue: "billing".into(),
+    partition_key: "tenant-7".into(),
+    ..Default::default()
+};
+```
+
+<Note>
+Kind and schema version are durable public contracts. Keep the kind stable and use aliases
+and upcasters when deployed payloads need to evolve.
+</Note>

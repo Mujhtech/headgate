@@ -1,0 +1,30 @@
+---
+title: "Verification"
+description: "Run examples, unit tests, generated-artifact checks, and live conformance."
+icon: "check-check"
+---
+
+## Complete gate
+
+```bash
+scripts/verify.sh
+```
+
+The gate runs formatting, Rust and Go tests, dependency boundaries, migration parity,
+test inventory floors, live admission scenarios, and evidence resolution.
+
+## Focused checks
+
+| Change | Check |
+| --- | --- |
+| Runnable documentation | `scripts/test-examples.sh` |
+| Admission SQL or Lua | `scripts/test-admission.sh` |
+| Core dependencies | `scripts/check-deps.sh` |
+| Migration assets | `scripts/check-migrations.py` |
+| Capability claims | `scripts/check-evidence.py` |
+| Deleted tests | `scripts/check-inventory.py` |
+
+<Warning>
+A disappearing test is a failure. Inventory floors prevent deleting implementation and its
+test together from turning the build green.
+</Warning>

@@ -1,0 +1,34 @@
+---
+title: "Rust SDK overview"
+description: "The facade crate, optional adapters, and the main producer/runtime types."
+icon: "blocks"
+---
+
+The `headgate` crate is the application-facing facade. It re-exports core envelope and
+outcome types, the `Task` derive, producer client, registry, worker, contexts, extensions,
+steps, scheduling, plugins, and test helpers.
+
+```toml
+[dependencies]
+headgate = "0.1"
+headgate-postgres = "0.1"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+```
+
+## Main types
+
+| Type | Role |
+| --- | --- |
+| `Client` | Validated producer boundary |
+| `Envelope` | Durable job and policy inputs |
+| `Task` | Typed payload codec and metadata |
+| `Registry` | Kind/version dispatch table |
+| `Worker` | Admission, heartbeat, execution, shutdown |
+| `JobCtx` | Attempt identity, logging, output, progress, steps |
+| `WorkerConfig` | Queues, capacity, leases, polling, telemetry |
+
+<CardGroup cols={2}>
+  <Card title="Define tasks" icon="braces" href="/docs/sdk/rust/tasks" />
+  <Card title="Run workers" icon="server" href="/docs/sdk/rust/worker" />
+</CardGroup>

@@ -1,0 +1,106 @@
+---
+title: "Connection budgets"
+description: "Size SQL pools so transactional handlers cannot starve lease renewal or control traffic."
+icon: "gauge"
+---
+
+Headgate borrows from caller-owned pools; it never creates one connection per worker or
+handler. Use this production sizing rule for either SQL backend:
+
+```text
+T = maximum simultaneous transaction-holding handler callbacks sharing the pool
+P = T + 2                         recommended command-pool size
+
+PostgreSQL physical connections = P + L
+L = 1 per notifying store, or 0 for a poll-only store
+
+MySQL physical connections = P
+```
+
+`T` includes `once`, `step_once`, and application transactions kept open while handler
+code runs. Sum it across workers sharing the pool; do not add two spare slots per worker.
+
+The spare slots serve different purposes:
+
+1. One keeps lease renewal and worker heartbeats moving while callbacks hold transactions.
+2. One carries admission, enqueue, checkpoints, acknowledgements, duties, inspection,
+   and control API calls.
+
+This is a reliability budget. A smaller pool may queue rather than deadlock, but lease
+renewal can still wait past expiry while all connections are held by long transactions.
+
+## Backend accounting
+
+<Tabs>
+  <Tab title="PostgreSQL">
+    Push wakeups use one dedicated `LISTEN` connection outside the pool and fan it out to
+    every worker using that store. Poll-only construction has no listener. Share one store
+    when workers share a pool so five workers do not accidentally create five listeners.
+  </Tab>
+  <Tab title="MySQL">
+    MySQL has no push wakeup and no connection outside its pool. Its migration runner pins
+    one connection while holding `GET_LOCK`; run migrations from a deployment connection
+    or budget that slot when deliberately sharing the runtime pool.
+  </Tab>
+  <Tab title="Redis">
+    Redis has no transactional-handler surface. Ordinary commands share the supplied
+    client, while optional wakeup support owns one subscription connection. SQL's `T + 2`
+    formula does not apply.
+  </Tab>
+</Tabs>
+
+## Configuration
+
+<CodeGroup>
+```rust Rust / PostgreSQL
+let manager = deadpool_postgres::Manager::new(
+    pg_config.clone(),
+    tokio_postgres::NoTls,
+);
+let pool = deadpool_postgres::Pool::builder(manager)
+    .max_size(4)
+    .build()?;
+let store = headgate_postgres::PgStore::new(pool)
+    .with_listen(pg_config);
+```
+
+```go Go / PostgreSQL
+cfg, err := pgxpool.ParseConfig(databaseURL)
+if err != nil { return err }
+cfg.MaxConns = 4
+pool, err := pgxpool.NewWithConfig(ctx, cfg)
+if err != nil { return err }
+store := headgatepgx.New(pool).WithListen(databaseURL)
+```
+
+```rust Rust / MySQL
+let limits = mysql_async::PoolConstraints::new(0, 4).unwrap();
+let pool_opts = mysql_async::PoolOpts::default().with_constraints(limits);
+let opts = mysql_async::OptsBuilder::from_opts(opts)
+    .client_found_rows(true)
+    .pool_opts(pool_opts);
+let store = headgate_mysql::MysqlStore::new(mysql_async::Pool::new(opts));
+```
+
+```go Go / MySQL
+db.SetMaxOpenConns(4)
+db.SetMaxIdleConns(4)
+store := headgatemysql.New(db) // DSN must set clientFoundRows=true
+```
+</CodeGroup>
+
+Monitor pool waiters and wait duration using `deadpool_postgres::Pool::status`,
+`pgxpool.Pool.Stat`, `mysql_async::Pool::metrics`, or `sql.DB.Stats`. A cap prevents
+connection explosion; it does not make a saturated pool healthy.
+
+## Transaction callback rule
+
+Inside `once` or `step_once`, use the transaction handle supplied to the callback for
+application writes and transactional enqueueing. Calling a normal store method while the
+callback retains its transaction asks the same pool for another connection and can
+deadlock a fully occupied pool.
+
+<Tip>
+  Use the supplied transaction handle. If nested acquisition is unavoidable, include it
+  explicitly in the connection budget and test it under full concurrency.
+</Tip>

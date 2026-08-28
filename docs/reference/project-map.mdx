@@ -1,0 +1,52 @@
+---
+title: "Project map"
+description: "Every Rust crate, Go module, shared specification, and generated artifact."
+icon: "folders"
+---
+
+## Shared contracts
+
+| Path | Purpose |
+| --- | --- |
+| `proto/headgate.proto` | Language-neutral envelope and shared types |
+| `api/headgate.openapi.yaml` | Control API and generated Mintlify reference |
+| `conformance/state_machine.yaml` | Generated transition table |
+| `conformance/CAPABILITY_REGISTER.md` | Honest feature inventory |
+| `conformance/EVIDENCE.md` | Claims mapped to running assertions |
+| `ui/` | TanStack Start operations console |
+
+## Rust workspace
+
+| Crate | Purpose |
+| --- | --- |
+| `headgate-core` | Driver-free contracts, state, leases, outcomes, ports |
+| `headgate` | Client, registry, worker, context, steps, scheduler, extensions |
+| `headgate-macros` | `Task` derive |
+| `headgate-proto` | Generated protobuf bindings |
+| `headgate-postgres` | PostgreSQL adapter |
+| `headgate-mysql` | MySQL adapter |
+| `headgate-redis` | Redis adapter and Lua admission |
+| `headgate-sql` | Shared SQL-facing helpers |
+| `headgate-api` | Control server |
+| `headgate-migrate` | Migration library and CLI |
+| `headgate-testkit` | Memory and isolated live-store helpers |
+| `headgate-workflow` | Durable DAG layer |
+| `headgate-crypto` | Encrypted payload integration |
+| `headgate-otel` | OpenTelemetry adapter |
+| `headgate-ui` | Embedded console assets |
+
+## Go workspace
+
+| Module/package | Purpose |
+| --- | --- |
+| `go` | Core contracts, client, runner, steps, scheduling and extensions |
+| `go/driver/*` | PostgreSQL, MySQL and Redis adapters |
+| `go/proto/headgatev1` | Generated protobuf bindings |
+| `go/headgateapi` | Control API |
+| `go/headgatemigrate` | Migration library and CLI |
+| `go/headgatetest` | Memory and isolated live-store helpers |
+| `go/workflow` | Durable DAG layer |
+| `go/encrypted` | Encrypted payload integration |
+| `go/headgateotel` | OpenTelemetry adapter |
+| `go/headgateui` | Embedded console assets |
+| `go/headgatectl` | Operator CLI |

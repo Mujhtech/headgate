@@ -1,0 +1,32 @@
+---
+title: "Workers and leases"
+description: "Capacity reporting, lease renewal, fencing, graceful shutdown, and crash recovery."
+icon: "server-cog"
+---
+
+Workers are consumers of admission decisions. They register typed handlers, report free
+capacity, renew active leases, and return outcomes through fence-verified acknowledgements.
+
+## Lease fencing
+
+Every claim receives a lease identity and monotonically meaningful fence. Renew, progress,
+output, checkpoints, and acknowledgements include that identity. Once the lease is lost,
+the old holder cannot overwrite the new holder's work.
+
+<Warning>
+A lost lease is a stop signal, never a warning to log and ignore. The runtime cancels the
+handler and rejects later writes from that attempt.
+</Warning>
+
+## Failure and shutdown behavior
+
+- Panic recovery is enabled by default.
+- Each attempt is isolated from sibling attempts.
+- An expired lease increments `crash_attempt`, not `attempt`.
+- Graceful shutdown stops admission before draining.
+- Workers keep renewing leases while they drain.
+- Work left after the bounded shutdown is voluntarily released without charging failure.
+- Singleton scheduler and maintenance duties use store leases, not a second election system.
+
+See [worker configuration](/docs/reference/configuration) for capacity, lease, heartbeat,
+poll backoff, shutdown, and memory guard settings.

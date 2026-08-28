@@ -1,0 +1,64 @@
+---
+title: "Resumable work"
+description: "Named steps, cursor checkpoints, and transactionally guarded side effects."
+icon: "list-restart"
+---
+
+Named steps allow a retried job to skip work that completed in a previous attempt.
+Headgate writes the in-progress checkpoint **before** side effects and rechecks the lease
+fence at every boundary.
+
+## Named steps
+
+<CodeGroup>
+
+```rust Rust
+ctx.step("download", || async { download().await }).await?;
+ctx.step("transform", || async { transform().await }).await?;
+ctx.step("publish", || async { publish().await }).await?;
+```
+
+```go Go
+if err := headgate.Step(ctx, "download", download); err != nil { return err }
+if err := headgate.Step(ctx, "transform", transform); err != nil { return err }
+return headgate.Step(ctx, "publish", publish)
+```
+
+</CodeGroup>
+
+## Cursor steps
+
+Cursor steps resume a loop from durable application progress. Each cursor update is
+fence-verified.
+
+<CodeGroup>
+
+```rust Rust
+let cursor_ctx = ctx.clone();
+ctx.step_cursor("pages", move |raw| async move {
+    let page: usize = raw.as_deref()
+        .map(serde_json::from_slice).transpose()?.unwrap_or(0);
+    process_page(page).await?;
+    cursor_ctx.set_cursor(serde_json::to_vec(&(page + 1))?).await
+}).await?;
+```
+
+```go Go
+return headgate.StepCursor[int](ctx, "pages",
+    func(ctx context.Context, page int) error {
+        if err := processPage(ctx, page); err != nil { return err }
+        return headgate.SetCursor(ctx, page+1)
+    })
+```
+
+</CodeGroup>
+
+## Side effects exactly once
+
+`step_once` / `StepOnce` claims an effect key and commits the application's transaction
+with the completion checkpoint. It requires a transactional backend; Redis declines it.
+
+<Warning>
+Changing the step set during a deployment requires a declared mapping. An unknown step set
+becomes `undecodable` rather than silently restarting at step one.
+</Warning>

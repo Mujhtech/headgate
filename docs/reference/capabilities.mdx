@@ -1,0 +1,39 @@
+---
+title: "Capabilities"
+description: "How headgate keeps backend and feature claims honest."
+icon: "badge-check"
+---
+
+Headgate maintains a capability register alongside its conformance suite. A completed or
+partial capability must cite a named assertion, test, or executed scenario in the evidence
+ledger. The validation gate rejects claims whose evidence no longer resolves.
+
+| Status | Meaning |
+| --- | --- |
+| Complete | The capability is implemented and its cited conformance evidence passes. |
+| Partial | A documented subset is implemented and the evidence identifies that boundary. |
+| Missing | The capability is not implemented and must not be advertised at runtime. |
+| Deferred | The capability was deliberately postponed with its rationale recorded. |
+
+## Runtime capabilities
+
+Backends also advertise optional runtime capabilities explicitly:
+
+- inspection and operator control;
+- application transactions;
+- push notifications;
+- result, output, and progress storage.
+
+A missing capability produces an explicit unsupported error or absent upcast. It is never
+a public method that silently does nothing.
+
+## Mechanical checks
+
+- `scripts/check-evidence.py` resolves every completed and partial claim.
+- `scripts/check-inventory.py` fails when a tracked test disappears.
+- `scripts/run-scenarios.py` executes YAML scenarios against live stores.
+- `scripts/test-admission.sh` compares backend and language behavior.
+
+<Card title="Verification commands" icon="terminal" href="/docs/reference/verification">
+  Run the same evidence and conformance gates used for feature claims.
+</Card>

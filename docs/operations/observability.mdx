@@ -1,0 +1,63 @@
+---
+title: "Observability"
+description: "Export bounded traces and metrics while keeping SDK ownership in the host application."
+icon: "activity"
+---
+
+Core emits an exporter-neutral telemetry interface. The opt-in `headgate-otel` Rust crate
+and `headgateotel` Go module translate it to OpenTelemetry without installing an SDK,
+exporter, sampler, or global provider.
+
+The host application owns its tracer provider, meter provider, sampling policy, resource
+attributes, and exporter lifecycle.
+
+<CodeGroup>
+
+```rust Rust
+use opentelemetry::{metrics::MeterProvider as _, trace::TracerProvider as _};
+
+let telemetry = headgate_otel::Telemetry::new(
+    tracer_provider.tracer("my-service"),
+    meter_provider.meter("my-service"),
+);
+worker_config.telemetry = std::sync::Arc::new(telemetry);
+```
+
+```go Go
+telemetry, err := headgateotel.New(tracerProvider, meterProvider)
+if err != nil { return err }
+cfg.Telemetry = telemetry
+```
+
+</CodeGroup>
+
+Passing `nil` to the Go adapter for either provider uses OpenTelemetry's current global
+provider. The adapter never installs or replaces a global provider.
+
+## Trace propagation
+
+Each `job_span` event becomes a `Consumer` span named `headgate.process`, using the
+event's explicit start and end timestamps. A valid envelope `traceparent` becomes a
+remote parent; an absent or malformed value starts a root span.
+
+## Cardinality contract
+
+Job IDs, fingerprints, partition keys, and other unbounded identities may be span
+attributes but never metric labels. Metric dimensions stay bounded to values such as
+queue, job kind, outcome, and backend.
+
+<Warning>
+  Do not promote tenant or job identity into metric labels in a custom adapter. That
+  turns normal job volume into an unbounded time-series count.
+</Warning>
+
+## Operational signals
+
+The control API exposes maintained queue arrival and drain rates, time-to-drain,
+oldest-job age, worker utilization, empty-poll ratio, and policy rejection counts.
+Use those signals alongside traces: depth alone cannot distinguish a growing queue from
+one that is draining normally.
+
+<Card title="Connection budgets" icon="gauge" href="/docs/operations/connection-budget">
+  Keep lease renewal and heartbeat traffic moving while handlers hold transactions.
+</Card>

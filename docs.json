@@ -1,0 +1,175 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "maple",
+  "name": "headgate",
+  "description": "Policy-aware distributed job queues for Rust and Go",
+  "colors": {
+    "primary": "#0866C6",
+    "light": "#2B8AE2",
+    "dark": "#0757A8"
+  },
+  "logo": {
+    "light": "/docs/assets/headgate-light.svg",
+    "dark": "/docs/assets/headgate-dark.svg",
+    "href": "/docs/introduction"
+  },
+  "favicon": "/docs/assets/favicon.svg",
+  "appearance": {
+    "default": "system"
+  },
+  "fonts": {
+    "family": "Inter"
+  },
+  "icons": {
+    "library": "lucide"
+  },
+  "background": {
+    "decoration": "gradient"
+  },
+  "styling": {
+    "eyebrows": "section",
+    "codeblocks": "system"
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "Examples",
+        "href": "/docs/examples/overview"
+      }
+    ],
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/mujhtech/headgate"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/mujhtech/headgate"
+    }
+  },
+  "contextual": {
+    "options": ["copy", "view", "chatgpt", "claude"],
+    "display": "header"
+  },
+  "interaction": {
+    "drilldown": true
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get started",
+            "pages": [
+              "docs/introduction",
+              "docs/quickstart",
+              "docs/installation"
+            ]
+          },
+          {
+            "group": "Core concepts",
+            "pages": [
+              "docs/concepts/architecture",
+              "docs/concepts/jobs-and-lifecycle",
+              "docs/concepts/admission",
+              "docs/concepts/workers-and-leases",
+              "docs/concepts/policies",
+              "docs/concepts/outcomes"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "docs/guides/handlers",
+              "docs/guides/plugins-and-middleware"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "docs/guides/resumable-work",
+              "docs/guides/results-and-progress",
+              "docs/guides/periodic-jobs",
+              "docs/guides/workflows"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "docs/operations/migrations",
+              "docs/operations/testing",
+              "docs/operations/observability",
+              "docs/operations/connection-budget",
+              "docs/operations/multi-instance",
+              "docs/operations/console"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "SDKs",
+        "groups": [
+          {
+            "group": "Rust SDK",
+            "pages": [
+              "docs/sdk/rust/overview",
+              "docs/sdk/rust/tasks",
+              "docs/sdk/rust/worker"
+            ]
+          },
+          {
+            "group": "Go SDK",
+            "pages": [
+              "docs/sdk/go/overview",
+              "docs/sdk/go/tasks",
+              "docs/sdk/go/runner"
+            ]
+          },
+          {
+            "group": "Backends",
+            "pages": [
+              "docs/backends/postgres",
+              "docs/backends/mysql",
+              "docs/backends/redis"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Examples",
+        "groups": [
+          {
+            "group": "Runnable examples",
+            "pages": [
+              "docs/examples/overview",
+              "docs/examples/basic",
+              "docs/examples/workflow",
+              "docs/examples/ui-console"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "openapi": "api/headgate.openapi.yaml"
+      },
+      {
+        "tab": "Project",
+        "groups": [
+          {
+            "group": "Reference",
+            "pages": [
+              "docs/reference/project-map",
+              "docs/reference/configuration",
+              "docs/reference/control-api",
+              "docs/reference/capabilities",
+              "docs/reference/verification",
+              "docs/reference/documentation"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

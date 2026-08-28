@@ -1,0 +1,28 @@
+---
+title: "Rust worker"
+description: "Register handlers and run a capacity-aware worker with graceful shutdown."
+icon: "server"
+---
+
+```rust
+let mut registry = headgate::Registry::new();
+registry.register::<GenerateInvoice, _, _>(|ctx, task| async move {
+    ctx.log(format!("generating {}", task.invoice_id));
+    Ok(())
+})?;
+
+let (worker, handle) = headgate::Worker::new(
+    store,
+    registry,
+    headgate::WorkerConfig {
+        queues: vec!["billing".into()],
+        capacity: 16,
+        ..Default::default()
+    },
+);
+
+worker.run().await?;
+```
+
+Use the returned handle from normal process signal handling. Shutdown stops new admissions,
+continues lease renewal during the bounded drain, and releases unfinished jobs cleanly.

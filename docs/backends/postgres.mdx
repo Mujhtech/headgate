@@ -1,0 +1,36 @@
+---
+title: "PostgreSQL"
+description: "Reference backend with transactional application work and push notifications."
+icon: "database"
+---
+
+PostgreSQL is headgate's reference backend. Its admission query evaluates policy, claims
+rows, and writes leases atomically. It also provides inspection, application transactions,
+and `LISTEN/NOTIFY` wakeups.
+
+<CodeGroup>
+
+```rust Rust
+let store = std::sync::Arc::new(
+    headgate_postgres::PgStore::connect("postgres://localhost/headgate", 16)?
+);
+```
+
+```go Go
+store, err := headgatepgx.Connect(ctx, "postgres://localhost/headgate")
+```
+
+</CodeGroup>
+
+## Production notes
+
+- Size the application-owned pool for handlers, API traffic, duties, and transactions.
+- Notification connections are separate from ordinary query capacity.
+- PgBouncer transaction pooling cannot preserve session-level notifications; polling
+  remains supported.
+- Schema qualification and multi-instance isolation are explicit.
+
+<CardGroup cols={2}>
+  <Card title="Connection budgets" icon="calculator" href="/docs/operations/connection-budget" />
+  <Card title="Multiple installations" icon="boxes" href="/docs/operations/multi-instance" />
+</CardGroup>

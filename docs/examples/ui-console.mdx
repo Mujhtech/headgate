@@ -1,0 +1,27 @@
+---
+title: "Console example"
+description: "Run the embedded dashboard with realistic in-memory API data."
+icon: "panel-top"
+---
+
+The UI demo serves the actual embedded production assets and a read-only in-memory control
+API. It includes jobs, queues, rate classes, quarantine, schedules, workers, progress,
+admission explanations, and a connected workflow graph with clickable task cards.
+
+```bash
+cd examples/go
+GOWORK=off go run ./ui_demo
+```
+
+Open [http://127.0.0.1:8080](http://127.0.0.1:8080).
+
+To use another address:
+
+```bash
+GOWORK=off go run ./ui_demo -addr 127.0.0.1:9090
+```
+
+<Tip>
+Open **Workflows**, select the daily import, then click any task card. The job list remains
+visible behind the detail sheet so operators retain context while inspecting a node.
+</Tip>

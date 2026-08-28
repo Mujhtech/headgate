@@ -1,0 +1,25 @@
+---
+title: "Go runner"
+description: "Register typed handlers and run a capacity-aware worker."
+icon: "server"
+---
+
+```go
+registry := headgate.NewRegistry()
+err := headgate.RegisterFunc[GenerateInvoice](registry,
+    func(ctx context.Context, job *headgate.Job[GenerateInvoice]) error {
+        headgate.Log(ctx, "generating "+job.Args.InvoiceID)
+        return nil
+    })
+if err != nil { return err }
+
+runner := headgate.NewRunner(store, registry, headgate.Config{
+    Queues: map[string]headgate.QueueConfig{
+        "billing": {MaxWorkers: 16},
+    },
+})
+return runner.Run(ctx)
+```
+
+Cancel the context during normal process shutdown. The runner stops admission and performs
+a bounded graceful drain while preserving leases.

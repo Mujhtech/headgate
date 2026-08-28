@@ -1,0 +1,23 @@
+---
+title: "Redis"
+description: "Atomic Lua admission for Redis-native fleets."
+icon: "database"
+---
+
+Redis evaluates admission in one Lua script using `redis.call('TIME')` as the fleet clock.
+Claims, leases, token spending, fairness charges, concurrency, and quarantine decisions are
+committed atomically.
+
+## Capability boundary
+
+Redis supports the core runtime and inspection contracts but does not pretend to provide
+SQL application transactions. Transaction-dependent APIs such as `step_once` decline with
+an explicit capability error.
+
+## Operational notes
+
+- Use a distinct key prefix for each headgate instance.
+- Test isolation uses `SCAN` plus bounded `DEL` batches—never `KEYS` or `FLUSHDB`.
+- Store time avoids worker clock skew in refill and lease decisions.
+
+<Card title="Test Redis safely" icon="flask-conical" href="/docs/operations/testing" />

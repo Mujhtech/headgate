@@ -1,0 +1,52 @@
+---
+title: Documentation development
+description: Preview, validate, and deploy the Mintlify developer portal from the monorepo.
+icon: book-open-check
+---
+
+The developer portal lives alongside the implementation. `docs.json` defines its theme
+and navigation, `docs/**/*.mdx` contains public pages, and the API Reference tab reads
+the canonical `api/headgate.openapi.yaml` contract directly.
+
+## Preview locally
+
+Run the Mintlify CLI from the repository root:
+
+```bash
+npx mint@latest dev
+```
+
+The CLI prints the local URL when the preview is ready. Changes to MDX files and
+`docs.json` reload automatically.
+
+## Validate before review
+
+<CodeGroup>
+```bash Build validation
+npx mint@latest validate --telemetry false
+```
+
+```bash Link validation
+npx mint@latest broken-links --telemetry false
+```
+</CodeGroup>
+
+Build validation catches invalid MDX, navigation entries, and OpenAPI errors. The link
+check catches references to pages that do not exist.
+
+## Monorepo boundary
+
+Mintlify needs repository-root access to read the canonical OpenAPI file. `.mintignore`
+therefore excludes implementation directories and the internal Markdown research notes.
+Only the MDX portal, its assets, `docs.json`, and the OpenAPI schema are published.
+
+<Warning>
+  Do not copy the OpenAPI file into the documentation tree. Rust, Go, the control API,
+  and this portal must continue to share one contract.
+</Warning>
+
+## Deploy with Mintlify
+
+Connect the GitHub repository in the Mintlify dashboard and use the repository root as
+the documentation path. Mintlify will rebuild the portal when documentation changes land
+on the configured production branch.

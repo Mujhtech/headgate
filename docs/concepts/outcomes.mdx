@@ -1,0 +1,35 @@
+---
+title: "Handler outcomes"
+description: "Success, retry, skip, revoke, snooze, undecodable, rate-limited, and lease-lost."
+icon: "git-branch"
+---
+
+Outcomes are explicit because they have different retry, accounting, history, and retention
+semantics.
+
+| Outcome | Attempt consumed | Result |
+| --- | --- | --- |
+| `success` | Yes, current attempt ran | Complete and retain/delete by policy |
+| `retry` | Yes | Schedule deterministic backoff |
+| `skip` | Yes | Archive without another retry |
+| `revoke` | No additional failure | Delete |
+| `snooze` | No | Schedule for a handler-selected delay |
+| `rate_limited` | No | Requeue as a non-failure |
+| `undecodable` | No retry can fix it | Park visibly |
+| `lease_lost` | Counts as crash, not returned error | Reclaim or quarantine |
+
+<CodeGroup>
+
+```rust Rust
+return Err(headgate::Control::Snooze(Duration::from_secs(30)).into());
+return Err(headgate::Control::RateLimited.into());
+return Err(headgate::Control::Skip.into());
+```
+
+```go Go
+return headgate.Snooze(30 * time.Second)
+return headgate.ErrRateLimited
+return headgate.ErrSkipJob
+```
+
+</CodeGroup>

@@ -1,0 +1,28 @@
+---
+title: "Go SDK overview"
+description: "The core module, separate drivers, and main producer/runtime types."
+icon: "box"
+---
+
+The root Go module contains driver-free contracts, producer behavior, registry, runner,
+steps, scheduler, middleware, plugins, and subscriptions. Drivers are separate packages so
+applications pull only their selected database dependencies.
+
+```bash
+go get github.com/mujhtech/headgate/go
+go get github.com/mujhtech/headgate/go/driver/headgatepgx
+```
+
+| Type | Role |
+| --- | --- |
+| `Client` | Validated producer boundary |
+| `Envelope` | Durable job and policy inputs |
+| `Registry` | Kind/version dispatch table |
+| `Runner` | Admission, heartbeat, execution, shutdown |
+| `Job[T]` | Typed payload and attempt metadata |
+| `Config` | Queues, concurrency, leases, telemetry |
+
+<CardGroup cols={2}>
+  <Card title="Define tasks" icon="braces" href="/docs/sdk/go/tasks" />
+  <Card title="Run workers" icon="server" href="/docs/sdk/go/runner" />
+</CardGroup>

@@ -1,0 +1,37 @@
+---
+title: "Examples"
+description: "Runnable Rust, Go, workflow, and console scenarios."
+icon: "play"
+---
+
+Examples use the real runtime and in-memory store and exit with an error if the demonstrated
+behavior changes. They require no database or services.
+
+## Run everything
+
+```bash
+scripts/test-examples.sh
+```
+
+## Scenario coverage
+
+| Scenario | Rust | Go |
+| --- | --- | --- |
+| Typed handler and completion | `basic` | `basic` |
+| Returned error and retry | `retry` | `retry` |
+| Lifecycle uniqueness | `uniqueness` | `uniqueness` |
+| Progress | `progress` | `progress` |
+| Durable result | `job-result` | — |
+| Non-failure snooze | `snooze` | — |
+| Tenant fairness | `tenant-fairness` | — |
+| Fleet rate limit | — | `rate_limit` |
+| Priority | — | `priority` |
+| Sticky routing | — | `sticky_routing` |
+| Workflow DAG construction | `workflow` | `workflow` |
+| Full operations console | — | `ui_demo` |
+
+<CardGroup cols={2}>
+  <Card title="Basic worker" icon="play" href="/docs/examples/basic" />
+  <Card title="Workflow example" icon="git-fork" href="/docs/examples/workflow" />
+  <Card title="Console example" icon="panel-top" href="/docs/examples/ui-console" />
+</CardGroup>

@@ -1,0 +1,87 @@
+---
+title: "Results and progress"
+description: "Persist final results, mid-run output, progress, and attempt-scoped logs safely."
+icon: "chart-no-axes-column-increasing"
+---
+
+Headgate separates four data channels because they have different lifecycle and privacy
+contracts.
+
+| Channel | Written when | Fence-verified | Finalizes job |
+| --- | --- | --- | --- |
+| Result | Successful acknowledgement | Yes, same atomic transition | Yes |
+| Mid-run output | During an attempt | Yes | No |
+| Progress | During an attempt | Yes | No |
+| Attempt logs | Collected during handling | Stored with outcome | No |
+
+## Report progress
+
+<CodeGroup>
+
+```rust Rust
+ctx.report_progress(
+    67,
+    100,
+    Some("rendering page 67 of 100".into()),
+).await?;
+```
+
+```go Go
+_, err := headgate.ReportProgress(ctx, 67, 100, "rendering page 67 of 100")
+```
+
+</CodeGroup>
+
+Progress messages are bounded and may still contain application data. Ordinary job list
+and detail responses do not include them unless the dedicated progress endpoint is used.
+
+## Persist a result in Rust
+
+`record_result` stages bytes on the job context. A successful acknowledgement commits the
+result and job completion atomically.
+
+```rust
+registry.register::<CalculateTotal, _, _>(|ctx: JobCtx, task| async move {
+    let total: i64 = task.values.iter().sum();
+    ctx.record_result(1, total.to_string().into_bytes())?;
+    Ok(())
+})?;
+
+let result = ResultInspect::get_job_result(store.as_ref(), "rust-result-1")
+    .await?
+    .ok_or_else(|| io::Error::other("successful job has no result"))?;
+
+assert_eq!(result.schema_version, 1);
+assert_eq!(result.bytes, b"108");
+```
+
+## Report and inspect progress in Go
+
+```go
+err := headgate.RegisterFunc[renderVideo](
+    registry,
+    func(ctx context.Context, _ *headgate.Job[renderVideo]) error {
+        if _, err := headgate.ReportProgress(ctx, 2, 10, "decoded source"); err != nil {
+            return err
+        }
+        _, err := headgate.ReportProgress(ctx, 7, 10, "encoding frame 700")
+        return err
+    },
+)
+if err != nil {
+    return err
+}
+
+progress, err := store.GetJobProgress(ctx, "go-progress-1")
+if err != nil {
+    return err
+}
+if progress == nil || progress.Current != 7 || progress.Total != 10 {
+    return fmt.Errorf("unexpected progress: %#v", progress)
+}
+```
+
+<Note>
+  Progress writes are fence-verified. A worker that has lost its lease cannot overwrite
+  progress reported by the job's current attempt.
+</Note>

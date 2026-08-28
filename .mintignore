@@ -1,0 +1,26 @@
+# Mintlify is rooted at the repository so it can consume the canonical OpenAPI
+# document. Exclude the monorepo's implementation directories from publishing.
+/conformance/
+/crates/
+/examples/
+/go/
+/proto/
+/scripts/
+/target/
+/ui/
+
+.DS_Store
+.gitignore
+*.lock
+*.toml
+AGENTS.md
+ARCHITECTURE.md
+KICKOFF.md
+LICENSE
+LICENSE-APACHE
+LICENSE-MIT
+
+# The Markdown files under docs/ are internal research and implementation
+# notes. Public developer documentation is authored as MDX.
+docs/*.md
+docs/**/*.md

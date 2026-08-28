@@ -1,0 +1,30 @@
+---
+title: "Go tasks"
+description: "Define typed JSON tasks and create durable envelopes."
+icon: "braces"
+---
+
+```go
+type GenerateInvoice struct {
+    InvoiceID string `json:"invoice_id"`
+}
+
+func (GenerateInvoice) Kind() string { return "invoice.generate" }
+
+payload, err := json.Marshal(GenerateInvoice{InvoiceID: "inv-42"})
+if err != nil { return err }
+envelope := headgate.Envelope{
+    ID: "invoice-job-42",
+    Kind: GenerateInvoice{}.Kind(),
+    SchemaVersion: 1,
+    Fingerprint: headgate.Fingerprint(GenerateInvoice{}.Kind(), payload),
+    Payload: payload,
+    Queue: "billing",
+    PartitionKey: "tenant-7",
+}
+```
+
+<Note>
+`Kind()` is a durable public identifier. Keep it stable and register explicit version
+decoders when deployed payloads evolve.
+</Note>

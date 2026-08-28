@@ -1,0 +1,156 @@
+---
+title: "Migrations"
+description: "Install, upgrade, validate, and adopt headgate schemas safely."
+icon: "database-zap"
+---
+
+Headgate ships the same embedded migration line in two independently usable packages:
+
+- Rust: `headgate-migrate`, including the `hg-migrate` binary.
+- Go: `github.com/mujhtech/headgate/go/headgatemigrate`, including the
+  `go/headgatemigrate/cmd/hg-migrate` command.
+
+Both packages support PostgreSQL and MySQL. Redis has no DDL schema and is deliberately
+not presented as a migration backend.
+
+## Migration contract
+
+`headgate_schema_migration` records a migration line, monotonically increasing version,
+name, immutable SHA-256 checksum, and store-clock application time. Validation fails when:
+
+- an applied version is missing, out of order, or newer than the binary;
+- a historical migration's name or bytes changed;
+- the database is behind the embedded latest version; or
+- a required table, column, index, trigger, state value, or saturation value is absent.
+
+PostgreSQL applies each version and its history row in one transaction while holding an
+exclusive lock on the history table. MySQL DDL commits implicitly, so its runner acquires
+a connection-scoped named lock, executes idempotent statements, validates the resulting
+schema, and only then records the version.
+
+<Warning>
+  Do not apply the migration files independently or edit packaged copies by hand.
+  `scripts/check-migrations.py` requires the driver, Rust, and Go assets to remain
+  byte-identical and their version sets to remain contiguous.
+</Warning>
+
+## CLI
+
+<Tabs>
+  <Tab title="Rust CLI">
+
+```bash
+hg-migrate --database-url "$DATABASE_URL" up
+hg-migrate --database-url "$DATABASE_URL" validate
+hg-migrate --database-url "$DATABASE_URL" list
+hg-migrate --backend postgres get --version 1 --up
+hg-migrate --database-url "$DATABASE_URL" down --target-version 0 --dry-run
+hg-migrate --database-url "$DATABASE_URL" down --target-version 0 --confirm
+```
+
+  </Tab>
+  <Tab title="Go CLI">
+
+```bash
+go run ./go/headgatemigrate/cmd/hg-migrate \
+  --database-url "$DATABASE_URL" up
+```
+
+  </Tab>
+</Tabs>
+
+`HG_DATABASE_URL` and `DATABASE_URL` are fallback environment variables. The backend is
+inferred from `postgres://`, `postgresql://`, or `mysql://`; libpq keyword connection
+strings and native MySQL DSNs require `--backend`.
+
+| Flag | Purpose |
+| --- | --- |
+| `--target-version N` | Choose the version after the operation. |
+| `--max-steps N` | Bound the work performed by one invocation. |
+| `--dry-run` | Return the ordered plan without changing history or DDL. |
+| `get --version N --up\|--down` | Emit raw SQL for review or another migration tool. |
+| `--confirm` | Authorize a destructive, offline down migration. |
+
+## Lock namespaces and schemas
+
+PostgreSQL locks the installation's qualified migration-history table and does not consume
+an application advisory-lock number. For an isolated installation, create its schema and
+pass the same name to every operation:
+
+```bash
+psql "$DATABASE_URL" -c 'CREATE SCHEMA "billing-jobs"'
+hg-migrate --database-url "$DATABASE_URL" --schema billing-jobs up
+hg-migrate --database-url "$DATABASE_URL" --schema billing-jobs validate
+```
+
+The schema must already exist. Headgate quotes every relation explicitly instead of
+trusting `search_path`, and rejects names beyond PostgreSQL's identifier limit.
+
+MySQL uses `GET_LOCK` in a server-wide namespace. Its default is
+`headgate:migrate:<database>`. Choose one stable namespace per installation if an
+application or another Headgate installation could use that prefix:
+
+```bash
+hg-migrate --database-url "$MYSQL_URL" --lock-namespace billing-jobs up
+hg-migrate --database-url "$MYSQL_URL" --lock-namespace billing-jobs down --confirm
+hg-migrate --database-url "$MYSQL_URL" --lock-namespace billing-jobs adopt --confirm
+```
+
+Every concurrent migrator for one installation must use the same namespace. Deliberately
+different namespaces are different locks and would bypass serialization against the same
+database.
+
+## Adopt an existing installation
+
+The migrator refuses to apply version 1 over existing `headgate_*` tables. Treating an
+unknown, hand-installed schema as fresh could bless a partial installation.
+
+<Steps>
+  <Step title="Validate the existing schema">
+
+```bash
+hg-migrate --database-url "$DATABASE_URL" validate
+```
+
+  </Step>
+  <Step title="Adopt only a complete manifest">
+
+```bash
+hg-migrate --database-url "$DATABASE_URL" adopt --confirm
+```
+
+  </Step>
+  <Step title="Validate the recorded installation">
+
+```bash
+hg-migrate --database-url "$DATABASE_URL" validate
+```
+
+  </Step>
+</Steps>
+
+`adopt` writes history only when the complete current manifest passes. It does not repair
+or infer missing DDL.
+
+## Online-safety ledger
+
+| Backend | Version | Migration | Up online-safe? | Down online-safe? |
+| --- | ---: | --- | --- | --- |
+| PostgreSQL | 1 | `initial_schema` | No | No |
+| MySQL | 1 | `initial_schema` | No | No |
+| PostgreSQL | 2 | `enqueue_backpressure` | No; stop producers for the initial backfill | No |
+| MySQL | 2 | `enqueue_backpressure` | No; backfill and trigger DDL auto-commit | No |
+
+Additive does not automatically mean online-safe. Table rewrites, blocking index builds,
+and non-null columns without a safe backfill remain offline changes.
+
+## Library APIs
+
+Rust exposes `migrate_postgres`, `migrate_mysql`, `validate_*`, `applied_*`, `adopt_*`,
+and the pure `plan` function. Go exposes the corresponding `MigratePostgres`,
+`MigrateMySQL`, `Validate*`, `Applied*`, `Adopt*`, and `Plan` functions. Both languages
+also provide explicit-schema PostgreSQL and named-lock MySQL variants.
+
+<Card title="Multiple installations" icon="boxes" href="/docs/operations/multi-instance">
+  Keep migrations, stores, duties, schedules, workers, and wakeups inside one backend-native boundary.
+</Card>

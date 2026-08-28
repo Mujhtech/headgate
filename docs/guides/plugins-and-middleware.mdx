@@ -1,0 +1,41 @@
+---
+title: "Plugins and middleware"
+description: "Extend producer behavior without moving fleet policy out of the store."
+icon: "plug"
+---
+
+The producer pipeline validates and authorizes work before it reaches the store:
+
+```text
+authorization → circuit breaker → middleware/plugins → insert hooks → Store.enqueue
+```
+
+Middleware wraps enqueue requests. Insert hooks observe actual store attempts. Plugins
+bundle scoped middleware and hooks without introducing a separate extension mechanism.
+
+<CodeGroup>
+
+```rust Rust
+let plugin = headgate::Plugin::for_kind("mail-policy", "mail.send")?
+    .with_enqueue_middleware(trace_middleware)
+    .with_insert_hook(audit_hook);
+
+let client = headgate::Client::new(store).with_plugin(plugin);
+```
+
+```go Go
+plugin, err := headgate.NewPlugin(
+    "mail-policy",
+    headgate.WithPluginKinds("mail.send"),
+    headgate.WithPluginEnqueueMiddleware(traceMiddleware),
+    headgate.WithPluginInsertHooks(auditHook),
+)
+client := headgate.NewClient(store, headgate.WithPlugins(plugin))
+```
+
+</CodeGroup>
+
+<Warning>
+Plugins are process-local producer behavior. Fleet rate limits, fairness, concurrency,
+quarantine, and queue controls remain atomically enforced by the store.
+</Warning>

@@ -1,0 +1,96 @@
+---
+title: "Quickstart"
+description: "Run a typed job locally in Rust or Go without external services."
+icon: "rocket"
+---
+
+This quickstart uses headgate's in-memory test store. You will register a typed handler,
+enqueue one job, run the real admission and dispatch path, and verify completion.
+
+<CodeGroup>
+
+```bash Rust
+cargo run --manifest-path examples/rust/Cargo.toml --bin basic
+```
+
+```bash Go
+cd examples/go
+GOWORK=off go run ./basic
+```
+
+</CodeGroup>
+
+Expected output:
+
+```text
+welcome, Ada
+... completed
+```
+
+## Build it yourself
+
+<Steps>
+  <Step title="Define a typed task">
+    <CodeGroup>
+
+```rust Rust
+#[derive(serde::Serialize, serde::Deserialize, headgate::Task)]
+#[task(kind = "example:welcome", version = 1)]
+struct Welcome { name: String }
+```
+
+```go Go
+type Welcome struct { Name string `json:"name"` }
+func (Welcome) Kind() string { return "example:welcome" }
+```
+
+    </CodeGroup>
+  </Step>
+
+  <Step title="Register its handler">
+    <CodeGroup>
+
+```rust Rust
+let mut registry = headgate::Registry::new();
+registry.register::<Welcome, _, _>(|_ctx, task| async move {
+    println!("welcome, {}", task.name);
+    Ok(())
+})?;
+```
+
+```go Go
+registry := headgate.NewRegistry()
+err := headgate.RegisterFunc[Welcome](registry,
+    func(_ context.Context, job *headgate.Job[Welcome]) error {
+        fmt.Printf("welcome, %s\n", job.Args.Name)
+        return nil
+    })
+```
+
+    </CodeGroup>
+  </Step>
+
+  <Step title="Create and enqueue an envelope">
+    A durable envelope supplies identity, routing, policy inputs, payload version, and retention.
+    The complete Rust and Go programs are available inside the
+    [basic worker example](/docs/examples/basic).
+  </Step>
+
+  <Step title="Drain and verify">
+    `testing::drain` and `Runner.Drain` execute the real admission, dispatch, and fenced ack path.
+  </Step>
+</Steps>
+
+<Tip>
+Use the in-memory store for handler and runtime tests. Use isolated live-store helpers when
+the behavior depends on SQL, Lua, transactions, migrations, inspection, or notifications.
+</Tip>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Install a production backend" icon="database" href="/docs/installation" />
+  <Card title="Learn the job lifecycle" icon="refresh-cw" href="/docs/concepts/jobs-and-lifecycle" />
+  <Card title="Create resumable work" icon="list-restart" href="/docs/guides/resumable-work" />
+  <Card title="Run all examples" icon="play" href="/docs/examples/overview" />
+</CardGroup>

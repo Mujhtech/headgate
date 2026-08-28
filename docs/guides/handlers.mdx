@@ -1,0 +1,51 @@
+---
+title: "Typed handlers"
+description: "Register task kinds, decode payload versions, access job context, and return outcomes."
+icon: "braces"
+---
+
+The registry maps durable task kinds to typed handlers. Registration validates kind names,
+versions, aliases, and collisions before a worker starts polling.
+
+<CodeGroup>
+
+```rust Rust
+#[derive(serde::Serialize, serde::Deserialize, headgate::Task)]
+#[task(kind = "mail.deliver", version = 1)]
+struct DeliverMail { recipient: String }
+
+registry.register::<DeliverMail, _, _>(|ctx: headgate::JobCtx, task| async move {
+    ctx.log(format!("deliver to {}", task.recipient));
+    Ok(())
+})?;
+```
+
+```go Go
+type DeliverMail struct { Recipient string `json:"recipient"` }
+func (DeliverMail) Kind() string { return "mail.deliver" }
+
+err := headgate.RegisterFunc[DeliverMail](registry,
+    func(ctx context.Context, job *headgate.Job[DeliverMail]) error {
+        headgate.Log(ctx, "deliver to "+job.Args.Recipient)
+        return nil
+    })
+```
+
+</CodeGroup>
+
+## Context data
+
+Handlers can read job identity, attempt metadata, worker metadata, application extensions,
+and a producer client tied to the same runtime. Context cancellation means the process is
+shutting down, an operator cancelled the job, or the lease was lost.
+
+<Warning>
+Treat cancellation as a hard stop. A handler that ignores it still cannot checkpoint or
+ack over a newer lease holder, but it may continue external side effects unnecessarily.
+</Warning>
+
+## Payload evolution
+
+Keep task kinds stable. Increment schema versions when decoding changes. Register aliases
+for kind renames and explicit upcasters for old payloads. A payload that cannot be decoded
+becomes `undecodable`; it does not burn retries that cannot repair bytes.

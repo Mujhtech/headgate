@@ -1,0 +1,23 @@
+---
+title: "MySQL"
+description: "SQL transactions and inspection with a polling-first worker path."
+icon: "database"
+---
+
+MySQL implements the same core store and admission behavior as PostgreSQL. It supports
+application transactions and the bounded inspection surface, but it has no equivalent of
+PostgreSQL `LISTEN/NOTIFY`, so workers poll with exponential empty-queue backoff.
+
+## Important differences
+
+- No partial indexes; active uniqueness uses generated nullable columns.
+- No push wakeup capability; polling is honest and first-class.
+- Migration locking is scoped with a configurable namespace.
+- Database-level instance isolation replaces PostgreSQL schema isolation.
+
+<Note>
+The cross-language conformance corpus compares MySQL behavior with PostgreSQL and Redis.
+Backend-specific verification status is recorded in the capability and MySQL ledgers.
+</Note>
+
+<Card title="Migration runbook" icon="database-zap" href="/docs/operations/migrations" />

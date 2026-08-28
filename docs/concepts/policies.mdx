@@ -1,0 +1,34 @@
+---
+title: "Fleet policies"
+description: "Rate limits, fairness, concurrency, queue controls, priority, and quarantine."
+icon: "sliders-horizontal"
+---
+
+Policies read by the admission gate are stored fleet-wide and writable through the control
+API. Worker-local configuration cannot silently change shared behavior.
+
+<CardGroup cols={2}>
+  <Card title="Tenant fairness" icon="scale">
+    Work-conserving deficit service across `partition_key` values, including quiet groups under a flood.
+  </Card>
+  <Card title="Rate classes" icon="gauge">
+    Shared token limit, window, burst, job weight, and an operator pause switch.
+  </Card>
+  <Card title="Concurrency ceilings" icon="layers-3">
+    Global in-flight limits enforced during the same admission operation.
+  </Card>
+  <Card title="Quarantine" icon="shield-alert">
+    Repeated crash fingerprints are parked visibly until an operator releases them.
+  </Card>
+</CardGroup>
+
+## Ordering rules
+
+Queue weight selects which queue receives service. Job priority orders work only within a
+partition. Neither field overrides the other.
+
+## Explainability
+
+`GET /jobs/{id}/admission` reports whether a job is admissible, which policy blocks it,
+and whether the condition is expected to clear. This is a first-class operational API,
+not a debug-only implementation detail.

@@ -1,0 +1,90 @@
+---
+title: "Multiple installations"
+description: "Isolate jobs, policies, duties, schedules, workers, migrations, and wakeups."
+icon: "boxes"
+---
+
+An installation boundary includes jobs, policy state, singleton duties, schedules,
+workers, operations, migration history, and wakeups. Configuring only a different job
+table is not isolation. Headgate applies one backend-native boundary to every durable
+object.
+
+## PostgreSQL schemas
+
+Create and migrate each schema explicitly:
+
+```bash
+psql "$DATABASE_URL" <<'SQL'
+CREATE SCHEMA "billing-jobs";
+CREATE SCHEMA "email-jobs";
+SQL
+
+hg-migrate --database-url "$DATABASE_URL" --schema billing-jobs up
+hg-migrate --database-url "$DATABASE_URL" --schema email-jobs up
+```
+
+Construct each store with the matching schema:
+
+<CodeGroup>
+```rust Rust
+let billing = PgStore::connect_in_schema(
+    &conninfo,
+    16,
+    "billing-jobs",
+)?;
+```
+
+```go Go
+pool, err := pgxpool.New(ctx, conninfo)
+if err != nil { return err }
+billing, err := headgatepgx.NewInSchema(pool, "billing-jobs")
+```
+</CodeGroup>
+
+The same caller-owned pool may serve stores for different schemas. Every relation is
+quoted and qualified at the query boundary; Headgate does not change or trust
+`search_path`. A schema-specific hashed `LISTEN` channel prevents one installation's
+enqueue from waking another.
+
+Run every migration operation with `--schema`, including `validate`, `adopt`, and `down`.
+
+## MySQL databases
+
+MySQL's boundary is the selected database. Give each installation a separate database:
+
+```text
+mysql://headgate:secret@db:3306/billing_jobs
+mysql://headgate:secret@db:3306/email_jobs
+```
+
+Migration locks include `DATABASE()`, validation filters that database, and all runtime
+SQL resolves inside the connection's selected database. Headgate deliberately has no
+table-prefix mode that could leave duties or migration history ambiguous.
+
+## Redis prefixes
+
+Redis uses one explicit key prefix as the complete boundary:
+
+<CodeGroup>
+```rust Rust
+let billing = RedisStore::connect(&url, "billing-jobs").await?;
+```
+
+```go Go
+billing, err := headgateredis.Connect(url, "billing-jobs")
+```
+</CodeGroup>
+
+Use a unique, stable production prefix. Never use `FLUSHDB` for cleanup; test helpers scan
+and remove only keys owned by their generated prefix.
+
+## Security boundary
+
+Separate schemas, databases, or prefixes prevent accidental queue-state collision. They
+are not a hostile-tenant security boundary when the same credential can read all
+installations. Use distinct least-privilege credentials when cross-installation reads
+must remain impossible after an application compromise.
+
+<Card title="Schema migrations" icon="database-zap" href="/docs/operations/migrations">
+  Apply and validate each installation through the same backend boundary.
+</Card>

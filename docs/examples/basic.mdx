@@ -1,0 +1,156 @@
+---
+title: "Basic worker"
+description: "Run one typed job through admission, dispatch, and fenced completion in Rust or Go."
+icon: "play"
+---
+
+This example uses the in-memory store, so it needs no database or Redis server. It still
+runs the real worker admission, typed dispatch, and acknowledgement path.
+
+<CodeGroup>
+```bash Rust
+cargo run --manifest-path examples/rust/Cargo.toml --bin basic
+```
+
+```bash Go
+cd examples/go
+GOWORK=off go run ./basic
+```
+</CodeGroup>
+
+## Rust
+
+```rust
+use std::io;
+use std::sync::Arc;
+
+use headgate::{Envelope, JobCtx, Registry, Store, Task, WorkerConfig, testing};
+use headgate_testkit::MemStore;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Deserialize, Serialize, Task)]
+#[task(kind = "example:welcome", version = 1)]
+struct Welcome {
+    name: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let store = Arc::new(MemStore::new());
+    let mut registry = Registry::new();
+    registry
+        .register::<Welcome, _, _>(|_: JobCtx, task| async move {
+            println!("welcome, {}", task.name);
+            Ok(())
+        })
+        .map_err(io::Error::other)?;
+
+    let task = Welcome { name: "Ada".into() };
+    let payload = task.encode()?;
+    store
+        .enqueue(&[Envelope {
+            id: "rust-basic-1".into(),
+            kind: Welcome::TYPE.into(),
+            fingerprint: headgate::fingerprint(Welcome::TYPE, &payload),
+            payload,
+            queue: "examples".into(),
+            partition_key: "tenant-a".into(),
+            scheduled_at_ms: 1,
+            retention_ms: 60_000,
+            ..Default::default()
+        }])
+        .await?;
+
+    let config = WorkerConfig {
+        queues: vec!["examples".into()],
+        run_duties: false,
+        ..Default::default()
+    };
+    let completed = testing::drain(&store, &Arc::new(registry), &config, 1).await;
+    if completed != ["rust-basic-1"] {
+        return Err(io::Error::other(format!("unexpected drain: {completed:?}")).into());
+    }
+
+    println!("rust-basic-1 completed");
+    Ok(())
+}
+```
+
+## Go
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+
+    headgate "github.com/mujhtech/headgate/go"
+    "github.com/mujhtech/headgate/go/headgatetest"
+)
+
+type welcome struct {
+    Name string `json:"name"`
+}
+
+func (welcome) Kind() string { return "example:welcome" }
+
+func run(ctx context.Context) error {
+    store := headgatetest.New()
+    registry := headgate.NewRegistry()
+    if err := headgate.RegisterFunc[welcome](
+        registry,
+        func(_ context.Context, job *headgate.Job[welcome]) error {
+            fmt.Printf("welcome, %s\n", job.Args.Name)
+            return nil
+        },
+    ); err != nil {
+        return err
+    }
+
+    payload, err := json.Marshal(welcome{Name: "Ada"})
+    if err != nil {
+        return err
+    }
+    if err := store.Enqueue(ctx, []headgate.Envelope{{
+        ID:            "go-basic-1",
+        Kind:          welcome{}.Kind(),
+        Fingerprint:   headgate.Fingerprint(welcome{}.Kind(), payload),
+        Payload:       payload,
+        Queue:         "examples",
+        PartitionKey:  "tenant-a",
+        ScheduledAtMs: 1,
+        RetentionMs:   60_000,
+        SchemaVersion: 1,
+    }}); err != nil {
+        return err
+    }
+
+    runner := headgate.NewRunner(store, registry, headgate.Config{
+        Queues:        map[string]headgate.QueueConfig{"examples": {MaxWorkers: 1}},
+        DisableDuties: true,
+    })
+    completed, err := runner.Drain(ctx, 1)
+    if err != nil {
+        return err
+    }
+    if len(completed) != 1 || completed[0] != "go-basic-1" {
+        return fmt.Errorf("unexpected drain: %v", completed)
+    }
+
+    fmt.Println("go-basic-1 completed")
+    return nil
+}
+
+func main() {
+    if err := run(context.Background()); err != nil {
+        panic(err)
+    }
+}
+```
+
+<Tip>
+  Replace the in-memory store with a production backend after the handler behaves as
+  expected. The registry and task definitions do not change.
+</Tip>

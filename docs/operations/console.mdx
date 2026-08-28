@@ -1,0 +1,37 @@
+---
+title: "Operations console"
+description: "Embed the TanStack Start console in Go or Rust and mount it behind your authentication boundary."
+icon: "panel-top"
+---
+
+The console provides queue health, job search and detail, admission explanations, workflow
+graphs, rate classes, quarantine, schedules, and worker controls.
+
+## Data architecture
+
+- Every view owns its TanStack file route.
+- TanStack Query owns reads, polling, mutations, and invalidation.
+- The UI calls the OpenAPI control surface; it never connects to a store directly.
+- Built assets are embedded in both language packages.
+- Payloads remain excluded unless explicitly requested.
+
+<CodeGroup>
+
+```rust Rust
+// Mount headgate_ui's asset handler at your authenticated /admin boundary.
+```
+
+```go Go
+// Mount headgateui.Handler(...) under your authenticated /admin boundary.
+```
+
+</CodeGroup>
+
+<Warning>
+Headgate does not invent your application's identity model. Authenticate and authorize the
+console and API at the embedding boundary.
+</Warning>
+
+<Card title="Run the complete UI demo" icon="play" href="/docs/examples/ui-console">
+  Inspect realistic jobs, workflows, policies, workers, and schedules without a database.
+</Card>

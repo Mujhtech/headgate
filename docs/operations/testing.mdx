@@ -1,0 +1,120 @@
+---
+title: "Testing"
+description: "Use the in-memory runtime path or isolated live PostgreSQL, MySQL, and Redis resources."
+icon: "flask-conical"
+---
+
+Headgate has two deliberately different test boundaries. Choose the narrowest one that
+can truthfully exercise the behavior.
+
+| Need | Rust | Go |
+| --- | --- | --- |
+| Handler, retry, fence, clock, steps, runner | `headgate_testkit::MemStore` | `headgatetest.MemStore` |
+| Transactions, SQL, Lua, migrations, inspection, notifications | `PostgresTestDatabase`, `MysqlTestDatabase`, `RedisTestNamespace` | `Create*TestDatabase`, `Require*TestDatabase`, `CreateRedisTestNamespace`, `RequireRedisTestNamespace` |
+
+<CodeGroup>
+
+```rust Rust
+let store = Arc::new(headgate_testkit::MemStore::new());
+let completed = headgate::testing::drain(&store, &registry, &config, 10).await;
+```
+
+```go Go
+store := headgatetest.New()
+runner := headgate.NewRunner(store, registry, config)
+completed, err := runner.Drain(ctx, 10)
+```
+
+</CodeGroup>
+
+<Info>
+  The in-memory store is not a pretend SQL server. Its capability mask honestly omits
+  transactions, inspection, and notifications. Use a live helper when behavior depends
+  on a backend's atomic gate or one of those capabilities.
+</Info>
+
+## Isolation contract
+
+Every helper creates a boundary that no sibling test owns:
+
+- PostgreSQL creates a generated schema, runs production migrations against it, and
+  supplies connection configuration for that schema.
+- MySQL creates and migrates a generated database, then returns ready-to-use options or a DSN.
+- Redis creates a generated key prefix. Cleanup uses `SCAN` and bounded `DEL` batches;
+  it never runs `KEYS`, `FLUSHDB`, or `FLUSHALL`.
+
+Generated names contain the process ID and an atomic process-local sequence. A stale SQL
+namespace makes creation fail instead of silently sharing state.
+
+<Warning>
+  Use a dedicated test server or account. The PostgreSQL role needs schema creation
+  permission, the MySQL account needs database creation and deletion privileges, and the
+  Redis account needs `SCAN` and key-level `DEL` access.
+</Warning>
+
+## Rust live stores
+
+```rust
+use headgate_testkit::PostgresTestDatabase;
+
+let database = PostgresTestDatabase::create(&postgres_conninfo).await?;
+let config = database.config();
+
+// Drop pools and connections before removing the generated schema.
+database.cleanup().await?;
+```
+
+`MysqlTestDatabase::opts()` returns `mysql_async::Opts` for a pool.
+`RedisTestNamespace::client()` and `prefix()` connect directly to `RedisStore::new`.
+Rust cleanup consumes the helper, making double cleanup impossible.
+
+## Go live stores
+
+```go
+database := headgatetest.RequirePostgresTestDatabase(
+    t,
+    ctx,
+    os.Getenv("HG_TEST_PG"),
+)
+conn, err := database.Connect(ctx)
+if err != nil {
+    t.Fatal(err)
+}
+defer conn.Close(ctx)
+```
+
+The `Require*` forms register idempotent cleanup through `testing.TB.Cleanup`. Use
+`Create*` when setup errors need custom handling. `MySQLTestDatabase.Open` returns a
+`database/sql` handle. Redis namespaces plug into `headgateredis.New` through their
+`Client` and `Prefix` values.
+
+## Run live helper tests
+
+<Tabs>
+  <Tab title="Rust">
+
+```bash
+HG_TEST_PG='host=127.0.0.1 port=5433 user=postgres dbname=hg' \
+HG_TEST_MYSQL='mysql://root:password@127.0.0.1:3307/hg' \
+HG_TEST_REDIS='redis://127.0.0.1:6380' \
+cargo test -p headgate-testkit --test database_postgres \
+  --test database_mysql --test database_redis
+```
+
+  </Tab>
+  <Tab title="Go">
+
+```bash
+cd go/headgatetest
+HG_TEST_PG='host=127.0.0.1 port=5433 user=postgres dbname=hg' \
+HG_TEST_MYSQL='mysql://root:password@127.0.0.1:3307/hg' \
+HG_TEST_REDIS='redis://127.0.0.1:6380' \
+go test -v ./...
+```
+
+  </Tab>
+</Tabs>
+
+Tests skip explicitly when their backend variable is absent. Do not load raw schema files
+from individual tests: helpers intentionally use the production migration libraries so a
+test database cannot drift from an installed database.

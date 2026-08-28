@@ -1,0 +1,52 @@
+---
+title: "Jobs and lifecycle"
+description: "Understand envelopes, state transitions, attempts, retention, and payload privacy."
+icon: "list-checks"
+---
+
+A job is a durable envelope plus store-owned execution state. The envelope carries typed
+payload bytes, routing fields, policy inputs, version information, and retention rules.
+
+## Important envelope fields
+
+| Field | Purpose |
+| --- | --- |
+| `id` | Stable logical identity and idempotency boundary |
+| `kind` | Typed handler lookup key |
+| `schema_version` | Payload decoding and upcasting |
+| `fingerprint` | Content identity, uniqueness, and crash quarantine |
+| `queue` | Queue selection; queue weight never overrides job priority |
+| `partition_key` | Tenant fairness group |
+| `rate_class` | Shared token budget |
+| `priority` | Ordering within a partition |
+| `scheduled_at_ms` | Earliest eligible time, in store-clock milliseconds |
+| `retention_ms` | Terminal record lifetime |
+
+## Lifecycle
+
+```mermaid
+stateDiagram-v2
+  [*] --> available
+  [*] --> scheduled
+  [*] --> pending
+  scheduled --> available: due
+  pending --> available: workflow promotion
+  available --> running: atomic admission
+  running --> completed: success
+  running --> retryable: retry
+  running --> scheduled: snooze / rate limited
+  running --> archived: skip / attempts exhausted
+  running --> quarantined: repeated crashes
+  running --> cancelled: operator cancel
+  running --> undecodable: incompatible payload or steps
+  completed --> deleted: retention
+```
+
+`attempt` counts returned failures. `crash_attempt` counts expired leases and process
+crashes. The distinction is durable because quarantine depends on it.
+
+<Warning>
+Job payloads are excluded from inspection by default. Operators must explicitly request
+`include_payload`; control-plane mounts commonly live under `/admin` and payloads may
+contain personal data.
+</Warning>

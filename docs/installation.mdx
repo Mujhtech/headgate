@@ -1,0 +1,54 @@
+---
+title: "Installation"
+description: "Choose a language and storage backend, then apply the matching migrations."
+icon: "package-plus"
+---
+
+Headgate separates its runtime from database drivers. Install only the adapter your service
+uses. PostgreSQL is the reference backend; MySQL and Redis share the core admission contract.
+
+## Packages
+
+<Tabs>
+  <Tab title="Rust" icon="blocks">
+
+```toml Cargo.toml
+[dependencies]
+headgate = "0.1"
+headgate-postgres = "0.1" # or headgate-mysql / headgate-redis
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+```
+
+  </Tab>
+  <Tab title="Go" icon="box">
+
+```bash
+go get github.com/mujhtech/headgate/go
+go get github.com/mujhtech/headgate/go/driver/headgatepgx
+# or driver/headgatemysql / driver/headgateredis
+```
+
+  </Tab>
+</Tabs>
+
+## Choose a backend
+
+| Backend | Best fit | Optional capabilities |
+| --- | --- | --- |
+| PostgreSQL | Reference deployment and transactional application work | Transactions, inspection, notifications |
+| MySQL | Existing MySQL infrastructure | Transactions and inspection; polling only |
+| Redis | Low-latency Redis-native fleets | Atomic Lua admission; no SQL transactions |
+
+<Warning>
+Run migrations before workers or the control API. Do not apply individual migration files
+manually or copy SQL between languages; the migration libraries embed verified assets.
+</Warning>
+
+## Continue
+
+<CardGroup cols={3}>
+  <Card title="PostgreSQL" icon="database" href="/docs/backends/postgres" />
+  <Card title="MySQL" icon="database" href="/docs/backends/mysql" />
+  <Card title="Redis" icon="database" href="/docs/backends/redis" />
+</CardGroup>

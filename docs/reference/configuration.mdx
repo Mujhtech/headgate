@@ -1,0 +1,33 @@
+---
+title: "Configuration"
+description: "Worker, producer, store, API, and console configuration boundaries."
+icon: "settings-2"
+---
+
+## Worker configuration
+
+| Setting | Meaning |
+| --- | --- |
+| Queues | Queues this worker may serve |
+| Capacity | Maximum concurrent handlers and admission capacity |
+| Lease | Claim lifetime; heartbeat renews before expiry |
+| Quantum | Per-admission fairness service quantum |
+| Poll backoff | Empty-poll floor, ceiling, multiplier, and jitter |
+| Shutdown timeout | Bounded graceful drain period |
+| Memory limit | Optional drain-and-replace guard |
+| Telemetry | Exporter-neutral adapter |
+
+## Producer configuration
+
+Authorization, circuit breaker, enqueue middleware, plugins, insert hooks, and the local
+event bus belong to the producer client. They do not change fleet admission policy.
+
+## Fleet configuration
+
+Rate classes, queue pauses and weights, enqueue limits, concurrency ceilings, quarantine,
+and schedules live in the store and are writable through the control API.
+
+<Warning>
+Durations crossing public boundaries are milliseconds and must be at least one millisecond.
+Never silently round sub-millisecond values to zero.
+</Warning>

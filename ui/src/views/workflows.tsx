@@ -6,13 +6,13 @@ import {
   CircleDashedIcon,
   GitForkIcon,
 } from "lucide-react"
-import { useEffect, useMemo, useState } from "react"
+import { useMemo } from "react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Empty, Failure, Loading, type ViewProps } from "@/console"
+import { Empty, Failure, Loading, useConsoleQuery, type ViewProps } from "@/console"
 import { api, ApiError } from "@/lib/api"
 import { formatDate } from "@/lib/format"
 import { Route as WorkflowsRoute } from "@/routes/_console.workflows"
@@ -163,25 +163,17 @@ async function loadNodeJobs(nodes: WorkflowNode[], signal: AbortSignal) {
   return results
 }
 
-export function WorkflowsView({ refreshKey }: ViewProps) {
+export function WorkflowsView({}: ViewProps) {
   const search = WorkflowsRoute.useSearch()
   const params = new URLSearchParams({ kind: "headgate:workflow", limit: "50" })
   if (search.cursor) params.set("cursor", search.cursor)
-  const [data, setData] = useState<JobPage | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    const controller = new AbortController()
-    setLoading(true)
-    api<JobPage>(`/jobs?${params}`, { signal: controller.signal })
-      .then((value) => { setData(value); setError(null) })
-      .catch((reason: unknown) => {
-        if (!(reason instanceof DOMException && reason.name === "AbortError")) setError(reason instanceof Error ? reason.message : String(reason))
-      })
-      .finally(() => setLoading(false))
-    return () => controller.abort()
-  }, [params.toString(), refreshKey])
+  const workflows = useConsoleQuery(
+    ["api", "workflows", params.toString()],
+    (signal) => api<JobPage>(`/jobs?${params}`, { signal }),
+  )
+  const data = workflows.data ?? null
+  const error = workflows.error ? (workflows.error instanceof Error ? workflows.error.message : String(workflows.error)) : null
+  const loading = workflows.isPending
 
   return <>
     <div className="mb-4">
@@ -220,29 +212,22 @@ export function WorkflowsView({ refreshKey }: ViewProps) {
   </>
 }
 
-export function WorkflowDetailView({ workflowId, refreshKey }: ViewProps & { workflowId: string }) {
-  const [coordinator, setCoordinator] = useState<JobSummary | null>(null)
-  const [workflow, setWorkflow] = useState<CoordinatorPayload | null>(null)
-  const [nodes, setNodes] = useState<NodeStatus[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    const controller = new AbortController()
-    setLoading(true)
-    const coordinatorID = `${workflowId}:coordinator`
-    api<JobSummary>(`/jobs/${encodeURIComponent(coordinatorID)}?include_payload=true`, { signal: controller.signal })
-      .then(async (job) => {
-        const decoded = decodePayload(job.payload)
-        const statuses = await loadNodeJobs(decoded.nodes, controller.signal)
-        if (!controller.signal.aborted) { setCoordinator(job); setWorkflow(decoded); setNodes(statuses); setError(null) }
-      })
-      .catch((reason: unknown) => {
-        if (!(reason instanceof DOMException && reason.name === "AbortError")) setError(reason instanceof Error ? reason.message : String(reason))
-      })
-      .finally(() => setLoading(false))
-    return () => controller.abort()
-  }, [workflowId, refreshKey])
+export function WorkflowDetailView({ workflowId, selectedJobID }: ViewProps & { workflowId: string; selectedJobID?: string }) {
+  const detail = useConsoleQuery(
+    ["api", "workflow", workflowId],
+    async (signal) => {
+      const coordinatorID = `${workflowId}:coordinator`
+      const coordinator = await api<JobSummary>(`/jobs/${encodeURIComponent(coordinatorID)}?include_payload=true`, { signal })
+      const workflow = decodePayload(coordinator.payload)
+      const nodes = await loadNodeJobs(workflow.nodes, signal)
+      return { coordinator, workflow, nodes }
+    },
+  )
+  const coordinator = detail.data?.coordinator ?? null
+  const workflow = detail.data?.workflow ?? null
+  const nodes = detail.data?.nodes ?? []
+  const error = detail.error ? (detail.error instanceof Error ? detail.error.message : String(detail.error)) : null
+  const loading = detail.isPending
 
   const layers = useMemo(() => graphLayers(nodes), [nodes])
   const layout = useMemo(() => graphLayout(layers), [layers])
@@ -262,12 +247,12 @@ export function WorkflowDetailView({ workflowId, refreshKey }: ViewProps & { wor
       <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Card><CardContent className="pt-4"><p className="text-xs text-muted-foreground">Tasks</p><p className="mt-1 text-2xl font-semibold">{nodes.length}</p></CardContent></Card>
         <Card><CardContent className="pt-4"><p className="text-xs text-muted-foreground">Completed</p><p className="mt-1 text-2xl font-semibold text-success">{counts.completed ?? 0}</p></CardContent></Card>
-        <Card><CardContent className="pt-4"><p className="text-xs text-muted-foreground">Running / ready</p><p className="mt-1 text-2xl font-semibold">{(counts.running ?? 0) + (counts.available ?? 0) + (counts.scheduled ?? 0) + (counts.retryable ?? 0)}</p></CardContent></Card>
-        <Card><CardContent className="pt-4"><p className="text-xs text-muted-foreground">Blocked / failed</p><p className="mt-1 text-2xl font-semibold text-destructive">{(counts.pending ?? 0) + [...failedStates].reduce((sum, state) => sum + (counts[state] ?? 0), 0)}</p></CardContent></Card>
+        <Card className={counts.running ? "border-success/40 bg-success/5" : undefined}><CardContent className="pt-4"><p className="text-xs text-muted-foreground">Running now</p><p className="mt-1 text-2xl font-semibold text-success">{counts.running ?? 0}</p></CardContent></Card>
+        <Card><CardContent className="pt-4"><p className="text-xs text-muted-foreground">Waiting / failed</p><p className="mt-1 text-2xl font-semibold text-destructive">{(counts.pending ?? 0) + (counts.scheduled ?? 0) + (counts.retryable ?? 0) + [...failedStates].reduce((sum, state) => sum + (counts[state] ?? 0), 0)}</p></CardContent></Card>
       </div>
       <Card>
         <CardHeader className="flex-wrap">
-          <div className="min-w-0 flex-1"><CardTitle>Dependency graph</CardTitle><CardDescription>Arrows show execution order. Tasks link to their full job detail.</CardDescription></div>
+          <div className="min-w-0 flex-1"><CardTitle>Dependency graph</CardTitle><CardDescription>Arrows show execution order. Select any task to inspect its live job detail.</CardDescription></div>
           <div className="flex flex-wrap gap-3 text-xs text-muted-foreground" aria-label="Dependency edge legend">
             <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="h-0.5 w-5 bg-success" />Satisfied</span>
             <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="w-5 border-t-2 border-dashed border-muted-foreground/60" />Waiting</span>
@@ -314,19 +299,25 @@ export function WorkflowDetailView({ workflowId, refreshKey }: ViewProps & { wor
                   : blockedBy.length
                     ? `Waiting for ${blockedBy.join(", ")}`
                     : `${node.deps.length} ${node.deps.length === 1 ? "dependency" : "dependencies"} satisfied`
-                return <article
+                const selected = selectedJobID === node.job_id
+                const active = state === "running"
+                return <Link
                   key={node.name}
-                  className={`absolute flex flex-col rounded-xl border bg-background p-3 shadow-sm ${nodeBorder(state)}`}
+                  to="/workflows/$workflowId"
+                  params={{ workflowId }}
+                  search={{ selected: node.job_id }}
+                  className={`absolute flex flex-col rounded-xl border bg-background p-3 text-foreground shadow-sm outline-none transition-[border-color,box-shadow,background-color,transform] hover:-translate-y-0.5 hover:border-primary/50 hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${nodeBorder(state)} ${active ? "border-success/60 bg-success/5 shadow-md shadow-success/10" : ""} ${selected ? "ring-2 ring-primary ring-offset-2" : ""}`}
                   style={{ left: node.x, top: node.y, width: graphNodeWidth, height: graphNodeHeight }}
                   aria-label={`${node.name}, ${state}. ${dependencyText}`}
+                  aria-current={selected ? "true" : undefined}
                 >
                   <div className="flex items-start gap-2">
-                    {state === "completed" ? <CheckCircle2Icon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-success" /> : <CircleDashedIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-muted-foreground" />}
-                    <div className="min-w-0 flex-1"><Link to="/jobs/$jobId" params={{ jobId: node.job_id }} className="break-words text-sm font-semibold hover:text-primary hover:underline">{node.name}</Link><p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground" title={node.job_id} translate="no">{node.job_id}</p></div>
+                    {state === "completed" ? <CheckCircle2Icon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-success" /> : <CircleDashedIcon aria-hidden="true" className={`mt-0.5 size-4 shrink-0 ${active ? "animate-spin text-success motion-reduce:animate-none" : "text-muted-foreground"}`} />}
+                    <div className="min-w-0 flex-1"><p className="break-words text-sm font-semibold">{node.name}</p><p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground" title={node.job_id} translate="no">{node.job?.kind ?? node.job_id}</p></div>
                     <Badge variant={badgeVariant(state)}>{state}</Badge>
                   </div>
-                  <p className={`mt-auto truncate border-t pt-2 text-xs ${blockedBy.length ? "text-warning" : "text-muted-foreground"}`} title={dependencyText}>{dependencyText}</p>
-                </article>
+                  <p className={`mt-auto truncate border-t pt-2 text-xs ${active ? "font-medium text-success" : blockedBy.length ? "text-warning" : "text-muted-foreground"}`} title={dependencyText}>{active ? "Running now" : dependencyText}</p>
+                </Link>
               })}
             </div>
           </div> : <Empty>This workflow contains no tasks.</Empty>}

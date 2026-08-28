@@ -1,16 +1,20 @@
 import { ChevronLeftIcon, ChevronRightIcon, SearchIcon } from "lucide-react"
 import { Link } from "@tanstack/react-router"
-import { FormEvent, useEffect, useMemo, useState } from "react"
+import { useQueryClient } from "@tanstack/react-query"
+import { FormEvent, useMemo, useState } from "react"
 
 import { Badge } from "@/components/ui/badge"
+import { ActionButton } from "@/components/ui/action-button"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Empty, Failure, Loading, mutate, useApiResource, type ViewProps } from "@/console"
+import { Empty, Failure, Loading, useApiMutation, useApiResource, useConsoleQuery, type ViewProps } from "@/console"
 import { config } from "@/lib/config"
 import { api } from "@/lib/api"
 import { formatDate, formatDuration } from "@/lib/format"
@@ -69,45 +73,34 @@ function stateVariant(state: string): "success" | "warning" | "destructive" | "o
   return "outline"
 }
 
-export function JobDrawer({ id, open, setOpen, refresh, notify }: {
+export function JobDrawer({ id, open, setOpen, notify }: {
   id: string | null
   open: boolean
   setOpen: (open: boolean) => void
-  refresh: () => void
   notify: ViewProps["notify"]
 }) {
-  const [job, setJob] = useState<JobDetail | null>(null)
-  const [admission, setAdmission] = useState<Admission | null>(null)
-  const [progress, setProgress] = useState<JobProgress | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (!id || !open) return
-    let active = true
-    Promise.all([
-      api<JobDetail>(`/jobs/${encodeURIComponent(id)}`),
-      api<Admission>(`/jobs/${encodeURIComponent(id)}/admission`).catch(() => null),
-    ])
-      .then(([detail, explanation]) => {
-        if (!active) return
-        setJob(detail)
-        setAdmission(explanation)
-        setError(null)
-      })
-      .catch((reason: unknown) => active && setError(reason instanceof Error ? reason.message : String(reason)))
-    return () => { active = false }
-  }, [id, open])
-
-  useEffect(() => {
-    if (!id || !open || job?.state !== "running") return
-    let active = true
-    const poll = () => api<JobProgress>(`/jobs/${encodeURIComponent(id)}/progress`)
-      .then((value) => active && setProgress(value))
-      .catch(() => active && setProgress(null))
-    void poll()
-    const timer = window.setInterval(poll, 2_000)
-    return () => { active = false; window.clearInterval(timer) }
-  }, [id, open, job?.state])
+  const actionMutation = useApiMutation()
+  const jobQuery = useConsoleQuery(
+    ["api", "job", id],
+    (signal) => api<JobDetail>(`/jobs/${encodeURIComponent(id!)}`, { signal }),
+    Boolean(id && open),
+  )
+  const admissionQuery = useConsoleQuery<Admission>(
+    ["api", "job-admission", id],
+    (signal) => api<Admission>(`/jobs/${encodeURIComponent(id!)}/admission`, { signal }),
+    Boolean(id && open),
+  )
+  const job = jobQuery.data ?? null
+  const progressQuery = useConsoleQuery(
+    ["api", "job-progress", id],
+    (signal) => api<JobProgress>(`/jobs/${encodeURIComponent(id!)}/progress`, { signal }),
+    Boolean(id && open && job?.state === "running"),
+    2_000,
+  )
+  const admission = admissionQuery.data ?? null
+  const progress = progressQuery.data ?? null
+  const error = jobQuery.error ? (jobQuery.error instanceof Error ? jobQuery.error.message : String(jobQuery.error)) : null
+  const pendingPath = actionMutation.variables?.path
 
   const events = useMemo(() => {
     if (!job?.errors) return []
@@ -119,10 +112,9 @@ export function JobDrawer({ id, open, setOpen, refresh, notify }: {
     if (!id) return
     if (name === "delete" && !window.confirm(`Delete job ${id}? This cannot be undone.`)) return
     try {
-      await mutate(`/jobs/${encodeURIComponent(id)}${name === "delete" ? "" : `/${name}`}`, { method: name === "delete" ? "DELETE" : "POST" })
+      await actionMutation.mutateAsync({ path: `/jobs/${encodeURIComponent(id)}${name === "delete" ? "" : `/${name}`}`, method: name === "delete" ? "DELETE" : "POST" })
       notify(name === "delete" ? "Job deleted" : `Job ${name === "retry" ? "retried" : "cancelled"}`)
       setOpen(false)
-      refresh()
     } catch (reason) { notify(reason instanceof Error ? reason.message : String(reason), "error") }
   }
 
@@ -131,10 +123,9 @@ export function JobDrawer({ id, open, setOpen, refresh, notify }: {
     const value = window.prompt("Run at (milliseconds since Unix epoch)")
     if (!value) return
     try {
-      await mutate(`/jobs/${encodeURIComponent(id)}/reschedule`, { body: { scheduled_at_ms: Number(value) } })
+      await actionMutation.mutateAsync({ path: `/jobs/${encodeURIComponent(id)}/reschedule`, body: { scheduled_at_ms: Number(value) } })
       notify("Job rescheduled")
       setOpen(false)
-      refresh()
     } catch (reason) { notify(reason instanceof Error ? reason.message : String(reason), "error") }
   }
 
@@ -187,7 +178,12 @@ export function JobDrawer({ id, open, setOpen, refresh, notify }: {
 
           <section aria-labelledby="actions-title">
             <h2 id="actions-title" className="mb-2 text-sm font-semibold">Actions</h2>
-            <div className="flex flex-wrap gap-2"><Button variant="outline" disabled={config.readOnly} onClick={() => void action("retry")}>Retry</Button><Button variant="outline" disabled={config.readOnly} onClick={() => void action("cancel")}>Cancel</Button><Button variant="outline" disabled={config.readOnly} onClick={() => void reschedule()}>Reschedule</Button><Button variant="destructive" disabled={config.readOnly} onClick={() => void action("delete")}>Delete</Button></div>
+            <div className="flex flex-wrap gap-2">
+              <ActionButton variant="outline" disabled={config.readOnly || actionMutation.isPending} pending={actionMutation.isPending && pendingPath?.endsWith("/retry")} pendingLabel="Retrying…" onClick={() => void action("retry")}>Retry</ActionButton>
+              <ActionButton variant="outline" disabled={config.readOnly || actionMutation.isPending} pending={actionMutation.isPending && pendingPath?.endsWith("/cancel")} pendingLabel="Cancelling…" onClick={() => void action("cancel")}>Cancel</ActionButton>
+              <ActionButton variant="outline" disabled={config.readOnly || actionMutation.isPending} pending={actionMutation.isPending && pendingPath?.endsWith("/reschedule")} pendingLabel="Rescheduling…" onClick={() => void reschedule()}>Reschedule</ActionButton>
+              <ActionButton variant="destructive" disabled={config.readOnly || actionMutation.isPending} pending={actionMutation.isPending && pendingPath === `/jobs/${encodeURIComponent(id ?? "")}`} pendingLabel="Deleting…" onClick={() => void action("delete")}>Delete</ActionButton>
+            </div>
           </section>
         </div>}
       </DialogContent>
@@ -195,9 +191,12 @@ export function JobDrawer({ id, open, setOpen, refresh, notify }: {
   )
 }
 
-export function JobsView({ refreshKey, refresh, notify }: ViewProps) {
+export function JobsView({ notify }: ViewProps) {
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
+  const queryClient = useQueryClient()
+  const selectionMutation = useApiMutation<{ succeeded?: string[]; failed?: Array<{ id: string; reason: string }> }>()
+  const bulkMutation = useApiMutation<{ id: string; total_estimated: number }>()
   const [query, setQuery] = useState(search.q ?? "")
   const [queue, setQueue] = useState(search.queue ?? "")
   const [state, setState] = useState(search.state ?? "")
@@ -205,14 +204,15 @@ export function JobsView({ refreshKey, refresh, notify }: ViewProps) {
   const [selectionAction, setSelectionAction] = useState("retry")
   const [bulkAction, setBulkAction] = useState("cancel")
   const [bulkStatus, setBulkStatus] = useState("")
+  const [bulkWorking, setBulkWorking] = useState<"dry-run" | "apply" | null>(null)
   const params = new URLSearchParams({ limit: "50" })
   if (search.q) params.set("q", search.q)
   if (search.queue) params.set("queue", search.queue)
   if (search.state) params.set("state", search.state)
   if (search.cursor) params.set("cursor", search.cursor)
-  const { data, error, loading } = useApiResource<JobPage>(`/jobs?${params}`, refreshKey)
+  const { data, error, loading } = useApiResource<JobPage>(`/jobs?${params}`)
   const countsQuery = search.queue ? `?queue=${encodeURIComponent(search.queue)}` : ""
-  const counts = useApiResource<JobCounts>(`/jobs/counts${countsQuery}`, refreshKey)
+  const counts = useApiResource<JobCounts>(`/jobs/counts${countsQuery}`)
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
@@ -224,15 +224,14 @@ export function JobsView({ refreshKey, refresh, notify }: ViewProps) {
     if (!ids.length) return
     if (["delete", "cancel"].includes(selectionAction) && !window.confirm(`${selectionAction} ${ids.length} selected job(s)?`)) return
     try {
-      const result = await api<{ succeeded?: string[]; failed?: Array<{ id: string; reason: string }> }>("/jobs/actions", {
-        method: "POST",
+      const result = await selectionMutation.mutateAsync({
+        path: "/jobs/actions",
         body: { action: selectionAction, ids },
       })
       const succeeded = result.succeeded?.length ?? 0
       const failed = result.failed?.length ?? 0
       notify(`${selectionAction}: ${succeeded} succeeded${failed ? `, ${failed} failed` : ""}`, failed ? "error" : "normal")
       setSelectedIds(new Set())
-      refresh()
     } catch (reason) {
       notify(reason instanceof Error ? reason.message : String(reason), "error")
     }
@@ -244,22 +243,28 @@ export function JobsView({ refreshKey, refresh, notify }: ViewProps) {
     if (search.state) selector.state = search.state
     if (!Object.keys(selector).length) { notify("Set a queue or state filter before using bulk actions.", "error"); return }
     if (!dryRun && !window.confirm(`${bulkAction.toUpperCase()} every job matching ${JSON.stringify(selector)}?`)) return
+    setBulkWorking(dryRun ? "dry-run" : "apply")
     try {
-      const operation = await api<{ id: string; total_estimated: number }>("/jobs/bulk", { method: "POST", body: { action: bulkAction, selector, dry_run: dryRun } })
+      const operation = await bulkMutation.mutateAsync({ path: "/jobs/bulk", body: { action: bulkAction, selector, dry_run: dryRun } })
       if (dryRun) { setBulkStatus(`Dry run: approximately ${operation.total_estimated} job(s) match.`); return }
       setBulkStatus(`Operation ${operation.id} is running…`)
       const started = Date.now()
       while (Date.now() - started < 60_000) {
         await new Promise((resolve) => window.setTimeout(resolve, 800))
-        const status = await api<{ status: string; affected: number; error?: string }>(`/operations/${encodeURIComponent(operation.id)}`)
+        const status = await queryClient.fetchQuery({
+          queryKey: ["api", "operation", operation.id],
+          queryFn: ({ signal }) => api<{ status: string; affected: number; error?: string }>(`/operations/${encodeURIComponent(operation.id)}`, { signal }),
+          staleTime: 0,
+        })
         setBulkStatus(`${status.status} · ${status.affected} affected`)
         if (["completed", "failed"].includes(status.status)) {
           notify(status.status === "completed" ? `Bulk ${bulkAction}: ${status.affected} affected` : `Bulk operation failed: ${status.error ?? "unknown error"}`, status.status === "failed" ? "error" : "normal")
-          refresh(); return
+          return
         }
       }
       notify("The operation is still running; check it again later.")
     } catch (reason) { notify(reason instanceof Error ? reason.message : String(reason), "error") }
+    finally { setBulkWorking(null) }
   }
 
   return <>
@@ -280,7 +285,7 @@ export function JobsView({ refreshKey, refresh, notify }: ViewProps) {
         <form onSubmit={submit} className="flex flex-wrap items-end gap-2">
           <div className="grid gap-1"><Label htmlFor="job-query">Search</Label><Input id="job-query" name="query" autoComplete="off" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="e.g. kind:EmailSender queue:default…" className="w-72" /></div>
           <div className="grid gap-1"><Label htmlFor="job-queue">Queue</Label><Input id="job-queue" name="queue" autoComplete="off" spellCheck={false} value={queue} onChange={(event) => setQueue(event.target.value)} className="w-36" /></div>
-          <div className="grid gap-1"><Label htmlFor="job-state">State</Label><select id="job-state" name="state" value={state} onChange={(event) => setState(event.target.value)} className="h-8 rounded-lg border bg-background px-2.5 text-sm"><option value="">All states</option>{states.map((value) => <option key={value}>{value}</option>)}</select></div>
+          <div className="grid gap-1"><Label htmlFor="job-state">State</Label><Select value={state || "all"} onValueChange={(value) => setState(value === "all" || value == null ? "" : value)}><SelectTrigger id="job-state" className="w-40"><SelectValue>{state || "All states"}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All states</SelectItem>{states.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select></div>
           <Button type="submit"><SearchIcon />Search</Button>
           <div className="ml-auto flex gap-2">
             <Button variant="outline" disabled={!search.cursor} onClick={() => window.history.back()}><ChevronLeftIcon />Previous</Button>
@@ -288,20 +293,20 @@ export function JobsView({ refreshKey, refresh, notify }: ViewProps) {
           </div>
         </form>
         <div className="flex flex-wrap items-end gap-2 border-t pt-3">
-          <div className="grid gap-1"><Label htmlFor="bulk-action">Bulk action for current queue/state filter</Label><select id="bulk-action" value={bulkAction} onChange={(event) => setBulkAction(event.target.value)} className="h-8 rounded-lg border bg-background px-2.5 text-sm"><option>cancel</option><option>retry</option><option>delete</option></select></div>
-          <Button variant="outline" disabled={config.readOnly} onClick={() => void bulk(true)}>Dry run</Button>
-          <Button variant="destructive" disabled={config.readOnly} onClick={() => void bulk(false)}>Apply</Button>
+          <div className="grid gap-1"><Label htmlFor="bulk-action">Bulk action for current queue/state filter</Label><Select value={bulkAction} onValueChange={(value) => value && setBulkAction(value)}><SelectTrigger id="bulk-action" className="w-36"><SelectValue>{bulkAction[0].toUpperCase() + bulkAction.slice(1)}</SelectValue></SelectTrigger><SelectContent><SelectItem value="cancel">Cancel</SelectItem><SelectItem value="retry">Retry</SelectItem><SelectItem value="delete">Delete</SelectItem></SelectContent></Select></div>
+          <ActionButton variant="outline" disabled={config.readOnly || bulkWorking !== null} pending={bulkWorking === "dry-run"} pendingLabel="Checking…" onClick={() => void bulk(true)}>Dry run</ActionButton>
+          <ActionButton variant="destructive" disabled={config.readOnly || bulkWorking !== null} pending={bulkWorking === "apply"} pendingLabel="Applying…" onClick={() => void bulk(false)}>Apply</ActionButton>
           <p className="text-sm text-muted-foreground" aria-live="polite">{bulkStatus}</p>
         </div>
         {selectedIds.size > 0 && <div className="flex flex-wrap items-center gap-2 rounded-lg bg-muted p-2" aria-label="Selected job actions">
           <strong className="text-sm">{selectedIds.size} selected</strong>
-          <select value={selectionAction} onChange={(event) => setSelectionAction(event.target.value)} className="h-8 rounded-lg border bg-background px-2.5 text-sm" aria-label="Action for selected jobs"><option>retry</option><option>archive</option><option>cancel</option><option>delete</option></select>
-          <Button size="sm" disabled={config.readOnly} onClick={() => void actOnSelection()}>Apply to selected</Button>
+          <Select value={selectionAction} onValueChange={(value) => value && setSelectionAction(value)}><SelectTrigger className="w-36" aria-label="Action for selected jobs"><SelectValue>{selectionAction[0].toUpperCase() + selectionAction.slice(1)}</SelectValue></SelectTrigger><SelectContent><SelectItem value="retry">Retry</SelectItem><SelectItem value="archive">Archive</SelectItem><SelectItem value="cancel">Cancel</SelectItem><SelectItem value="delete">Delete</SelectItem></SelectContent></Select>
+          <ActionButton size="sm" disabled={config.readOnly} pending={selectionMutation.isPending} pendingLabel="Applying…" onClick={() => void actOnSelection()}>Apply to selected</ActionButton>
           <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>Clear</Button>
         </div>}
         {loading && !data ? <Loading /> : error ? <Failure message={error} /> : data?.jobs.length ? <Table>
-          <TableHeader><TableRow><TableHead><input type="checkbox" aria-label="Select all visible jobs" checked={data.jobs.length > 0 && data.jobs.every((job) => selectedIds.has(job.id))} onChange={(event) => setSelectedIds(event.target.checked ? new Set(data.jobs.map((job) => job.id)) : new Set())} /></TableHead><TableHead>ID</TableHead><TableHead>Kind</TableHead><TableHead>Queue</TableHead><TableHead>State</TableHead><TableHead>Attempt</TableHead><TableHead>Scheduled</TableHead></TableRow></TableHeader>
-          <TableBody>{data.jobs.map((job) => <TableRow key={job.id}><TableCell><input type="checkbox" aria-label={`Select job ${job.id}`} checked={selectedIds.has(job.id)} onChange={(event) => setSelectedIds((current) => { const next = new Set(current); if (event.target.checked) next.add(job.id); else next.delete(job.id); return next })} /></TableCell><TableCell><Link to="/jobs/$jobId" params={{ jobId: job.id }} className="font-mono text-xs text-primary hover:underline" aria-label={`Inspect job ${job.id}`}>{job.id}</Link></TableCell><TableCell>{job.kind}</TableCell><TableCell>{job.queue}</TableCell><TableCell><Badge variant={stateVariant(job.state)}>{job.state}</Badge>{job.orphaned && <span className="ml-2 text-xs text-destructive">orphan-reclaimed</span>}</TableCell><TableCell>{job.attempt}/{job.max_attempts}{job.crash_attempt ? <span className="ml-1 text-destructive">+{job.crash_attempt} crash</span> : null}</TableCell><TableCell className="text-muted-foreground">{formatDate(job.scheduled_at_ms)}</TableCell></TableRow>)}</TableBody>
+          <TableHeader><TableRow><TableHead><Checkbox aria-label="Select all visible jobs" checked={data.jobs.length > 0 && data.jobs.every((job) => selectedIds.has(job.id))} onCheckedChange={(checked) => setSelectedIds(checked ? new Set(data.jobs.map((job) => job.id)) : new Set())} /></TableHead><TableHead>ID</TableHead><TableHead>Kind</TableHead><TableHead>Queue</TableHead><TableHead>State</TableHead><TableHead>Attempt</TableHead><TableHead>Scheduled</TableHead></TableRow></TableHeader>
+          <TableBody>{data.jobs.map((job) => <TableRow key={job.id}><TableCell><Checkbox aria-label={`Select job ${job.id}`} checked={selectedIds.has(job.id)} onCheckedChange={(checked) => setSelectedIds((current) => { const next = new Set(current); if (checked) next.add(job.id); else next.delete(job.id); return next })} /></TableCell><TableCell><Link to="/jobs/$jobId" params={{ jobId: job.id }} search={(previous) => previous} className="font-mono text-xs text-primary hover:underline" aria-label={`Inspect job ${job.id}`}>{job.id}</Link></TableCell><TableCell>{job.kind}</TableCell><TableCell>{job.queue}</TableCell><TableCell><Badge variant={stateVariant(job.state)}>{job.state}</Badge>{job.orphaned && <span className="ml-2 text-xs text-destructive">orphan-reclaimed</span>}</TableCell><TableCell>{job.attempt}/{job.max_attempts}{job.crash_attempt ? <span className="ml-1 text-destructive">+{job.crash_attempt} crash</span> : null}</TableCell><TableCell className="text-muted-foreground">{formatDate(job.scheduled_at_ms)}</TableCell></TableRow>)}</TableBody>
         </Table> : <Empty>No jobs match this search.</Empty>}
       </CardContent>
     </Card>

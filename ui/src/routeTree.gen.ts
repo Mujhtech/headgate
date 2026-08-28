@@ -18,7 +18,7 @@ import { Route as ConsoleQueuesRouteImport } from './routes/_console.queues'
 import { Route as ConsoleRateClassesRouteImport } from './routes/_console.rate-classes'
 import { Route as ConsoleWorkersRouteImport } from './routes/_console.workers'
 import { Route as ConsoleWorkflowsRouteImport } from './routes/_console.workflows'
-import { Route as ConsoleJobsJobIdRouteImport } from './routes/_console.jobs_.$jobId'
+import { Route as ConsoleJobsJobIdRouteImport } from './routes/_console.jobs.$jobId'
 import { Route as ConsoleWorkflowsWorkflowIdRouteImport } from './routes/_console.workflows_.$workflowId'
 
 const IndexRoute = IndexRouteImport.update({
@@ -66,9 +66,9 @@ const ConsoleWorkflowsRoute = ConsoleWorkflowsRouteImport.update({
   getParentRoute: () => ConsoleRoute,
 } as any)
 const ConsoleJobsJobIdRoute = ConsoleJobsJobIdRouteImport.update({
-  id: '/jobs_/$jobId',
-  path: '/jobs/$jobId',
-  getParentRoute: () => ConsoleRoute,
+  id: '/$jobId',
+  path: '/$jobId',
+  getParentRoute: () => ConsoleJobsRoute,
 } as any)
 const ConsoleWorkflowsWorkflowIdRoute =
   ConsoleWorkflowsWorkflowIdRouteImport.update({
@@ -79,7 +79,7 @@ const ConsoleWorkflowsWorkflowIdRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/jobs': typeof ConsoleJobsRoute
+  '/jobs': typeof ConsoleJobsRouteWithChildren
   '/periodic': typeof ConsolePeriodicRoute
   '/quarantine': typeof ConsoleQuarantineRoute
   '/queues': typeof ConsoleQueuesRoute
@@ -91,7 +91,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/jobs': typeof ConsoleJobsRoute
+  '/jobs': typeof ConsoleJobsRouteWithChildren
   '/periodic': typeof ConsolePeriodicRoute
   '/quarantine': typeof ConsoleQuarantineRoute
   '/queues': typeof ConsoleQueuesRoute
@@ -105,14 +105,14 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/_console': typeof ConsoleRouteWithChildren
-  '/_console/jobs': typeof ConsoleJobsRoute
+  '/_console/jobs': typeof ConsoleJobsRouteWithChildren
   '/_console/periodic': typeof ConsolePeriodicRoute
   '/_console/quarantine': typeof ConsoleQuarantineRoute
   '/_console/queues': typeof ConsoleQueuesRoute
   '/_console/rate-classes': typeof ConsoleRateClassesRoute
   '/_console/workers': typeof ConsoleWorkersRoute
   '/_console/workflows': typeof ConsoleWorkflowsRoute
-  '/_console/jobs_/$jobId': typeof ConsoleJobsJobIdRoute
+  '/_console/jobs/$jobId': typeof ConsoleJobsJobIdRoute
   '/_console/workflows_/$workflowId': typeof ConsoleWorkflowsWorkflowIdRoute
 }
 export interface FileRouteTypes {
@@ -151,7 +151,7 @@ export interface FileRouteTypes {
     | '/_console/rate-classes'
     | '/_console/workers'
     | '/_console/workflows'
-    | '/_console/jobs_/$jobId'
+    | '/_console/jobs/$jobId'
     | '/_console/workflows_/$workflowId'
   fileRoutesById: FileRoutesById
 }
@@ -225,12 +225,12 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleWorkflowsRouteImport
       parentRoute: typeof ConsoleRoute
     }
-    '/_console/jobs_/$jobId': {
-      id: '/_console/jobs_/$jobId'
-      path: '/jobs/$jobId'
+    '/_console/jobs/$jobId': {
+      id: '/_console/jobs/$jobId'
+      path: '/$jobId'
       fullPath: '/jobs/$jobId'
       preLoaderRoute: typeof ConsoleJobsJobIdRouteImport
-      parentRoute: typeof ConsoleRoute
+      parentRoute: typeof ConsoleJobsRoute
     }
     '/_console/workflows_/$workflowId': {
       id: '/_console/workflows_/$workflowId'
@@ -242,27 +242,37 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface ConsoleJobsRouteChildren {
+  ConsoleJobsJobIdRoute: typeof ConsoleJobsJobIdRoute
+}
+
+const ConsoleJobsRouteChildren: ConsoleJobsRouteChildren = {
+  ConsoleJobsJobIdRoute: ConsoleJobsJobIdRoute,
+}
+
+const ConsoleJobsRouteWithChildren = ConsoleJobsRoute._addFileChildren(
+  ConsoleJobsRouteChildren,
+)
+
 interface ConsoleRouteChildren {
-  ConsoleJobsRoute: typeof ConsoleJobsRoute
+  ConsoleJobsRoute: typeof ConsoleJobsRouteWithChildren
   ConsolePeriodicRoute: typeof ConsolePeriodicRoute
   ConsoleQuarantineRoute: typeof ConsoleQuarantineRoute
   ConsoleQueuesRoute: typeof ConsoleQueuesRoute
   ConsoleRateClassesRoute: typeof ConsoleRateClassesRoute
   ConsoleWorkersRoute: typeof ConsoleWorkersRoute
   ConsoleWorkflowsRoute: typeof ConsoleWorkflowsRoute
-  ConsoleJobsJobIdRoute: typeof ConsoleJobsJobIdRoute
   ConsoleWorkflowsWorkflowIdRoute: typeof ConsoleWorkflowsWorkflowIdRoute
 }
 
 const ConsoleRouteChildren: ConsoleRouteChildren = {
-  ConsoleJobsRoute: ConsoleJobsRoute,
+  ConsoleJobsRoute: ConsoleJobsRouteWithChildren,
   ConsolePeriodicRoute: ConsolePeriodicRoute,
   ConsoleQuarantineRoute: ConsoleQuarantineRoute,
   ConsoleQueuesRoute: ConsoleQueuesRoute,
   ConsoleRateClassesRoute: ConsoleRateClassesRoute,
   ConsoleWorkersRoute: ConsoleWorkersRoute,
   ConsoleWorkflowsRoute: ConsoleWorkflowsRoute,
-  ConsoleJobsJobIdRoute: ConsoleJobsJobIdRoute,
   ConsoleWorkflowsWorkflowIdRoute: ConsoleWorkflowsWorkflowIdRoute,
 }
 

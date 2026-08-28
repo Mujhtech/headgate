@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, Outlet } from "@tanstack/react-router"
 
 import { useConsole } from "@/console"
 import { JobsView } from "@/views/jobs"
@@ -21,5 +21,10 @@ export const Route = createFileRoute("/_console/jobs")({
 })
 
 function JobsRoute() {
-  return <JobsView {...useConsole()} />
+  return (
+    <>
+      <JobsView {...useConsole()} />
+      <Outlet />
+    </>
+  )
 }

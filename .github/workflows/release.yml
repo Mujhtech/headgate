@@ -27,7 +27,7 @@ jobs:
     name: Package and publish
     needs: verify
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 180
     permissions:
       contents: write
     env:
@@ -50,6 +50,13 @@ jobs:
         with:
           go-version-file: go/go.work
           cache-dependency-path: "**/go.sum"
+
+      - name: Install GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: v2.18.0
+          install-only: true
 
       - name: Install protobuf generators
         run: |
@@ -84,8 +91,12 @@ jobs:
       - name: Package Rust crates
         run: scripts/release.sh package-rust "${{ steps.release.outputs.version }}"
 
+      - name: Check GoReleaser configuration
+        run: goreleaser check
+
       - name: Package headgatectl
-        run: scripts/release.sh package-cli "${{ steps.release.outputs.version }}" dist
+        if: github.event_name == 'workflow_dispatch'
+        run: goreleaser release --snapshot --clean
 
       - name: Stop after manual dry run
         if: github.event_name == 'workflow_dispatch'
@@ -99,15 +110,13 @@ jobs:
         if: github.event_name == 'push'
         run: scripts/release.sh tag-go "${{ steps.release.outputs.version }}"
 
-      - name: Create GitHub release
+      - name: Request Go proxy indexing
+        if: github.event_name == 'push'
+        run: scripts/release.sh index-go "${{ steps.release.outputs.version }}"
+
+      - name: Build headgatectl and create GitHub release
         if: github.event_name == 'push'
         env:
-          VERSION: ${{ steps.release.outputs.version }}
-        run: |
-          args=(--title "headgate v$VERSION" --generate-notes)
-          [[ $VERSION == *-* ]] && args+=(--prerelease)
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" dist/* "${args[@]}"
-          fi
+          GITHUB_TOKEN: ${{ github.token }}
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
+        run: goreleaser release --clean

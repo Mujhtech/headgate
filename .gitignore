@@ -1,4 +1,5 @@
 target
+dist
 dump.rdb
 .DS_Store
 ui/node_modules/

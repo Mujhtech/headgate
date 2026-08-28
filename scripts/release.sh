@@ -34,7 +34,7 @@ readonly rust_crates=(
 )
 
 usage() {
-  echo "usage: $0 <check|package-cli|package-rust|tag-go|publish-rust> <version> [output-dir]" >&2
+  echo "usage: $0 <check|package-rust|tag-go|index-go|publish-rust> <version>" >&2
   exit 2
 }
 
@@ -83,46 +83,6 @@ check_release() {
   [[ -f LICENSE-APACHE ]] || { echo "LICENSE-APACHE is required for release" >&2; exit 1; }
 }
 
-package_cli() {
-  local output_dir=${3:-dist}
-  local target os arch binary archive stage
-  local targets=(
-    linux/amd64
-    linux/arm64
-    darwin/amd64
-    darwin/arm64
-    windows/amd64
-    windows/arm64
-  )
-
-  mkdir -p "$output_dir"
-  for target in "${targets[@]}"; do
-    os=${target%/*}
-    arch=${target#*/}
-    binary=headgatectl
-    [[ $os == windows ]] && binary=headgatectl.exe
-    stage="$output_dir/headgatectl_${version}_${os}_${arch}"
-    mkdir -p "$stage"
-    (
-      cd go/headgatectl
-      CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags='-s -w' -o "../../$stage/$binary" .
-    )
-    if [[ $os == windows ]]; then
-      archive="${stage}.zip"
-      (cd "$stage" && zip -q -r "../$(basename "$archive")" .)
-    else
-      archive="${stage}.tar.gz"
-      tar -C "$stage" -czf "$archive" .
-    fi
-    rm -r "$stage"
-  done
-  if command -v sha256sum >/dev/null 2>&1; then
-    (cd "$output_dir" && sha256sum ./*.tar.gz ./*.zip > checksums.txt)
-  else
-    (cd "$output_dir" && shasum -a 256 ./*.tar.gz ./*.zip > checksums.txt)
-  fi
-}
-
 package_rust_crates() {
   local crate
   local package_args=(--locked --list)
@@ -131,6 +91,43 @@ package_rust_crates() {
     echo "checking package contents: $crate $version"
     cargo package "${package_args[@]}" -p "$crate" >/dev/null
   done
+}
+
+index_go_modules() {
+  local dir module attempt
+  for dir in "${go_module_dirs[@]}"; do
+    module=$(sed -n 's/^module //p' "$dir/go.mod")
+    for attempt in 1 2 3 4 5 6; do
+      echo "requesting Go proxy index: $module v$version"
+      if GOWORK=off GOPROXY=https://proxy.golang.org \
+        go list -m "$module@v$version"; then
+        break
+      fi
+      if [[ $attempt == 6 ]]; then
+        echo "Go proxy did not resolve $module v$version after $attempt attempts" >&2
+        exit 1
+      fi
+      sleep 10
+    done
+  done
+}
+
+crate_is_published() {
+  local crate=$1
+  curl --fail --silent --show-error \
+    --user-agent "headgate-release/$version" \
+    "https://crates.io/api/v1/crates/$crate/$version" >/dev/null 2>&1
+}
+
+retry_after_seconds() {
+  local output_file=$1 retry_at
+  retry_at=$(sed -n \
+    's/.*Please try again after \(.* GMT\) and see .*/\1/p' \
+    "$output_file" | tail -n 1)
+  [[ -n $retry_at ]] || return 1
+  python3 -c \
+    'from datetime import datetime, timezone; from email.utils import parsedate_to_datetime; import sys; target=parsedate_to_datetime(sys.argv[1]); now=datetime.now(timezone.utc); print(max(1, int((target-now).total_seconds())+5))' \
+    "$retry_at"
 }
 
 tag_go_modules() {
@@ -165,36 +162,46 @@ publish_rust_crates() {
     exit 1
   }
 
-  local crate attempt
+  local crate attempt output_file wait_seconds
   for crate in "${rust_crates[@]}"; do
-    if curl --fail --silent --show-error \
-      --user-agent "headgate-release/$version" \
-      "https://crates.io/api/v1/crates/$crate/$version" >/dev/null 2>&1; then
+    if crate_is_published "$crate"; then
       echo "already published: $crate $version"
       continue
     fi
 
-    for attempt in 1 2 3 4 5 6; do
-      # CI has already verified the complete workspace. --no-verify avoids rebuilding
-      # packaged crates after Cargo removes their path-only cyclic dev-dependencies.
-      if cargo publish --locked --no-verify -p "$crate"; then
+    for attempt in $(seq 1 20); do
+      if crate_is_published "$crate"; then
+        echo "published while waiting: $crate $version"
         break
       fi
-      if [[ $attempt == 6 ]]; then
+      output_file=$(mktemp)
+      # CI has already verified the complete workspace. --no-verify avoids rebuilding
+      # packaged crates after Cargo removes their path-only cyclic dev-dependencies.
+      if cargo publish --locked --no-verify -p "$crate" 2>&1 | tee "$output_file"; then
+        rm -f "$output_file"
+        break
+      fi
+      if wait_seconds=$(retry_after_seconds "$output_file"); then
+        echo "crates.io asked us to wait ${wait_seconds}s before retrying $crate"
+      else
+        wait_seconds=10
+        echo "waiting ${wait_seconds}s for crates.io to index dependencies before retrying $crate"
+      fi
+      rm -f "$output_file"
+      if [[ $attempt == 20 ]]; then
         echo "failed to publish $crate after $attempt attempts" >&2
         exit 1
       fi
-      echo "waiting for crates.io to index dependencies before retrying $crate"
-      sleep 10
+      sleep "$wait_seconds"
     done
   done
 }
 
 case "$command_name" in
   check) check_release ;;
-  package-cli) check_release; package_cli "$@" ;;
   package-rust) check_release; package_rust_crates ;;
   tag-go) check_release; tag_go_modules ;;
+  index-go) check_release; index_go_modules ;;
   publish-rust) check_release; publish_rust_crates ;;
   *) usage ;;
 esac

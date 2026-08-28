@@ -1,0 +1,53 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/goreleaser/goreleaser/v2.18.0/www/docs/static/schema.json
+version: 2
+
+project_name: headgatectl
+
+builds:
+  - id: headgatectl
+    dir: go/headgatectl
+    main: .
+    binary: headgatectl
+    env:
+      - CGO_ENABLED=0
+      - GOWORK=off
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - ids:
+      - headgatectl
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "headgatectl_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE-APACHE
+      - LICENSE-MIT
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+release:
+  name_template: "headgate v{{ .Version }}"

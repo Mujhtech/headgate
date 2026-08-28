@@ -18,8 +18,7 @@ await writeFile(
   indexPath,
   index
     .replace("<!DOCTYPE html>", "<!doctype html><!-- headgate console -->")
-    .replaceAll('href="/./assets/', 'href="./assets/')
-    .replaceAll('src="/./assets/', 'src="./assets/'),
+    .replaceAll('/./assets/', './assets/'),
 )
 
 await rm(goBuild, { recursive: true, force: true })

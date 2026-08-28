@@ -1,6 +1,7 @@
 package headgateui
 
 import (
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,7 +10,11 @@ import (
 
 func TestServesShellFallbackWithInjectedConfig(t *testing.T) {
 	handler := NewHandler(Config{APIBase: "/x/api", ReadOnly: true})
-	for _, requestPath := range []string{"/", "/some/deep/link"} {
+	for requestPath, assetPrefix := range map[string]string{
+		"/":               "./assets/",
+		"/queues":         "./assets/",
+		"/some/deep/link": "../../assets/",
+	} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, requestPath, nil))
 		if recorder.Code != http.StatusOK {
@@ -22,8 +27,8 @@ func TestServesShellFallbackWithInjectedConfig(t *testing.T) {
 		if !strings.Contains(body, `window.HEADGATE = {"apiBase":"/x/api","readOnly":true};`) {
 			t.Fatal("missing injected config")
 		}
-		if !strings.Contains(body, "./assets/") {
-			t.Fatal("asset URLs must work below a mount path")
+		if !strings.Contains(body, assetPrefix) {
+			t.Fatalf("asset URLs must resolve from %s", requestPath)
 		}
 	}
 }
@@ -47,6 +52,29 @@ func TestServesHashedAssetsWithImmutableCaching(t *testing.T) {
 	}
 	if got := recorder.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
 		t.Fatalf("cache-control = %q", got)
+	}
+}
+
+func TestEmbedsTanStackFileRouteChunks(t *testing.T) {
+	entries, err := fs.ReadDir(build, "dist/assets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var routeChunk string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "_console") && strings.HasSuffix(entry.Name(), ".js") {
+			routeChunk = "/assets/" + entry.Name()
+			break
+		}
+	}
+	if routeChunk == "" {
+		t.Fatal("embedded build has no TanStack file-route chunk")
+	}
+
+	recorder := httptest.NewRecorder()
+	NewHandler(Config{}).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, routeChunk, nil))
+	if recorder.Code != http.StatusOK || recorder.Body.Len() == 0 {
+		t.Fatalf("route chunk response: %d, %d bytes", recorder.Code, recorder.Body.Len())
 	}
 }
 

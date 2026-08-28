@@ -21,7 +21,10 @@ import (
 	"strings"
 )
 
-//go:embed dist
+// TanStack names file-route chunks with a leading underscore. The all: prefix is
+// required because embed otherwise silently excludes files whose names begin with _.
+//
+//go:embed all:dist
 var build embed.FS
 
 const defaultConfig = `window.HEADGATE = window.HEADGATE || {apiBase:"/api/v1",readOnly:false};`
@@ -68,8 +71,24 @@ func NewHandler(cfg Config) http.Handler {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
-		_, _ = w.Write([]byte(page))
+		routePage := strings.ReplaceAll(page, "./assets/", relativeAssetPrefix(r.URL.Path))
+		_, _ = w.Write([]byte(routePage))
 	})
+}
+
+func relativeAssetPrefix(requestPath string) string {
+	cleaned := strings.Trim(path.Clean("/"+requestPath), "/")
+	if cleaned == "" {
+		return "./assets/"
+	}
+	depth := strings.Count(cleaned, "/")
+	if strings.HasSuffix(requestPath, "/") {
+		depth++
+	}
+	if depth == 0 {
+		return "./assets/"
+	}
+	return strings.Repeat("../", depth) + "assets/"
 }
 
 func contentType(name string) string {

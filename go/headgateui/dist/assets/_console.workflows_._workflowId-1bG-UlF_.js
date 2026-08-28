@@ -1,1 +1,0 @@
-import{Zt as e}from"./tooltip-CNzURqG2.js";import{s as t}from"./console-Cyvbrj01.js";import{t as n}from"./index-D8qZ1VdH.js";import{t as r}from"./workflows-BCI4oaRG.js";var i=e();function a(){let{workflowId:e}=n.useParams();return(0,i.jsx)(r,{workflowId:e,...t()})}export{a as component};

@@ -26,7 +26,11 @@ async fn serves_shell_fallback_with_injected_config() {
         api_base: "/x/api".into(),
         read_only: true,
     };
-    for path in ["/", "/some/deep/link"] {
+    for (path, asset_prefix) in [
+        ("/", "./assets/"),
+        ("/queues", "./assets/"),
+        ("/some/deep/link", "../../assets/"),
+    ] {
         let (status, headers, body) = get(headgate_ui::router(cfg.clone()), path).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(headers[header::CONTENT_TYPE], "text/html; charset=utf-8");
@@ -34,8 +38,8 @@ async fn serves_shell_fallback_with_injected_config() {
         assert!(body.contains("headgate console"));
         assert!(body.contains(r#"window.HEADGATE = {"apiBase":"/x/api","readOnly":true};"#));
         assert!(
-            body.contains("./assets/"),
-            "assets must work below a mount path"
+            body.contains(asset_prefix),
+            "assets must resolve from {path}"
         );
     }
 }

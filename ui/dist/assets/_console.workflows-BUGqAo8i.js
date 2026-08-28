@@ -1,1 +1,0 @@
-import{Zt as e}from"./tooltip-CNzURqG2.js";import{s as t}from"./console-Cyvbrj01.js";import{n}from"./workflows-BCI4oaRG.js";var r=e();function i(){return(0,r.jsx)(n,{...t()})}export{i as component};

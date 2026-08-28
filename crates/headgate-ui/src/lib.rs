@@ -83,13 +83,31 @@ fn serve(path: &str, cfg: &Config) -> Response<Body> {
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
     let injected = format!("window.HEADGATE = {config_json};");
-    let page = template.replacen(DEFAULT_CONFIG, &injected, 1);
+    let page = template
+        .replacen(DEFAULT_CONFIG, &injected, 1)
+        .replace("./assets/", &relative_asset_prefix(path));
     response(
         StatusCode::OK,
         "text/html; charset=utf-8",
         "no-cache",
         Body::from(page),
     )
+}
+
+fn relative_asset_prefix(request_path: &str) -> String {
+    let trimmed = request_path.trim_matches('/');
+    if trimmed.is_empty() {
+        return "./assets/".into();
+    }
+    let mut depth = trimmed.matches('/').count();
+    if request_path.ends_with('/') {
+        depth += 1;
+    }
+    if depth == 0 {
+        "./assets/".into()
+    } else {
+        format!("{}assets/", "../".repeat(depth))
+    }
 }
 
 fn response(

@@ -1,15 +1,15 @@
 import { Link } from "@tanstack/react-router"
 import { InfinityIcon, PauseIcon, PlayIcon } from "lucide-react"
-import { useEffect, useState } from "react"
 
 import { Badge } from "@/components/ui/badge"
+import { ActionButton } from "@/components/ui/action-button"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { config } from "@/lib/config"
 import { formatDuration } from "@/lib/format"
 import { api } from "@/lib/api"
-import { Empty, Failure, Loading, mutate, useApiResource, type ViewProps } from "@/console"
+import { Empty, Failure, Loading, useApiMutation, useApiResource, useConsoleQuery, type ViewProps } from "@/console"
 
 interface QueueStat {
   queue: string
@@ -33,13 +33,14 @@ interface HistoryBucket {
 }
 
 function Sparkline({ queue }: { queue: string }) {
-  const [buckets, setBuckets] = useState<HistoryBucket[]>([])
-  useEffect(() => {
-    const since = Date.now() - 2 * 60 * 60 * 1_000
-    api<HistoryBucket[]>(`/queues/${encodeURIComponent(queue)}/history?since_ms=${since}&bucket_ms=300000`)
-      .then(setBuckets)
-      .catch(() => setBuckets([]))
-  }, [queue])
+  const history = useConsoleQuery(
+    ["api", "queue-history", queue],
+    (signal) => {
+      const since = Date.now() - 2 * 60 * 60 * 1_000
+      return api<HistoryBucket[]>(`/queues/${encodeURIComponent(queue)}/history?since_ms=${since}&bucket_ms=300000`, { signal })
+    },
+  )
+  const buckets = history.data ?? []
   if (!buckets.length) return <p className="mt-3 text-xs text-muted-foreground">No traffic in 2 hours</p>
 
   const width = 240
@@ -67,19 +68,22 @@ function Sparkline({ queue }: { queue: string }) {
   )
 }
 
-function Partitions({ queues, refreshKey }: { queues: QueueStat[]; refreshKey: number }) {
-  const [rows, setRows] = useState<Array<Partition & { queue: string }>>([])
-  useEffect(() => {
-    Promise.all(
+function Partitions({ queues }: { queues: QueueStat[] }) {
+  const partitions = useConsoleQuery(
+    ["api", "partitions", queues.slice(0, 6).map(({ queue }) => queue)],
+    async (signal) => {
+      const groups = await Promise.all(
       queues.slice(0, 6).map(async ({ queue }) => {
-        const response = await api<{ partitions?: Partition[] } | Partition[]>(`/partitions?queue=${encodeURIComponent(queue)}`)
+        const response = await api<{ partitions?: Partition[] } | Partition[]>(`/partitions?queue=${encodeURIComponent(queue)}`, { signal })
         const partitions = Array.isArray(response) ? response : response.partitions ?? []
         return partitions.map((partition) => ({ ...partition, queue }))
       }),
-    )
-      .then((groups) => setRows(groups.flat()))
-      .catch(() => setRows([]))
-  }, [queues, refreshKey])
+      )
+      return groups.flat()
+    },
+    queues.length > 0,
+  )
+  const rows = partitions.data ?? []
 
   return (
     <Card className="mt-4">
@@ -96,17 +100,17 @@ function Partitions({ queues, refreshKey }: { queues: QueueStat[]; refreshKey: n
   )
 }
 
-export function QueuesView({ refreshKey, refresh, notify }: ViewProps) {
-  const { data, error, loading } = useApiResource<{ queues?: QueueStat[] } | QueueStat[]>("/queues", refreshKey)
+export function QueuesView({ notify }: ViewProps) {
+  const toggleMutation = useApiMutation()
+  const { data, error, loading } = useApiResource<{ queues?: QueueStat[] } | QueueStat[]>("/queues")
   if (loading && !data) return <Loading />
   if (error) return <Failure message={error} />
   const queues = Array.isArray(data) ? data : data?.queues ?? []
 
   const toggle = async (queue: QueueStat) => {
     try {
-      await mutate(`/queues/${encodeURIComponent(queue.queue)}/${queue.paused ? "resume" : "pause"}`)
+      await toggleMutation.mutateAsync({ path: `/queues/${encodeURIComponent(queue.queue)}/${queue.paused ? "resume" : "pause"}` })
       notify(queue.paused ? "Queue resumed" : "Queue paused")
-      refresh()
     } catch (reason) {
       notify(reason instanceof Error ? reason.message : String(reason), "error")
     }
@@ -125,9 +129,9 @@ export function QueuesView({ refreshKey, refresh, notify }: ViewProps) {
               <CardHeader>
                 <CardTitle className="min-w-0 flex-1 truncate">{queue.queue}</CardTitle>
                 {queue.paused && <Badge variant="destructive">paused</Badge>}
-                <Button variant="outline" size="sm" disabled={config.readOnly} onClick={() => void toggle(queue)}>
+                <ActionButton variant="outline" size="sm" disabled={config.readOnly || toggleMutation.isPending} pending={toggleMutation.isPending && toggleMutation.variables?.path.startsWith(`/queues/${encodeURIComponent(queue.queue)}/`)} pendingLabel={queue.paused ? "Resuming…" : "Pausing…"} onClick={() => void toggle(queue)}>
                   {queue.paused ? <PlayIcon /> : <PauseIcon />}{queue.paused ? "Resume" : "Pause"}
-                </Button>
+                </ActionButton>
               </CardHeader>
               <CardContent>
                 <div className={`flex items-center gap-1 text-3xl font-semibold tracking-tight ${queue.time_to_drain_ms == null ? "text-destructive" : ""}`}>
@@ -145,7 +149,7 @@ export function QueuesView({ refreshKey, refresh, notify }: ViewProps) {
           ))}
         </div>
       ) : <Empty>No queues reported</Empty>}
-      <Partitions queues={queues} refreshKey={refreshKey} />
+      <Partitions queues={queues} />
     </>
   )
 }

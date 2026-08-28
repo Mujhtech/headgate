@@ -1,6 +1,8 @@
+import { QueryClientProvider } from "@tanstack/react-query"
 import { HeadContent, Link, Scripts, createRootRoute } from "@tanstack/react-router"
 
 import { TooltipProvider } from "@/components/ui/tooltip"
+import { queryClient } from "@/lib/query"
 import appCss from "../styles.css?url"
 
 export const Route = createRootRoute({
@@ -35,12 +37,14 @@ function RootDocument({ children }: { children: React.ReactNode }) {
     <html lang="en">
       <head>
         <HeadContent />
-        <script id="headgate-config">
+        <script id="headgate-config" suppressHydrationWarning>
           {`window.HEADGATE = window.HEADGATE || {apiBase:"/api/v1",readOnly:false};`}
         </script>
       </head>
       <body>
-        <TooltipProvider>{children}</TooltipProvider>
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>{children}</TooltipProvider>
+        </QueryClientProvider>
         <Scripts />
       </body>
     </html>

@@ -1,4 +1,5 @@
 import { Outlet, useRouterState } from "@tanstack/react-router"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { AlertTriangleIcon, RefreshCwIcon } from "lucide-react"
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
 
@@ -10,12 +11,15 @@ import { api } from "@/lib/api"
 import { config } from "@/lib/config"
 
 export interface ViewProps {
-  refreshKey: number
-  refresh: () => void
+  refresh: () => Promise<void>
   notify: (message: string, tone?: "normal" | "error") => void
 }
 
-const ConsoleContext = createContext<ViewProps | null>(null)
+interface ConsoleValue extends ViewProps {
+  livePaused: boolean
+}
+
+const ConsoleContext = createContext<ConsoleValue | null>(null)
 
 export function useConsole() {
   const value = useContext(ConsoleContext)
@@ -23,41 +27,46 @@ export function useConsole() {
   return value
 }
 
-export function useApiResource<T>(path: string | null, refreshKey: number) {
-  const [data, setData] = useState<T | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    if (!path) {
-      setData(null)
-      setError(null)
-      setLoading(false)
-      return
-    }
-    const controller = new AbortController()
-    setLoading(true)
-    api<T>(path, { signal: controller.signal })
-      .then((value) => {
-        setData(value)
-        setError(null)
-      })
-      .catch((reason: unknown) => {
-        if (reason instanceof DOMException && reason.name === "AbortError") return
-        setError(reason instanceof Error ? reason.message : String(reason))
-      })
-      .finally(() => setLoading(false))
-    return () => controller.abort()
-  }, [path, refreshKey])
-
-  return { data, error, loading }
+export function useConsoleQuery<T>(
+  queryKey: readonly unknown[],
+  queryFn: (signal: AbortSignal) => Promise<T>,
+  enabled = true,
+  refetchInterval = 15_000,
+) {
+  const context = useContext(ConsoleContext)
+  return useQuery({
+    queryKey,
+    queryFn: ({ signal }) => queryFn(signal),
+    enabled,
+    refetchInterval: context?.livePaused ? false : refetchInterval,
+  })
 }
 
-export async function mutate(
-  path: string,
-  init: Omit<RequestInit, "body"> & { body?: object | null } = { method: "POST" },
-) {
-  return api(path, { method: "POST", ...init })
+export function useApiResource<T>(path: string | null) {
+  const query = useConsoleQuery(
+    ["api", path],
+    (signal) => api<T>(path!, { signal }),
+    Boolean(path),
+  )
+  return {
+    data: query.data ?? null,
+    error: query.error ? (query.error instanceof Error ? query.error.message : String(query.error)) : null,
+    loading: query.isPending,
+  }
+}
+
+interface ApiMutationRequest {
+  path: string
+  method?: string
+  body?: BodyInit | object | null
+}
+
+export function useApiMutation<T = unknown>() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: ({ path, method = "POST", body }: ApiMutationRequest) => api<T>(path, { method, body }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["api"] }),
+  })
 }
 
 export function Empty({ children }: { children: React.ReactNode }) {
@@ -72,19 +81,22 @@ export function Failure({ message }: { message: string }) {
   return <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive" role="alert"><AlertTriangleIcon className="mr-2 inline size-4" />{message}</div>
 }
 
-function useLiveRefresh(refresh: () => void) {
+function useLiveRefresh(refresh: () => Promise<void>) {
   const [connected, setConnected] = useState(false)
-  const [paused, setPaused] = useState(false)
+  const [paused, setPausedState] = useState(false)
   const pausedRef = useRef(false)
   const debounce = useRef<number | null>(null)
 
-  useEffect(() => { pausedRef.current = paused }, [paused])
+  const setPaused = useCallback((next: boolean) => {
+    pausedRef.current = next
+    setPausedState(next)
+  }, [])
   useEffect(() => {
     const source = new EventSource(`${config.apiBase}/events`)
     const schedule = () => {
       if (pausedRef.current) return
       if (debounce.current) window.clearTimeout(debounce.current)
-      debounce.current = window.setTimeout(refresh, 700)
+      debounce.current = window.setTimeout(() => { void refresh() }, 700)
     }
     source.onopen = () => setConnected(true)
     source.onerror = () => setConnected(false)
@@ -110,22 +122,32 @@ const titles: Record<string, string> = {
 
 export function ConsoleLayout() {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
-  const [refreshKey, setRefreshKey] = useState(0)
   const [notice, setNotice] = useState<{ message: string; tone: "normal" | "error" } | null>(null)
-  const refresh = useCallback(() => setRefreshKey((value) => value + 1), [])
+  const [manualRefreshing, setManualRefreshing] = useState(false)
+  const noticeTimeout = useRef<number | null>(null)
+  const queryClient = useQueryClient()
+  const refresh = useCallback(() => queryClient.refetchQueries({ queryKey: ["api"], type: "active" }), [queryClient])
   const live = useLiveRefresh(refresh)
   const section = pathname.split("/").filter(Boolean)[0] ?? "queues"
 
-  useEffect(() => {
-    const timer = window.setInterval(() => { if (!live.paused) refresh() }, 15_000)
-    return () => window.clearInterval(timer)
-  }, [live.paused, refresh])
-
   const notify = useCallback((message: string, tone: "normal" | "error" = "normal") => {
+    if (noticeTimeout.current) window.clearTimeout(noticeTimeout.current)
     setNotice({ message, tone })
-    window.setTimeout(() => setNotice(null), 3_500)
+    noticeTimeout.current = window.setTimeout(() => setNotice(null), 3_500)
   }, [])
-  const context = useMemo(() => ({ refreshKey, refresh, notify }), [refreshKey, refresh, notify])
+  const manualRefresh = useCallback(async () => {
+    if (manualRefreshing) return
+    setManualRefreshing(true)
+    try {
+      await Promise.all([refresh(), new Promise((resolve) => window.setTimeout(resolve, 400))])
+      notify("Data refreshed")
+    } catch (reason) {
+      notify(reason instanceof Error ? reason.message : String(reason), "error")
+    } finally {
+      setManualRefreshing(false)
+    }
+  }, [manualRefreshing, notify, refresh])
+  const context = useMemo(() => ({ refresh, notify, livePaused: live.paused }), [refresh, notify, live.paused])
 
   return (
     <ConsoleContext.Provider value={context}>
@@ -141,12 +163,14 @@ export function ConsoleLayout() {
               <span className={`size-2 rounded-full ${live.connected && !live.paused ? "bg-success" : "bg-muted-foreground"}`} />
               {live.paused ? "Resume updates" : live.connected ? "Live" : "Polling"}
             </Button>
-            <Button variant="ghost" size="icon" onClick={refresh} aria-label="Refresh data"><RefreshCwIcon /></Button>
+            <Button variant="ghost" size="icon" disabled={manualRefreshing} onClick={() => void manualRefresh()} aria-label={manualRefreshing ? "Refreshing data" : "Refresh data"} aria-busy={manualRefreshing || undefined} title={manualRefreshing ? "Refreshing…" : "Refresh data"}>
+              <RefreshCwIcon className={manualRefreshing ? "animate-spin motion-reduce:animate-none" : ""} />
+            </Button>
           </header>
           <main id="main-content" className="flex-1 scroll-mt-16 p-4 lg:p-6"><Outlet /></main>
         </SidebarInset>
       </SidebarProvider>
-      <div aria-live="polite" className={`fixed bottom-4 left-1/2 z-[70] -translate-x-1/2 rounded-lg px-4 py-2 text-sm shadow-lg ${notice?.tone === "error" ? "bg-destructive text-white" : "bg-foreground text-background"} ${notice ? "block" : "hidden"}`}>{notice?.message}</div>
+      <div aria-live="polite" className={`pointer-events-none fixed bottom-4 left-1/2 z-[70] -translate-x-1/2 rounded-lg px-4 py-2 text-sm shadow-lg transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none ${notice?.tone === "error" ? "bg-destructive text-white" : "bg-foreground text-background"} ${notice ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0"}`}>{notice?.message}</div>
     </ConsoleContext.Provider>
   )
 }

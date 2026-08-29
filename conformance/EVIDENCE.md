@@ -673,9 +673,9 @@ NOTE: round 32ab. The graceful tests drive the real admission loop, hold a child
 - rust: crates/headgate-workflow/src/lib.rs::prepare_builds_one_coordinator_and_pending_fan_out_fan_in
 - rust: crates/headgate-workflow/src/lib.rs::prepare_rejects_missing_dependencies_and_cycles
 - rust: crates/headgate-workflow/tests/live.rs::live_postgres_dag_promotes_fan_out_then_fan_in
-- go: workflow/workflow_test.go::TestPrepareBuildsCoordinatorAndPendingFanOutFanIn
-- go: workflow/workflow_test.go::TestPrepareRejectsMissingDependenciesAndCycles
-- go: workflow/workflow_test.go::TestCoordinatorPromotesFanOutThenFanInAndPropagatesFailure
+- go: headgateworkflow/workflow_test.go::TestPrepareBuildsCoordinatorAndPendingFanOutFanIn
+- go: headgateworkflow/workflow_test.go::TestPrepareRejectsMissingDependenciesAndCycles
+- go: headgateworkflow/workflow_test.go::TestCoordinatorPromotesFanOutThenFanInAndPropagatesFailure
 NOTE: round 32u. Both builders pin the durable batch shape and reject missing dependencies and cycles. The Rust live test enqueues one real coordinator plus four pending application jobs into Postgres, repeatedly runs the ordinary worker runtime, and requires `extract` first, `join` last, and both fan-out branches exactly once between them. Go independently drives the resolver through root promotion, two-way fan-out, and an archived branch; the still-pending join is deleted before execution and the workflow settles failed. The graph is static and bounded by coordinator payload size. Signals, timers, CEL waits, dynamic graph mutation, workflow retry, and graph UI are not claimed.
 
 ### Death handler
@@ -946,9 +946,9 @@ NOTE: round 32o. Every cited test creates TWO helpers concurrently, proves both 
 - rust: crates/headgate-crypto/src/lib.rs::tampering_and_missing_keys_fail_authentication
 - rust: crates/headgate-crypto/src/lib.rs::wire_vector_matches_go_byte_for_byte
 - rust: crates/headgate-crypto/tests/live.rs::live_store_holds_ciphertext_while_handler_receives_plaintext
-- go: encrypted/encrypted_test.go::TestRoundTripBindsIdentityAndPreservesPlaintextFingerprint
-- go: encrypted/encrypted_test.go::TestTamperingAndMissingKeysFail
-- go: encrypted/encrypted_test.go::TestWireVector
+- go: headgatecrypto/crypto_test.go::TestRoundTripBindsIdentityAndPreservesPlaintextFingerprint
+- go: headgatecrypto/crypto_test.go::TestTamperingAndMissingKeysFail
+- go: headgatecrypto/crypto_test.go::TestWireVector
 NOTE: the Rust live test was run against PostgreSQL, reads the exact persisted payload to prove plaintext is absent, then dispatches the job through the real runtime and observes the original secret in the handler. The independent Rust and Go implementations pin the same deterministic AES-GCM bytes; randomized round trips separately prove production encryption does not reuse that nonce. The controls mutate authenticated identity and ciphertext and remove the historical key. This evidence is intentionally limited to payloads; metadata, results, progress, output and attempt errors are outside the claim.
 
 ### Payload redaction

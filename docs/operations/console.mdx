@@ -7,6 +7,42 @@ icon: "panel-top"
 The console provides queue health, job search and detail, admission explanations, workflow
 graphs, rate classes, quarantine, schedules, and worker controls.
 
+## Jobs stay visible while you inspect
+
+The jobs route combines state filters, structured search, queue/state bulk actions, and a
+paginated job table. Selecting a job opens a route-owned detail sheet instead of replacing
+the list, so operators keep their search and surrounding jobs in view.
+
+![Headgate jobs list with state filters, structured search, and bulk actions](/docs/assets/console-jobs.png)
+
+![Headgate jobs list with a running job detail sheet showing progress, admission, timeline, and actions](/docs/assets/console-job-detail.jpg)
+
+The sheet shows the task identity, lifecycle state, queue and partition, rate class,
+attempts and crash attempts, orphan provenance, fingerprint, schedule, progress, current
+admission decision, attempt timeline, output, and permitted actions. Payloads remain
+redacted unless an API caller explicitly requests them.
+
+## Workflows show live execution state
+
+The workflow view renders dependencies as connected stages. Completed edges are solid,
+waiting edges are dashed, and the currently running card is highlighted. Every task card
+links to its ordinary job detail, including the same progress and attempt history available
+from the Jobs route.
+
+![Headgate workflow dependency graph with completed, running, and waiting tasks](/docs/assets/console-workflow.jpg)
+
+The console currently covers:
+
+| View | Operational questions it answers |
+| --- | --- |
+| Queues | How quickly is backlog draining, and which partitions are waiting? |
+| Jobs | What is running, retrying, scheduled, quarantined, or undecodable? |
+| Workflows | Which tasks completed, which task is running, and what is blocked? |
+| Rate classes | Which fleet limits are active, saturated, or paused? |
+| Quarantine | Which fingerprints repeatedly crash and can be released? |
+| Periodic | Which schedules are enabled, and when will they run next? |
+| Workers | Which workers are live, what they serve, and which control signal is pending? |
+
 ## Data architecture
 
 - Every view owns its TanStack file route.
@@ -18,11 +54,21 @@ graphs, rate classes, quarantine, schedules, and worker controls.
 <CodeGroup>
 
 ```rust Rust
-// Mount headgate_ui's asset handler at your authenticated /admin boundary.
+let app = axum::Router::new()
+    .nest("/api/v1", headgate_api::router(store, api_config))
+    .nest_service("/admin/jobs", headgate_ui::router(headgate_ui::Config {
+        api_base: "/api/v1".into(),
+        read_only: false,
+    }));
 ```
 
 ```go Go
-// Mount headgateui.Handler(...) under your authenticated /admin boundary.
+mux.Handle("/api/v1/", headgateapi.HandlerWithConfig(store, apiConfig))
+mux.Handle("/admin/jobs/", http.StripPrefix("/admin/jobs",
+    headgateui.NewHandler(headgateui.Config{
+        APIBase: "/api/v1",
+        ReadOnly: false,
+    })))
 ```
 
 </CodeGroup>
@@ -31,6 +77,11 @@ graphs, rate classes, quarantine, schedules, and worker controls.
 Headgate does not invent your application's identity model. Authenticate and authorize the
 console and API at the embedding boundary.
 </Warning>
+
+`ReadOnly` disables mutation controls for clarity. Configure read-only mode on the control
+API as well; disabled browser controls are not an authorization boundary. Content-hashed
+assets are cached immutably, while the SPA shell is served with `no-cache` so its injected
+API base and read-only configuration stay current.
 
 <Card title="Run the complete UI demo" icon="play" href="/docs/examples/ui-console">
   Inspect realistic jobs, workflows, policies, workers, and schedules without a database.

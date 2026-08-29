@@ -3,11 +3,11 @@ module github.com/mujhtech/headgate/examples/go
 go 1.24.0
 
 require (
-	github.com/mujhtech/headgate/go v0.1.1
-	github.com/mujhtech/headgate/go/headgatecrypto v0.1.1
-	github.com/mujhtech/headgate/go/headgatetest v0.1.1
-	github.com/mujhtech/headgate/go/headgateui v0.1.1
-	github.com/mujhtech/headgate/go/headgateworkflow v0.1.1
+	github.com/mujhtech/headgate/go v0.1.2
+	github.com/mujhtech/headgate/go/headgatecrypto v0.1.2
+	github.com/mujhtech/headgate/go/headgatetest v0.1.2
+	github.com/mujhtech/headgate/go/headgateui v0.1.2
+	github.com/mujhtech/headgate/go/headgateworkflow v0.1.2
 )
 
 require (
@@ -18,7 +18,7 @@ require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/pgx/v5 v5.7.2 // indirect
-	github.com/mujhtech/headgate/go/headgatemigrate v0.1.1 // indirect
+	github.com/mujhtech/headgate/go/headgatemigrate v0.1.2 // indirect
 	github.com/redis/go-redis/v9 v9.7.0 // indirect
 	golang.org/x/crypto v0.31.0 // indirect
 	golang.org/x/text v0.21.0 // indirect

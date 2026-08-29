@@ -17,8 +17,6 @@ AGENTS.md
 ARCHITECTURE.md
 KICKOFF.md
 LICENSE
-LICENSE-APACHE
-LICENSE-MIT
 
 # The Markdown files under docs/ are internal research and implementation
 # notes. Public developer documentation is authored as MDX.

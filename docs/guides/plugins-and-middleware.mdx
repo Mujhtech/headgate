@@ -1,41 +1,427 @@
 ---
 title: "Plugins and middleware"
-description: "Extend producer behavior without moving fleet policy out of the store."
+description: "Build, scope, install, and test reusable producer extensions in Rust and Go."
 icon: "plug"
 ---
 
-The producer pipeline validates and authorizes work before it reaches the store:
+Headgate plugins package producer middleware and insert hooks into one named,
+installable unit. They are useful for shared behavior such as trace propagation,
+tenant stamping, audit observations, validation, and integration with another system.
+
+A plugin does not introduce a new lifecycle interface:
+
+- **enqueue middleware** wraps one logical producer call and controls whether, how, and
+  how many times the inner enqueue operation runs;
+- **insert hooks** observe the begin and end of each actual call to the store;
+- **plugins** keep related middleware and hooks together and optionally scope them to
+  one or more job kinds.
+
+<Note>
+  Headgate's current plugin boundary is producer-side. It does not wrap handler execution.
+  Execution telemetry uses the worker or runner telemetry interface, while death handlers,
+  periodic hooks, and subscriptions have their own lifecycle-specific APIs.
+</Note>
+
+## The producer pipeline
+
+The first registered middleware is the outermost wrapper. Authorization evaluates the
+final envelope after middleware enrichment, and insert hooks run only when the request
+actually reaches the store.
 
 ```text
-authorization → circuit breaker → middleware/plugins → insert hooks → Store.enqueue
+standalone middleware.before
+  global plugin middleware.before
+    matching kind-scoped plugin middleware.before
+      authorization
+        circuit breaker
+          standalone hooks.begin
+          global plugin hooks.begin
+          matching scoped plugin hooks.begin
+            Store.enqueue / Store.enqueue_tx
+          standalone hooks.end
+          global plugin hooks.end
+          matching scoped plugin hooks.end
+    matching kind-scoped plugin middleware.after
+  global plugin middleware.after
+standalone middleware.after
 ```
 
-Middleware wraps enqueue requests. Insert hooks observe actual store attempts. Plugins
-bundle scoped middleware and hooks without introducing a separate extension mechanism.
+This ordering is fixed even when client options and plugins are supplied in a different
+interleaving. Components within one plugin remain contiguous.
+
+<Warning>
+  Plugins are trusted, process-local producer code. Fleet rate limits, fairness,
+  concurrency limits, quarantine, and queue controls must remain in the atomic store
+  admission gate. A plugin is not a replacement for fleet policy.
+</Warning>
+
+## Choose the right extension point
+
+| Need | Use | Why |
+| --- | --- | --- |
+| Add headers or change an envelope before policy evaluation | Middleware | It owns a mutable copy of the enqueue request |
+| Pass a derived Go context to inner code | Middleware | Context changes propagate through `next.Run` |
+| Time the complete producer call | Middleware | Its frame remains active before and after `next` |
+| Reject or conditionally skip an enqueue | Middleware | Returning without calling `next` short-circuits the operation |
+| Retry a classified transient producer error | Middleware | `next` may be called more than once, with care |
+| Observe every actual store attempt and its result | Insert hook | Hooks correspond to store attempts, including duplicates and conflicts |
+| Bundle reusable middleware and hooks | Plugin | One registration keeps related behavior and scope together |
+| Observe durable periodic scheduler ticks | Periodic enqueue hook | Scheduler ticks use a separate elected-duty boundary |
+| React after a job is durably archived | Death handler | It runs after the fence-verified terminal transition |
+| Observe handler execution | Telemetry or subscriptions | Producer plugins do not wrap workers or runners |
+
+Prefer a hook when observation is enough. Use middleware only when the extension needs
+control flow, request mutation, a propagated context, or a before/after frame.
+
+## Enqueue middleware
+
+Middleware receives an owned `EnqueueRequest` and an `EnqueueNext`. Headgate deep-clones
+the caller's envelope batch before entering the chain, including payloads, unique keys,
+and headers. A middleware mutation therefore affects authorization and durable storage
+without changing caller memory.
+
+Calling `next` has precise meaning:
+
+- zero calls intentionally veto the operation;
+- one call performs the normal inner chain;
+- multiple calls perform multiple inner attempts and therefore require idempotent IDs or
+  unique keys and classified transient errors.
+
+Errors from inner middleware, authorization, the circuit breaker, or the store
+unwind through middleware in reverse order.
+
+### Rust middleware
+
+```rust
+use std::sync::Arc;
+use std::time::Instant;
+
+use headgate::{
+    Client, EnqueueFuture, EnqueueMiddleware, EnqueueNext, EnqueueRequest,
+};
+
+struct TimeEnqueue;
+
+impl EnqueueMiddleware for TimeEnqueue {
+    fn handle<'a>(
+        &'a self,
+        request: EnqueueRequest,
+        next: EnqueueNext<'a>,
+    ) -> EnqueueFuture<'a> {
+        Box::pin(async move {
+            let started = Instant::now();
+            let result = next.run(request).await;
+            println!(
+                "enqueue finished in {:?}: {}",
+                started.elapsed(),
+                if result.is_ok() { "ok" } else { "error" },
+            );
+            result
+        })
+    }
+}
+
+let client = Client::new(store.clone())
+    .with_enqueue_middleware(Arc::new(TimeEnqueue));
+```
+
+For middleware-specific failures, return
+`ClientError::Middleware(EnqueueMiddlewareError::new(...))`. Use
+`EnqueueMiddlewareFn` when a named type would add no clarity.
+
+### Go middleware
+
+```go
+type contextKey string
+
+const producerStartKey contextKey = "headgate-producer-start"
+
+var timeEnqueue headgate.EnqueueMiddleware = headgate.EnqueueMiddlewareFunc(func(
+    ctx context.Context,
+    request headgate.EnqueueRequest,
+    next headgate.EnqueueNext,
+) error {
+    started := time.Now()
+    ctx = context.WithValue(ctx, producerStartKey, started)
+
+    err := next.Run(ctx, request)
+    slog.InfoContext(ctx, "enqueue finished",
+        "duration", time.Since(started),
+        "error", err,
+    )
+    return err
+})
+
+client := headgate.NewClient(
+    store,
+    headgate.WithEnqueueMiddleware(timeEnqueue),
+)
+```
+
+Go middleware errors pass through unchanged, preserving `errors.Is` and `errors.As`.
+The context passed to `next.Run` reaches inner middleware, authorization, hooks, and the
+store. Authentication should already be established by the embedding HTTP or RPC stack;
+do not manufacture an identity from an untrusted envelope header.
+
+## Insert hooks
+
+Insert hooks are synchronous, non-wrapping observers. They have no `next`, cannot mutate
+the request, and cannot replace the store result. They run in registration order for
+both phases; unlike middleware, end hooks do not unwind in reverse.
+
+For middleware `A` and hooks `H1`, `H2`, one successful inner call is:
+
+```text
+A.before → authorization → circuit → H1.begin → H2.begin → store
+                                  → H1.end   → H2.end   → A.after
+```
+
+A middleware veto, authorization denial, open circuit, or unsupported transactional
+capability produces no insert-hook event because the store was never called. If
+middleware calls `next` twice and both calls reach the store, hooks receive two complete
+begin/end lifecycles.
+
+End hooks classify results as:
+
+| Result | Meaning |
+| --- | --- |
+| `succeeded` | A new insert or byte-equivalent same-ID replay |
+| `duplicate` | A unique-key winner already exists; the existing ID is available |
+| `id_conflict` | The caller reused an ID for different content |
+| `rejected` | The original validation, quarantine, backpressure, availability, or backend error |
+
+Hooks are not a durable audit log. A process abort can prevent an end callback, and a
+hook panic follows ordinary language panic semantics. Keep hooks non-panicking and
+locally bounded; hand network export to a bounded asynchronous pipeline.
 
 <CodeGroup>
 
-```rust Rust
-let plugin = headgate::Plugin::for_kind("mail-policy", "mail.send")?
-    .with_enqueue_middleware(trace_middleware)
-    .with_insert_hook(audit_hook);
+```rust Rust hook
+use headgate::{InsertHookEvent, InsertHookFn, InsertOutcome};
 
-let client = headgate::Client::new(store).with_plugin(plugin);
+let audit_hook = InsertHookFn::new(|event: InsertHookEvent<'_>| {
+    if let InsertHookEvent::End { attempt, outcome } = event {
+        let result = match outcome {
+            InsertOutcome::Succeeded => "succeeded",
+            InsertOutcome::Duplicate { .. } => "duplicate",
+            InsertOutcome::IdConflict { .. } => "id_conflict",
+            InsertOutcome::Rejected { .. } => "rejected",
+        };
+        println!("{} job(s): {result}", attempt.batch().len());
+    }
+});
 ```
 
-```go Go
-plugin, err := headgate.NewPlugin(
-    "mail-policy",
-    headgate.WithPluginKinds("mail.send"),
-    headgate.WithPluginEnqueueMiddleware(traceMiddleware),
-    headgate.WithPluginInsertHooks(auditHook),
-)
-client := headgate.NewClient(store, headgate.WithPlugins(plugin))
+```go Go hook
+auditHook := headgate.InsertHookFunc(func(
+    ctx context.Context,
+    event headgate.InsertHookEvent,
+) {
+    if event.Phase() != headgate.InsertHookEnd {
+        return
+    }
+    outcome, ok := event.Outcome()
+    if !ok {
+        return
+    }
+    slog.InfoContext(ctx, "enqueue store attempt",
+        "jobs", len(event.Attempt().Batch()),
+        "outcome", outcome.Kind,
+    )
+})
 ```
 
 </CodeGroup>
 
-<Warning>
-Plugins are process-local producer behavior. Fleet rate limits, fairness, concurrency,
-quarantine, and queue controls remain atomically enforced by the store.
-</Warning>
+## Define and install a plugin
+
+A plugin has a non-empty name, an immutable scope, and zero or more middleware and hooks.
+The name identifies the configuration but is not automatically added to job data or
+telemetry.
+
+### Rust plugin
+
+```rust
+use std::sync::Arc;
+
+use headgate::{Client, Plugin};
+
+let plugin = Plugin::for_kind("mail-observability", "mail.send")?
+    .with_enqueue_middleware(Arc::new(TimeEnqueue))
+    .with_insert_hook(Arc::new(audit_hook));
+
+let client = Client::new(store.clone()).with_plugin(plugin);
+```
+
+Use `Plugin::global` for every job kind, `Plugin::for_kind` for one kind, or
+`Plugin::for_kinds` for several kinds. Construction validates job-kind syntax,
+deduplicates the kind set, and rejects an empty plugin name or empty scoped set.
+
+### Go plugin
+
+```go
+plugin, err := headgate.NewPlugin(
+    "mail-observability",
+    headgate.WithPluginKinds("mail.send"),
+    headgate.WithPluginEnqueueMiddleware(timeEnqueue),
+    headgate.WithPluginInsertHooks(auditHook),
+)
+if err != nil {
+    return err
+}
+
+client := headgate.NewClient(
+    store,
+    headgate.WithPlugins(plugin),
+)
+```
+
+Omit `WithPluginKinds` to create a global Go plugin. Invalid configuration returns a
+`*headgate.PluginConfigError` that unwraps to `headgate.ErrInvalidPlugin`.
+
+## Global and job-kind scope
+
+Plugin scope is evaluated against an atomic batch:
+
+- a global plugin always activates;
+- a scoped plugin activates when **any** envelope in the batch matches one configured
+  kind;
+- once activated, every component in that plugin sees the **complete batch**;
+- Headgate never splits a mixed-kind batch to apply a plugin because that would break the
+  store's all-or-nothing enqueue contract.
+
+For example, a plugin scoped to `mail.send` also wraps this entire two-job batch:
+
+```text
+[mail.send, invoice.generate]
+```
+
+If that is too broad for the extension, inspect each envelope inside the component and
+act only on the matching ones. Do not assume every envelope matches simply because the
+plugin activated.
+
+Scope is checked when each plugin boundary is entered. Earlier standalone or plugin
+middleware can rewrite a kind, so later plugin middleware sees the request it actually
+receives. Hook scope is checked at the store boundary and therefore sees the final batch
+after all middleware mutations.
+
+## Ordering multiple plugins
+
+Given standalone middleware `S`, global plugins `G1`, `G2`, and scoped plugins `K1`,
+`K2`, the middleware nesting order is:
+
+```text
+S.before
+  G1.before
+    G2.before
+      K1.before
+        K2.before
+          terminal
+        K2.after
+      K1.after
+    G2.after
+  G1.after
+S.after
+```
+
+Hooks use the same forward class and installation order at both begin and end:
+
+```text
+standalone → G1 → G2 → K1 → K2
+```
+
+Plugin installation order is therefore observable and should be treated as application
+configuration. Put context-enriching middleware outside telemetry that needs to observe
+the enriched context, and put authorization-sensitive mutation before policy evaluation.
+
+## Direct, bulk, transactional, and HTTP behavior
+
+The configured `Client` applies the same middleware/plugin/hook stack to ordinary and
+batch enqueue. Transactional enqueue uses the same chain and selects the transactional
+store terminal; changing `EnqueueOperation` inside middleware cannot switch terminals.
+
+To install the stack on the control API:
+
+<CodeGroup>
+
+```rust Rust API
+let api = headgate_api::router(
+    inspect,
+    headgate_api::ApiConfig {
+        plugins: vec![plugin],
+        ..Default::default()
+    },
+);
+```
+
+```go Go API
+api := headgateapi.HandlerWithConfig(store, headgateapi.Config{
+    Plugins: []headgate.Plugin{plugin},
+})
+```
+
+</CodeGroup>
+
+That configuration covers direct HTTP enqueue and manual periodic runs made through the
+API producer. The elected scheduler's durable ticks use periodic enqueue hooks instead.
+
+Raw `Store::enqueue` or `Store.Enqueue` is a trusted low-level bypass and does not run
+client extensions. Inside handlers, configure `WorkerConfig.producer` or
+`headgate.Config.Producer` with the same client if follow-on jobs must retain application
+authorization, middleware, hooks, plugins, and circuit behavior.
+
+## Failure and retry rules
+
+Middleware may intentionally return before `next`, but it should return a meaningful
+error so callers can distinguish policy veto from success. If it retries:
+
+1. retry only errors known to be transient;
+2. preserve job IDs, unique keys, and the original transactional boundary;
+3. use bounded attempts and backoff;
+4. remember that every successful trip to the store produces another hook lifecycle;
+5. never invoke a caller-owned transaction concurrently.
+
+Headgate deliberately installs no hidden producer retry or local buffer. A producer
+failure remains visible to the caller unless application middleware explicitly handles
+it.
+
+## Test extensions
+
+Use compile-time assertions so signature drift cannot silently disable a Go component:
+
+```go
+var (
+    _ headgate.EnqueueMiddleware = timeEnqueue
+    _ headgate.InsertHook        = auditHook
+)
+```
+
+Rust verifies trait compliance when a component is converted to
+`Arc<dyn EnqueueMiddleware>` or `Arc<dyn InsertHook>`. Unit tests should additionally
+record the call sequence and assert:
+
+- outer middleware enters first and exits last;
+- hooks remain in forward order at both phases;
+- a veto produces no authorization, circuit, hook, or store call;
+- scoped plugins ignore non-matching batches and receive the whole matching batch;
+- direct and transactional calls use the same extension chain;
+- middleware changes the stored clone but not the caller's original envelope.
+
+## Current boundaries
+
+- Plugins contain producer middleware and insert hooks only; there is no worker-middleware
+  plugin interface today.
+- Plugin registration and configuration are process-local and are not persisted with a
+  job.
+- A scoped plugin matches job kind, not queue, tenant, partition, or arbitrary payload.
+- Insert hooks are synchronous observers, not durable events.
+- Plugins cannot weaken or replace atomic store admission policy.
+
+<CardGroup cols={2}>
+  <Card title="OpenTelemetry" icon="activity" href="/docs/operations/observability">
+    Propagate trace context with middleware and export worker signals.
+  </Card>
+  <Card title="Enqueueing" icon="inbox" href="/docs/guides/enqueueing">
+    See how producer validation, authorization, and storage fit together.
+  </Card>
+</CardGroup>

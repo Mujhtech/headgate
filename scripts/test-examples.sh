@@ -13,6 +13,7 @@ cargo run --quiet --manifest-path examples/rust/Cargo.toml --bin tenant-fairness
 cargo run --quiet --manifest-path examples/rust/Cargo.toml --bin progress
 cargo run --quiet --manifest-path examples/rust/Cargo.toml --bin snooze
 cargo run --quiet --manifest-path examples/rust/Cargo.toml --bin workflow
+cargo run --quiet --manifest-path examples/rust/Cargo.toml --bin encryption
 
 echo "== Go examples =="
 unformatted=$(find examples/go -name '*.go' -print0 | xargs -0 gofmt -l)
@@ -29,4 +30,5 @@ test -z "$unformatted" || { printf '%s\n' "$unformatted"; exit 1; }
   GOWORK=off go run ./progress
   GOWORK=off go run ./sticky_routing
   GOWORK=off go run ./workflow
+  GOWORK=off go run ./encryption
 )

@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 headgate = { path = "../../crates/headgate" }
+headgate-crypto = { path = "../../crates/headgate-crypto" }
 headgate-testkit = { path = "../../crates/headgate-testkit" }
 headgate-workflow = { path = "../../crates/headgate-workflow" }
 serde = { version = "1", features = ["derive"] }

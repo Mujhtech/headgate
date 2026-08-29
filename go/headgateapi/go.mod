@@ -2,17 +2,17 @@ module github.com/mujhtech/headgate/go/headgateapi
 
 go 1.24.0
 
-require github.com/mujhtech/headgate/go v0.1.0
+require github.com/mujhtech/headgate/go v0.1.1
 
 replace github.com/mujhtech/headgate/go => ../
 
-require github.com/mujhtech/headgate/go/driver/headgatepgx v0.1.0
+require github.com/mujhtech/headgate/go/driver/headgatepgx v0.1.1
 
-require github.com/mujhtech/headgate/go/driver/headgateredis v0.1.0
+require github.com/mujhtech/headgate/go/driver/headgateredis v0.1.1
 
-require github.com/mujhtech/headgate/go/driver/headgatemysql v0.1.0
+require github.com/mujhtech/headgate/go/driver/headgatemysql v0.1.1
 
-require github.com/mujhtech/headgate/go/headgateui v0.1.0
+require github.com/mujhtech/headgate/go/headgateui v0.1.1
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect

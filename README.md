@@ -99,5 +99,4 @@ enforced inside the claim.
 
 ## License
 
-Licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or
-the [MIT License](LICENSE-MIT), at your option.
+Licensed under the [Apache License, Version 2.0](LICENSE).

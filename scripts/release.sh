@@ -56,12 +56,32 @@ check_release() {
     exit 1
   fi
 
-  local dir actual expected
+  local dir actual expected crate
   for dir in "${go_module_dirs[@]}"; do
     actual=$(sed -n 's/^module //p' "$dir/go.mod")
     expected="$repository/$dir"
     if [[ $actual != "$expected" ]]; then
       echo "$dir/go.mod declares $actual, expected $expected" >&2
+      exit 1
+    fi
+
+    if [[ ! -f "$dir/LICENSE" ]]; then
+      echo "$dir/LICENSE is required so pkg.go.dev can display documentation" >&2
+      exit 1
+    fi
+    if ! cmp --silent LICENSE "$dir/LICENSE"; then
+      echo "$dir/LICENSE differs from the repository Apache-2.0 license" >&2
+      exit 1
+    fi
+  done
+
+  for crate in "${rust_crates[@]}"; do
+    if [[ ! -f "crates/$crate/LICENSE" ]]; then
+      echo "crates/$crate/LICENSE is required in the published crate" >&2
+      exit 1
+    fi
+    if ! cmp --silent LICENSE "crates/$crate/LICENSE"; then
+      echo "crates/$crate/LICENSE differs from the repository Apache-2.0 license" >&2
       exit 1
     fi
   done
@@ -79,17 +99,20 @@ check_release() {
   fi
 
   [[ -f README.md ]] || { echo "README.md is required for release" >&2; exit 1; }
-  [[ -f LICENSE-MIT ]] || { echo "LICENSE-MIT is required for release" >&2; exit 1; }
-  [[ -f LICENSE-APACHE ]] || { echo "LICENSE-APACHE is required for release" >&2; exit 1; }
+  [[ -f LICENSE ]] || { echo "LICENSE is required for release" >&2; exit 1; }
 }
 
 package_rust_crates() {
-  local crate
+  local crate package_contents
   local package_args=(--locked --list)
   [[ ${RELEASE_ALLOW_DIRTY:-} == 1 ]] && package_args+=(--allow-dirty)
   for crate in "${rust_crates[@]}"; do
     echo "checking package contents: $crate $version"
-    cargo package "${package_args[@]}" -p "$crate" >/dev/null
+    package_contents=$(cargo package "${package_args[@]}" -p "$crate")
+    if ! grep --fixed-strings --line-regexp --quiet LICENSE <<<"$package_contents"; then
+      echo "$crate package archive does not contain LICENSE" >&2
+      exit 1
+    fi
   done
 }
 

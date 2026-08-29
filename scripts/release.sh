@@ -8,12 +8,14 @@ readonly go_module_dirs=(
   go/driver/headgatemysql
   go/driver/headgatepgx
   go/driver/headgateredis
+  go/headgatecrypto
   go/headgateapi
   go/headgatectl
   go/headgatemigrate
   go/headgateotel
   go/headgatetest
   go/headgateui
+  go/headgateworkflow
 )
 readonly rust_crates=(
   headgate-core

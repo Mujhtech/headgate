@@ -1,6 +1,6 @@
 # Client-side encrypted job payloads
 
-`headgate-crypto` (Rust) and `encrypted` (Go) encrypt an envelope's payload before it
+`headgate-crypto` (Rust) and `headgatecrypto` (Go) encrypt an envelope's payload before it
 reaches a Headgate store and decrypt it only inside the registered handler. They use
 AES-256-GCM with a fresh 96-bit nonce for every encryption. The wire format is versioned
 and carries a key identifier so old jobs remain readable during key rotation.
@@ -18,7 +18,7 @@ an authentication failure forever. The fingerprint is derived from plaintext bef
 random nonce is added, preserving poison-pill grouping and uniqueness behavior. That also
 means the fingerprint can reveal that two encrypted payloads are equal.
 
-Use `register_encrypted` in Rust or `encrypted.RegisterEncrypted` in Go for an encrypted
+Use `register_encrypted` in Rust or `headgatecrypto.RegisterEncrypted` in Go for an encrypted
 task kind. Registering the normal typed handler for that kind would try to decode the
 ciphertext directly. Encryption increases payload size, and backend payload limits apply
 to the ciphertext.

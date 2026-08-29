@@ -1,7 +1,7 @@
 # Workflows and DAG dependencies
 
 Workflows are an opt-in layer, not part of `headgate-core`. Rust uses the
-`headgate-workflow` crate; Go uses `github.com/mujhtech/headgate/go/workflow`.
+`headgate-workflow` crate; Go uses `github.com/mujhtech/headgate/go/headgateworkflow`.
 
 A workflow builder validates unique task names, missing dependencies, repeated edges,
 and cycles before anything is enqueued. `prepare` returns one batch containing:

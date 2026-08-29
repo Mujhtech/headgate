@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	headgate "github.com/mujhtech/headgate/go"
-	workflow "github.com/mujhtech/headgate/go/workflow"
+	"github.com/mujhtech/headgate/go/headgateworkflow"
 )
 
 type importTask struct {
@@ -45,7 +45,7 @@ func run() error {
 		return err
 	}
 
-	batch, err := workflow.New("daily-import-2026-08-28").
+	batch, err := headgateworkflow.New("daily-import-2026-08-28").
 		CoordinatorQueue("workflows").
 		Add("extract", extract).
 		Add("customers", customers, "extract").
@@ -55,7 +55,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if len(batch) != 5 || batch[0].Kind != workflow.CoordinatorKind {
+	if len(batch) != 5 || batch[0].Kind != headgateworkflow.CoordinatorKind {
 		return fmt.Errorf("unexpected workflow batch: %#v", batch)
 	}
 	for i, job := range batch {

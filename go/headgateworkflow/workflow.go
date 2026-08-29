@@ -1,6 +1,6 @@
-// Package workflow implements durable DAG dependencies as an opt-in layer over
+// Package headgateworkflow implements durable DAG dependencies as an opt-in layer over
 // headgate's ordinary pending jobs. It adds no driver dependency to core.
-package workflow
+package headgateworkflow
 
 import (
 	"context"

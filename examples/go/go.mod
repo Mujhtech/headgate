@@ -4,8 +4,10 @@ go 1.24.0
 
 require (
 	github.com/mujhtech/headgate/go v0.1.1
+	github.com/mujhtech/headgate/go/headgatecrypto v0.1.1
 	github.com/mujhtech/headgate/go/headgatetest v0.1.1
 	github.com/mujhtech/headgate/go/headgateui v0.1.1
+	github.com/mujhtech/headgate/go/headgateworkflow v0.1.1
 )
 
 require (
@@ -24,8 +26,12 @@ require (
 
 replace github.com/mujhtech/headgate/go => ../../go
 
+replace github.com/mujhtech/headgate/go/headgatecrypto => ../../go/headgatecrypto
+
 replace github.com/mujhtech/headgate/go/headgatetest => ../../go/headgatetest
 
 replace github.com/mujhtech/headgate/go/headgatemigrate => ../../go/headgatemigrate
 
 replace github.com/mujhtech/headgate/go/headgateui => ../../go/headgateui
+
+replace github.com/mujhtech/headgate/go/headgateworkflow => ../../go/headgateworkflow

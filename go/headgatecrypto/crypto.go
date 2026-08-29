@@ -1,6 +1,6 @@
-// Package encrypted provides client-side AES-256-GCM payload encryption. Stores see
+// Package headgatecrypto provides client-side AES-256-GCM payload encryption. Stores see
 // ciphertext only; core and every driver remain crypto-free.
-package encrypted
+package headgatecrypto
 
 import (
 	"context"

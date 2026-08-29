@@ -5,12 +5,20 @@ icon: "box"
 ---
 
 The root Go module contains driver-free contracts, producer behavior, registry, runner,
-steps, scheduler, middleware, plugins, and subscriptions. Drivers are separate packages so
-applications pull only their selected database dependencies.
+steps, scheduler, middleware, plugins, and subscriptions. Drivers and optional feature
+layers are separate modules so applications pull only the dependencies they select.
 
 ```bash
 go get github.com/mujhtech/headgate/go
 go get github.com/mujhtech/headgate/go/driver/headgatepgx
+```
+
+Optional modules keep their existing import paths and version independently with the Go
+workspace:
+
+```bash
+go get github.com/mujhtech/headgate/go/headgateworkflow
+go get github.com/mujhtech/headgate/go/headgatecrypto
 ```
 
 | Type | Role |

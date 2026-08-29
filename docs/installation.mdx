@@ -16,6 +16,7 @@ uses. PostgreSQL is the reference backend; MySQL and Redis share the core admiss
 [dependencies]
 headgate = "0.1"
 headgate-postgres = "0.1" # or headgate-mysql / headgate-redis
+# Optional: headgate-workflow, headgate-crypto, headgate-otel, headgate-ui
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
@@ -27,6 +28,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 go get github.com/mujhtech/headgate/go
 go get github.com/mujhtech/headgate/go/driver/headgatepgx
 # or driver/headgatemysql / driver/headgateredis
+# Optional standalone modules:
+# go get github.com/mujhtech/headgate/go/headgateworkflow
+# go get github.com/mujhtech/headgate/go/headgatecrypto
 ```
 
   </Tab>

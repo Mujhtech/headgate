@@ -32,7 +32,7 @@ store.enqueue(&batch).await?;
 ```
 
 ```go Go
-batch, err := workflow.New("daily-import").
+batch, err := headgateworkflow.New("daily-import").
     CoordinatorQueue("workflows").
     Add("extract", extract).
     Add("customers", customers, "extract").
@@ -60,7 +60,7 @@ headgate_workflow::register_coordinator(
 ```
 
 ```go Go
-err := workflow.RegisterCoordinator(registry, store, time.Second)
+err := headgateworkflow.RegisterCoordinator(registry, store, time.Second)
 ```
 
 </CodeGroup>

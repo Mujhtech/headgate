@@ -1,4 +1,4 @@
-package encrypted
+package headgatecrypto
 
 import (
 	"fmt"

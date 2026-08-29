@@ -89,7 +89,7 @@ go	go/driver/headgatepgx/store_test.go	11
 go	go/driver/headgatepgx/tracesignal_test.go	1
 go	go/driver/headgateredis/inspect_test.go	2
 go	go/driver/headgateredis/store_test.go	7
-go	go/encrypted/encrypted_test.go	3
+go	go/headgatecrypto/crypto_test.go	3
 go	go/enqueue_middleware_test.go	4
 go	go/fingerprint_test.go	2
 go	go/headgateapi/api_test.go	15
@@ -121,5 +121,5 @@ go	go/subscription_test.go	2
 go	go/task_data_test.go	1
 go	go/tracecontext_test.go	4
 go	go/validate_test.go	9
-go	go/workflow/workflow_test.go	3
+go	go/headgateworkflow/workflow_test.go	3
 sh	scripts/test-admission.sh	545

@@ -38,9 +38,9 @@ echo "== ui =="           && pnpm --dir ui check
 echo "== rust =="         && RUST_TEST_THREADS=1 cargo test --workspace -q -- --nocapture 2>&1 | tee "$RUSTLOG"
 # Go only reports skip lines in verbose mode. Keep the complete transcript while showing
 # a compact summary in the terminal.
-echo "== go =="           && (cd go && go vet ./... ./driver/headgatepgx/... ./driver/headgatemysql/... ./driver/headgateredis/... ./headgateapi/... ./headgatemigrate/... ./headgatetest/... ./headgateui/... \
-                                    && go build ./... ./driver/headgatepgx/... ./driver/headgatemysql/... ./driver/headgateredis/... ./headgateapi/... ./headgatemigrate/... ./headgatetest/... ./headgateui/... \
-                                    && go test -p 1 -v ./... ./driver/headgatepgx/... ./driver/headgatemysql/... ./driver/headgateredis/... ./headgateapi/... ./headgatemigrate/... ./headgatetest/... ./headgateui/... 2>&1 \
+echo "== go =="           && (cd go && go vet ./... ./driver/headgatepgx/... ./driver/headgatemysql/... ./driver/headgateredis/... ./headgatecrypto/... ./headgateapi/... ./headgatemigrate/... ./headgatetest/... ./headgateui/... ./headgateworkflow/... \
+                                    && go build ./... ./driver/headgatepgx/... ./driver/headgatemysql/... ./driver/headgateredis/... ./headgatecrypto/... ./headgateapi/... ./headgatemigrate/... ./headgatetest/... ./headgateui/... ./headgateworkflow/... \
+                                    && go test -p 1 -v ./... ./driver/headgatepgx/... ./driver/headgatemysql/... ./driver/headgateredis/... ./headgatecrypto/... ./headgateapi/... ./headgatemigrate/... ./headgatetest/... ./headgateui/... ./headgateworkflow/... 2>&1 \
                                        | tee "$GOLOG" \
                                        | awk '/^(---|===) (SKIP|FAIL)/ || /^(ok|FAIL|\?)[ \t]/ || /^ *--- SKIP/ {print}')
 echo "== examples =="     && ./scripts/test-examples.sh

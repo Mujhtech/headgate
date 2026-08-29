@@ -1,0 +1,71 @@
+---
+title: "Transactions and ORMs"
+description: "Commit jobs, application writes, effects, and checkpoints atomically."
+icon: "database-zap"
+---
+
+PostgreSQL and MySQL expose transactional adapters. Redis deliberately does not: a method
+that cannot join the application's transaction would create a false atomicity guarantee.
+
+## Transactional enqueue
+
+Wrap the transaction handle already owned by the application, then enqueue through the
+transactional port before committing. If the application write rolls back, the job rolls
+back with it.
+
+<CodeGroup>
+
+```rust Rust
+let tx = client.transaction().await?;
+tx.execute("INSERT INTO orders (id) VALUES ($1)", &[&order.id]).await?;
+store.enqueue_on(&tx, &batch).await?;
+tx.commit().await?;
+```
+
+```go Go
+tx, err := pool.Begin(ctx)
+if err != nil { return err }
+defer tx.Rollback(ctx)
+
+if _, err := tx.Exec(ctx, `INSERT INTO orders (id) VALUES ($1)`, order.ID); err != nil {
+    return err
+}
+if err := store.EnqueueTx(ctx, headgatepgx.WrapTx(tx), batch); err != nil {
+    return err
+}
+return tx.Commit(ctx)
+```
+
+</CodeGroup>
+
+| Stack | Handle passed to Headgate |
+| --- | --- |
+| Rust + PostgreSQL | `tokio_postgres::Transaction` |
+| Rust + MySQL | `mysql_async::Transaction` |
+| Go + PostgreSQL | `pgx.Tx` through `headgatepgx.WrapTx` |
+| Go + MySQL | `*sql.Tx` through `headgatemysql.WrapTx` |
+
+GORM and Bun expose the underlying `*sql.Tx` on MySQL. SQL builders that retain the native
+pgx handle can use the PostgreSQL adapter. An ORM that does not expose a compatible raw
+connection needs a small second pool or enqueue-after-commit, with the corresponding
+job-loss window made explicit.
+
+<Warning>
+Do not hand-write rows into Headgate tables. That bypasses uniqueness, quarantine,
+partition maintenance, arrival counters, and future schema invariants.
+</Warning>
+
+## Transactional handler effects
+
+The `once` helper claims an effect key, runs application writes, and completes the job in
+one fence-verified transaction. Step-scoped idempotency commits a named step's effect with
+its checkpoint. If ownership changes before commit, both the application write and the
+Headgate completion roll back.
+
+Inside such a callback, use the supplied transaction. Calling an ordinary store method may
+try to acquire a second connection while the first is retained and can exhaust a small
+pool.
+
+<Card title="Connection budget" icon="network" href="/docs/operations/connection-budget">
+  Size SQL pools for transactional callbacks, renewal, admission, and notifications.
+</Card>

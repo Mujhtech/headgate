@@ -1,0 +1,112 @@
+---
+title: "Enqueueing"
+description: "Create jobs safely with IDs, uniqueness, transactions, policy, and producer hooks."
+icon: "send"
+---
+
+The producer client is the validated boundary for application enqueueing. It validates the
+entire batch before store I/O, derives fingerprints, runs authorization and middleware,
+and reports typed duplicate or availability errors.
+
+## Choose the enqueue boundary
+
+| Need | Use |
+| --- | --- |
+| One or more jobs | Native client enqueue with a batch of envelopes |
+| Same commit as application data | A PostgreSQL or MySQL transactional adapter |
+| Service-to-service producer | `POST /jobs` or `POST /jobs/bulk` with `Idempotency-Key` |
+| Wait for one result | Subscribe before enqueue, then reconcile durable state |
+| Recurring work | A periodic definition rather than an application timer |
+
+Bulk enqueue is one atomic request. If validation or authorization rejects one member,
+Headgate writes none of its siblings.
+
+## IDs and scheduling
+
+Callers may provide a strict job ID for correlation and idempotency. Reusing that ID with
+different job content is an ID conflict, not a uniqueness match. Priority orders jobs only
+inside a queue; queue weight chooses among queues. Delayed jobs remain scheduled until
+store time reaches their timestamp.
+
+## Uniqueness, replacement, and debounce
+
+Headgate supports lifecycle uniqueness and time-window throttling. A lifecycle key remains
+held while the job is live. A throttle key is released by its clock even if the original
+job already completed.
+
+On conflict, a replacement mask can update only the payload bundle, scheduled time,
+priority, and maximum attempts. Debounce is the common replacement shape: one durable job
+keeps moving forward while new payloads replace its pending work. Replacement never
+mutates a running or terminal job.
+
+<Warning>
+The plaintext fingerprint participates in uniqueness and quarantine. With encrypted jobs,
+this preserves behavior but reveals payload equality.
+</Warning>
+
+## Backpressure and outages
+
+Producer admission can cap queue depth and reject enqueue before overload becomes database
+growth. Retryable store failures are classified separately from validation, authorization,
+duplicate, and ID-conflict errors. The producer circuit breaker fails fast while the store
+is unhealthy and probes again after its cooldown.
+
+Applications should retry only typed unavailable errors, with their own deadline and
+jitter. Retrying a forbidden, malformed, or conflicting request cannot make it valid.
+
+## Authorization, middleware, and hooks
+
+An enqueue authorizer receives application-supplied identity and every envelope. Headgate
+does not trust an HTTP identity header or invent application roles. A denial rejects the
+whole batch before store access. The raw store is intentionally a trusted low-level bypass.
+
+<CodeGroup>
+
+```rust Rust
+let policy: Arc<dyn headgate::EnqueueAuthorizer> = Arc::new(
+    |ctx: &headgate::EnqueueContext, env: &headgate::Envelope| {
+        ctx.identity.as_ref().is_some_and(|identity| {
+            identity.subject == "service:mailer" && env.kind == "mail.send"
+        })
+    },
+);
+
+let client = headgate::Client::new(store)
+    .with_enqueue_authorizer(policy);
+```
+
+```go Go
+policy := headgate.EnqueueAuthorizeFunc(func(
+    ctx context.Context,
+    auth headgate.EnqueueAuthorization,
+    env headgate.Envelope,
+) bool {
+    return auth.Identity != nil &&
+        auth.Identity.Subject == "service:mailer" &&
+        env.Kind == "mail.send"
+})
+
+client := headgate.NewClient(store, headgate.WithEnqueueAuthorizer(policy))
+```
+
+</CodeGroup>
+
+Producer middleware wraps the operation. Insert hooks run around the durable write.
+Plugins package middleware and hooks together with global or task-kind scope. Their order
+is deterministic: standalone components, global plugins in install order, then matching
+kind-scoped plugins in install order.
+
+Configure exact queue-depth backpressure through the control API:
+
+```http
+PUT /api/v1/queues/email/enqueue-limit
+Idempotency-Key: email-limit-v1
+Content-Type: application/json
+
+{"max_unfinished_jobs":100000}
+```
+
+<CardGroup cols={2}>
+  <Card title="Transactions and ORMs" icon="database" href="/docs/guides/transactions-and-orms" />
+  <Card title="Plugins and middleware" icon="puzzle" href="/docs/guides/plugins-and-middleware" />
+</CardGroup>

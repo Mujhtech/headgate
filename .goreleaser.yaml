@@ -36,8 +36,7 @@ archives:
     name_template: "headgatectl_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
-      - LICENSE-APACHE
-      - LICENSE-MIT
+      - LICENSE
 
 checksum:
   name_template: checksums.txt

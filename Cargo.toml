@@ -9,6 +9,7 @@ authors = ["The headgate Authors"]
 description = "A policy-aware distributed job queue with PostgreSQL, MySQL, and Redis backends."
 homepage = "https://github.com/mujhtech/headgate"
 repository = "https://github.com/mujhtech/headgate"
+documentation = "https://headgate.mintlify.app"
 readme = "README.md"
 keywords = ["job-queue", "distributed-systems", "postgresql", "redis", "mysql"]
 categories = ["asynchronous", "database"]

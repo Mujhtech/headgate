@@ -1,6 +1,8 @@
-# headgate
+# Headgate
 
 A distributed job queue for Go and Rust, backed by Postgres, MySQL, or Redis.
+
+Read the developer documentation at [headgate.mintlify.app](https://headgate.mintlify.app/).
 
 **Dequeue is an admission decision, not a fetch.** Every other queue asks the store
 "give me N jobs." headgate asks "given the fleet's policy state and my capacity, what

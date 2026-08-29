@@ -1,103 +1,159 @@
 # Headgate
 
-A distributed job queue for Go and Rust, backed by Postgres, MySQL, or Redis.
+[![CI](https://github.com/Mujhtech/headgate/actions/workflows/ci.yml/badge.svg)](https://github.com/Mujhtech/headgate/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/headgate.svg)](https://crates.io/crates/headgate)
+[![Go Reference](https://pkg.go.dev/badge/github.com/mujhtech/headgate/go.svg)](https://pkg.go.dev/github.com/mujhtech/headgate/go)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Read the developer documentation at [headgate.mintlify.app](https://headgate.mintlify.app/).
+Headgate runs reliable background jobs in Go and Rust using PostgreSQL, MySQL, or Redis.
 
-**Dequeue is an admission decision, not a fetch.** Every other queue asks the store
-"give me N jobs." headgate asks "given the fleet's policy state and my capacity, what
-may I run?" — evaluated atomically inside the store. Fleet-wide rate limiting, tenant
-fairness, global concurrency ceilings, and poison-pill quarantine become one mechanism
-instead of four features nobody has.
+Define a typed job, enqueue it from your application, and let Headgate handle retries,
+scheduling, workflows, progress, results, and worker coordination. Its rate limits, tenant
+fairness, concurrency ceilings, and quarantine rules apply across the whole worker
+fleet—not independently in each process.
 
-## Status
+[Documentation](https://headgate.mintlify.app/) ·
+[Quickstart](https://headgate.mintlify.app/docs/quickstart) ·
+[Examples](https://headgate.mintlify.app/docs/examples/overview) ·
+[Latest release](https://github.com/Mujhtech/headgate/releases/latest)
 
-**Two languages, three backends.** The workspace contains 12 Rust crates and 8 Go modules;
-store ports for Postgres, Redis and MySQL in BOTH languages; worker runtimes, scheduler,
-control API, static console, and versioned SQL migrators in both. The admission gate is
-828 lines of SQL (Postgres), 342 (MySQL) and 317 of Lua. The latest live three-backend
-corpus completed **756 assertions, 0 failures, and 2 announced MySQL skips**; those two are
-the pending-worker-command read path named in
-[`conformance/MYSQL_VERIFICATION.md`](conformance/MYSQL_VERIFICATION.md). MySQL 8.4 has
-now live-parsed both drivers and both API servers; that ledger remains the reproduction
-runbook and the honest record of the two residual skips.
+## Why Headgate
 
-Read `conformance/CAPABILITY_REGISTER.md` before assuming any given thing exists.
+- **Fleet-wide policy:** rate limits and concurrency budgets are shared by every worker.
+- **Fair multi-tenant execution:** busy tenants cannot starve quieter tenants while spare
+  capacity remains usable.
+- **Typed jobs in Go and Rust:** register strongly typed handlers and reject unknown job
+  kinds at startup.
+- **Reliable execution:** leases, fencing, retries, timeouts, deadlines, panic recovery,
+  graceful shutdown, and separate crash accounting are built in.
+- **Scheduling and orchestration:** delayed and periodic jobs, resumable steps, progress,
+  results, and durable workflow DAGs.
+- **Production controls:** queue management, quarantine and redrive, worker control,
+  OpenTelemetry, a control API, CLI, and an embedded web UI.
+- **Security by default:** payloads are redacted from inspection unless requested and can
+  be encrypted at rest with client-managed keys.
 
-## What is here
+## Try it locally
 
-| Path | What | State |
-|---|---|---|
-| `ARCHITECTURE.md` | The full design: carry / fix / invent | complete |
-| `AGENTS.md` | Build order, invariants, traps already found | complete |
-| `proto/headgate.proto` | The wire contract | compiles |
-| `api/headgate.openapi.yaml` | The control contract (§10) | validates |
-| `conformance/state_machine.yaml` | Transition table both languages generate from | validates |
-| `conformance/scenarios/` | The corpus a backend must pass to declare a capability | **executed** — `scripts/run-scenarios.py`, 4 cells (2 languages x PG/Redis) |
-| `conformance/EVIDENCE.md` | Every ✅/🔶 register row bound to a named, running assertion | linted by `scripts/check-evidence.py` |
-| `conformance/TEST_INVENTORY.tsv` | Per-file test floors — a disappearing test is a failure | linted by `scripts/check-inventory.py` |
-| `docs/` | **Five competitors enumerated feature by feature** — River, Oban, Sidekiq, asynq, apalis | complete |
-| `docs/getting-started.md` | Side-by-side Rust and Go producer/worker guide | current |
-| `docs/console.md` | TanStack Start console build, embedding, and security boundary | current |
-| `conformance/CAPABILITY_REGISTER.md` | 129 capabilities, honest status for each | living |
-| `conformance/MYSQL_VERIFICATION.md` | What is verified vs merely written, on MySQL | living |
-| `docs/migrations.md` | Versioned SQL install/upgrade/adoption runbook | live-tested in Rust + Go on Postgres + MySQL |
-| `docs/testing.md` | In-memory and isolated live-store testing runbook | live-tested in Rust + Go on all three stores |
-| `docs/multi-instance.md` | Production instance isolation for Postgres, MySQL, and Redis | live-tested in Rust + Go on both SQL backends |
-| `docs/connection-budget.md` | Pool sizing, notifier overhead, and transaction-held slots | live-tested in Rust + Go on Postgres + MySQL |
-| `crates/headgate-migrate/` / `go/headgatemigrate/` | Embedded migration libraries and matching CLIs | up/down/validate/adopt |
-| `crates/headgate-sql/` / `go/postgressql/` | Dependency-free explicit Postgres qualification shared by store and migrator | unit + live tested |
-| `crates/headgate-postgres/migrations/` | Schema | applies |
-| `crates/headgate-postgres/queries/admit.sql` | **The admission gate, SQL** | tested |
-| `crates/headgate-mysql/queries/eligible.sql` | The admission gate, MySQL | live-tested through Rust + Go |
-| `crates/headgate-redis/lua/admit.lua` | **The admission gate, Lua** | tested |
-| `crates/headgate-core/` | Rust core — 10 traits, 964 non-comment lines | 22 tests pass |
-| `go/` | Go core + runtime — 583 non-comment lines in `headgate.go` | vets clean |
-| `KICKOFF.md` | The round-1 kickoff. **Historical — its inventory is stale** | — |
-
-## Get started
-
-Follow the [Rust and Go getting-started guide](docs/getting-started.md), then use the
-[migration runbook](docs/migrations.md) for the selected SQL backend. The
-[capability register](conformance/CAPABILITY_REGISTER.md) is the source of truth for
-backend-specific support.
-
-## Verify
+The basic examples use the in-memory test store, so no database or external service is
+required:
 
 ```bash
-scripts/verify.sh
+git clone https://github.com/Mujhtech/headgate.git
+cd headgate
+
+# Rust
+cargo run --manifest-path examples/rust/Cargo.toml --bin basic
+
+# Go
+cd examples/go
+GOWORK=off go run ./basic
 ```
 
-Needs Postgres and Redis for the admission tests:
+Both examples define a typed `Welcome` job, register its handler, enqueue it, run the real
+admission and dispatch path, and verify that it completed.
+
+## Define a job
+
+### Rust
+
+```rust
+use headgate::{JobCtx, Registry, Task};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Deserialize, Serialize, Task)]
+#[task(kind = "email:welcome", version = 1)]
+struct WelcomeEmail {
+    address: String,
+}
+
+let mut registry = Registry::new();
+registry.register::<WelcomeEmail, _, _>(|_: JobCtx, job| async move {
+    send_welcome_email(&job.address).await?;
+    Ok(())
+})?;
+```
+
+Install the runtime and one backend:
+
+```toml
+[dependencies]
+headgate = "0.1"
+headgate-postgres = "0.1" # or headgate-mysql / headgate-redis
+```
+
+See the [Rust SDK guide](https://headgate.mintlify.app/docs/sdk/rust/overview) for client,
+worker, and enqueue setup.
+
+### Go
+
+```go
+type WelcomeEmail struct {
+	Address string `json:"address"`
+}
+
+func (WelcomeEmail) Kind() string { return "email:welcome" }
+
+registry := headgate.NewRegistry()
+err := headgate.RegisterFunc[WelcomeEmail](registry,
+	func(ctx context.Context, job *headgate.Job[WelcomeEmail]) error {
+		return sendWelcomeEmail(ctx, job.Args.Address)
+	},
+)
+```
+
+Install the runtime and one backend:
 
 ```bash
-psql -c 'CREATE DATABASE hg'
-cargo run -p headgate-migrate --bin hg-migrate -- \
-  --database-url 'postgres://localhost/hg' up
-redis-server --port 6380 --daemonize yes
-PGPORT=5433 REDIS_PORT=6380 scripts/test-admission.sh
+go get github.com/mujhtech/headgate/go
+go get github.com/mujhtech/headgate/go/driver/headgatepgx
+# or driver/headgatemysql / driver/headgateredis
 ```
 
-## The gate, demonstrated
+See the [Go SDK guide](https://headgate.mintlify.app/docs/sdk/go/overview) for runner,
+client, and enqueue setup.
 
-The first four lines of 220. `scripts/test-admission.sh` prints the rest.
+## Choose a backend
 
+| Backend | Use it when |
+| --- | --- |
+| PostgreSQL | You want the reference backend, transactional enqueueing, and notifications. |
+| MySQL | Your application already runs on MySQL and polling fits your deployment. |
+| Redis | You want a low-latency Redis-native fleet and do not need SQL transactions. |
+
+Backend packages are separate, so applications only pull in the driver they use. Start
+with the [installation guide](https://headgate.mintlify.app/docs/installation) and apply
+the matching migrations before starting workers.
+
+## Operations console
+
+Headgate includes a responsive console for jobs, queues, workflows, rate classes,
+quarantine, periodic jobs, and workers. It is embedded directly into Go and Rust binaries;
+you do not need to deploy a separate JavaScript server.
+
+![Headgate workflow console](docs/assets/console-workflow.jpg)
+
+Try the complete read-only demo locally:
+
+```bash
+cd examples/go
+GOWORK=off go run ./ui_demo
 ```
-== Postgres ==
-  ✅ fleet rate limit caps at bucket size (5)
-  ✅ fairness spans partitions under a 5000-job flood (3)
-  ✅ 8 concurrent workers, zero double-claims (0)
-  ✅ no job holds a lease outside running (0)
-== Redis ==
-  ✅ fleet rate limit caps at bucket size (5)
-  ✅ lease written for every claim (5)
-  ✅ fairness spans partitions under a 5000-job flood (3)
-  ✅ quarantined fingerprint never admitted (0)
-```
 
-The first line is the one that matters: asynq, River, and apalis all limit per worker
-process, so ten workers means ten times your intended limit. This is one shared budget,
-enforced inside the claim.
+Then open `http://127.0.0.1:8080`. For production mounting and security guidance, see the
+[operations console documentation](https://headgate.mintlify.app/docs/operations/console).
+
+## More features
+
+- Priorities, weighted queues, unique jobs, bulk enqueueing, and transactional enqueueing
+- Scheduled, periodic, retryable, snoozed, rate-limited, and non-consuming outcomes
+- Workflow fan-out/fan-in, named resumable steps, cursor iteration, and batch handlers
+- Job progress, results, attempt history, mid-run output, subscriptions, and test helpers
+- Producer middleware, authorization, insert hooks, backpressure, and circuit breaking
+- PostgreSQL, MySQL, and Redis implementations with matching core behavior
+
+See the [feature index](https://headgate.mintlify.app/docs/reference/feature-index) for the
+full list and the documented boundaries of each backend.
 
 ## License
 

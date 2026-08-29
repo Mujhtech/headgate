@@ -1,0 +1,112 @@
+---
+title: "Feature index"
+description: "A public map of implemented capabilities and the guide that explains each area."
+icon: "list-tree"
+---
+
+This page is the documentation coverage map for Headgate's implemented capabilities. It
+summarizes the evidence-backed capability register in user-facing groups. The register and
+tests remain the source of truth when a backend has a narrower boundary.
+
+## Producing jobs
+
+- typed, bulk, transactional, and HTTP enqueue;
+- strict caller-supplied IDs, validated kind names, tags, priority, delay, pending jobs,
+  and delete-on-completion ephemeral jobs;
+- lifecycle uniqueness, throttle uniqueness, replacement, debounce, and kind exclusion;
+- producer authorization, middleware, insert hooks, plugins, backpressure, outage
+  classification, and circuit breaking;
+- insert-and-await and caller-supplied connection pools.
+
+<Card title="Enqueueing guide" icon="send" href="/docs/guides/enqueueing" />
+
+## Scheduling and orchestration
+
+- cron and sub-minute periodic schedules, timezones, missed-run policy, idempotent upsert,
+  durable state, origin traceability, event audit, and periodic hooks;
+- durable workflow DAG dependencies;
+- named resumable steps and cursor iteration.
+
+<CardGroup cols={2}>
+  <Card title="Periodic jobs" icon="calendar-clock" href="/docs/guides/periodic-jobs" />
+  <Card title="Workflows" icon="git-fork" href="/docs/guides/workflows" />
+</CardGroup>
+
+## Admission policy
+
+- fleet and composable rate limits, cost weights, concurrency ceilings, and saturation
+  strategies;
+- work-conserving tenant fairness, weighted queues, queue priority ordering, and prefetch;
+- poison-pill quarantine, store-supplied time, policy rejection metrics, and admission
+  explanations;
+- runtime policy writes, cross-gate rate-class validation, empty-poll backoff, and measured
+  admission-gate overhead.
+
+<Card title="Policies" icon="gauge" href="/docs/concepts/policies" />
+
+## Handler execution
+
+- typed dispatch, kind aliases, startup validation, and payload upcasting;
+- retries and backoff, snooze, timeout, deadline, panic recovery, graceful shutdown, and
+  non-consuming errors;
+- progress, results, attempt logs, mid-run output, task-local typed data, client context,
+  dependency extractors, long-task tracking, and handler-side lease control;
+- isolated execution, sticky routing, and batch handlers.
+
+<CardGroup cols={2}>
+  <Card title="Execution reliability" icon="shield-check" href="/docs/guides/execution-reliability" />
+  <Card title="Handler context" icon="container" href="/docs/guides/handler-context" />
+</CardGroup>
+
+## Recovery and correctness
+
+- crash accounting separate from returned failures, at-least-once delivery, lease fencing,
+  and retry-time FIFO;
+- archive/dead-letter behavior, redrive, death handlers, stuck-job callbacks, and
+  move-suspect-to-back, including explicit abort and discard outcomes;
+- idempotent effects, transactional step effects, injectable clocks, and step-resume
+  helpers;
+- orphan provenance and rate-limited-as-nonfailure semantics.
+
+## Runtime and fleet operations
+
+- singleton duties, multi-node heartbeat, worker control, wakeups, backlog derivatives,
+  oldest-job age, quiet-group metrics, and autoscaling signals;
+- queue pause/resume, safe forced deletion, bounded memory samples, retention, eviction,
+  per-queue history, SQL archive partitioning, and PostgreSQL index maintenance;
+- rolling restart, memory guard, advisory-lock namespaces, and leader resignation;
+- alternate schemas, Redis Sentinel and Cluster, migration tooling, CLI, and connection
+  budgets.
+
+<Card title="Queue and runtime management" icon="settings-2" href="/docs/operations/queue-and-runtime-management" />
+
+## Integration and observability
+
+- PostgreSQL, MySQL, and Redis stores with capability-honest optional interfaces;
+- OpenTelemetry traces and metrics, envelope trace context, application subscriptions,
+  and the embedded operations console;
+- ORM transaction interop for supported native handles.
+
+## Testing and security
+
+- in-memory stores, drain and execute-one helpers, assert-enqueued matchers, live test
+  database management, injectable time, and a test-only uniqueness bypass;
+- payload redaction by default, read-only UI/API posture, producer authorization, and
+  client-side AES-256-GCM payload encryption.
+
+<CardGroup cols={2}>
+  <Card title="Testing" icon="flask-conical" href="/docs/operations/testing" />
+  <Card title="Encryption at rest" icon="lock-keyhole" href="/docs/guides/encryption-at-rest" />
+</CardGroup>
+
+## Read boundaries as part of the feature
+
+Not every backend implements every optional interface. Redis intentionally omits SQL
+transactions and archive partitioning; MySQL polls because it has no PostgreSQL-style
+notification channel. Encryption protects payload bytes, not policy metadata or output.
+Workflows currently provide immutable dependency graphs, not signals, timers, nested graph
+mutation, or workflow-level retry.
+
+<Card title="Capability evidence" icon="badge-check" href="/docs/reference/capabilities">
+  Learn how completed claims are tied to running tests and scenarios.
+</Card>

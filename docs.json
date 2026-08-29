@@ -82,6 +82,10 @@
             "group": "Guides",
             "pages": [
               "docs/guides/handlers",
+              "docs/guides/handler-context",
+              "docs/guides/enqueueing",
+              "docs/guides/transactions-and-orms",
+              "docs/guides/events-and-subscriptions",
               "docs/guides/plugins-and-middleware"
             ]
           },
@@ -90,8 +94,11 @@
             "pages": [
               "docs/guides/resumable-work",
               "docs/guides/results-and-progress",
+              "docs/guides/execution-reliability",
+              "docs/guides/batch-handlers",
               "docs/guides/periodic-jobs",
-              "docs/guides/workflows"
+              "docs/guides/workflows",
+              "docs/guides/encryption-at-rest"
             ]
           },
           {
@@ -102,6 +109,7 @@
               "docs/operations/observability",
               "docs/operations/connection-budget",
               "docs/operations/multi-instance",
+              "docs/operations/queue-and-runtime-management",
               "docs/operations/console"
             ]
           }
@@ -145,6 +153,7 @@
               "docs/examples/overview",
               "docs/examples/basic",
               "docs/examples/workflow",
+              "docs/examples/encryption",
               "docs/examples/ui-console"
             ]
           }
@@ -163,6 +172,7 @@
               "docs/reference/project-map",
               "docs/reference/configuration",
               "docs/reference/control-api",
+              "docs/reference/feature-index",
               "docs/reference/capabilities",
               "docs/reference/verification",
               "docs/reference/documentation"

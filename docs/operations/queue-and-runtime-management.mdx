@@ -1,0 +1,67 @@
+---
+title: "Queue and runtime management"
+description: "Pause intake, delete safely, retain audit data, and roll workers without losing control."
+icon: "settings-2"
+---
+
+Headgate's operator paths are bounded and audited. Queue depth does not turn an ordinary
+inspection request into a full-table scan, and destructive work is represented as an
+asynchronous operation.
+
+## Queue controls
+
+Runtime policy writes can pause and resume a queue without redeploying workers. Producer
+backpressure and forced deletion use the same store policy state read by enqueue, so intake
+cannot race past a freeze.
+
+Deleting a non-empty queue without `force=true` is rejected. Forced deletion freezes new
+jobs and creates a bounded operation that removes work in batches. Follow its operation ID
+instead of holding one HTTP request open for queue depth.
+
+Queue memory measurement is also explicit. A sample examines at most 1,000 recent jobs in
+at most 200 queues and caches the result; normal queue listing only reads the cached value.
+
+## Retention and cold archives
+
+Terminal retention controls when a job leaves the hot admission table. PostgreSQL and
+MySQL can copy selected queues into a monthly cold archive during that bounded sweep. The
+active gate remains unpartitioned so global IDs and uniqueness guarantees do not weaken.
+
+Archive pruning validates a closed month and every row's retention deadline before using
+the database's partition-truncate operation. Redis supports terminal retention but does not
+advertise SQL table partitioning.
+
+## Fleet control and rolling restarts
+
+Workers publish heartbeats and consume one-shot operator commands. For a rolling restart:
+
+1. start the replacement and wait for readiness;
+2. send `restart` to the old worker;
+3. let it stop admission, release singleton duties, and drain running handlers;
+4. let the process supervisor replace or reap it.
+
+`terminate` uses the configured bounded drain. `restart` waits for long-running handlers.
+The memory guard requests a bounded restart when a sampled process crosses its configured
+limit; Headgate does not fork its own replacement.
+
+## Incident CLI
+
+`headgatectl` talks to the bounded control API and never receives database credentials.
+
+```bash
+headgatectl --api http://127.0.0.1:8080 jobs list
+headgatectl --api http://127.0.0.1:8080 jobs show JOB_ID
+headgatectl --api http://127.0.0.1:8080 jobs retry JOB_ID
+headgatectl --api http://127.0.0.1:8080 queues list
+headgatectl --api http://127.0.0.1:8080 queues delete QUEUE --force
+headgatectl --api http://127.0.0.1:8080 operations show OPERATION_ID
+```
+
+Configure `--token` or `HEADGATE_TOKEN` when the embedding application protects the API.
+Schema installation remains in the migration CLIs so incident credentials and DDL
+credentials stay separate.
+
+<CardGroup cols={2}>
+  <Card title="Operations console" icon="panel-top" href="/docs/operations/console" />
+  <Card title="Control API" icon="waypoints" href="/docs/reference/control-api" />
+</CardGroup>

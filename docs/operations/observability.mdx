@@ -1,62 +1,477 @@
 ---
-title: "Observability"
-description: "Export bounded traces and metrics while keeping SDK ownership in the host application."
+title: "OpenTelemetry"
+description: "Connect Headgate producers and workers to an OpenTelemetry SDK, exporter, and trace context."
 icon: "activity"
 ---
 
-Core emits an exporter-neutral telemetry interface. The opt-in `headgate-otel` Rust crate
-and `headgateotel` Go module translate it to OpenTelemetry without installing an SDK,
-exporter, sampler, or global provider.
+Headgate exposes an exporter-neutral telemetry interface. The optional `headgate-otel`
+Rust crate and `headgateotel` Go module translate worker events into OpenTelemetry traces
+and metrics.
 
-The host application owns its tracer provider, meter provider, sampling policy, resource
-attributes, and exporter lifecycle.
+The integration has two distinct parts:
+
+1. Attach the adapter to the **Rust worker** or **Go runner** so completed attempts and
+   worker signals are exported.
+2. Attach trace-context middleware to the **producer client** so the executing job span
+   is a child of the request or operation that enqueued it.
+
+```text
+request span
+    │
+    ├─ producer Client ── inject traceparent/tracestate ── Job envelope
+    │                                                        │
+    │                                                     Store
+    │                                                        │
+    └──────────────── Worker / Runner ── headgate.process ◀───┘
+                              │
+                         headgate-otel
+                              │
+                   application-owned OTel SDK
+                              │
+                    Collector or vendor backend
+```
+
+<Note>
+  The OpenTelemetry adapter belongs on the worker or runner, not on the producer client.
+  The client uses enqueue middleware only for propagation. `headgate-otel` does not
+  install an SDK, choose a sampler, configure an exporter, or replace a global provider.
+</Note>
+
+## Install
 
 <CodeGroup>
 
-```rust Rust
-use opentelemetry::{metrics::MeterProvider as _, trace::TracerProvider as _};
+```toml Rust
+[dependencies]
+headgate = "0.1.1"
+headgate-otel = "0.1.1"
+opentelemetry = { version = "0.32", features = ["metrics", "trace"] }
+opentelemetry_sdk = { version = "0.32", features = ["metrics", "trace"] }
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "metrics", "trace"] }
 
-let telemetry = headgate_otel::Telemetry::new(
-    tracer_provider.tracer("my-service"),
-    meter_provider.meter("my-service"),
-);
-worker_config.telemetry = std::sync::Arc::new(telemetry);
+# Only needed when the application uses tracing spans as its current context.
+tracing = "0.1"
+tracing-opentelemetry = "0.33"
 ```
 
-```go Go
+```bash Go
+go get github.com/mujhtech/headgate/go/headgateotel@v0.1.1
+go get go.opentelemetry.io/contrib/exporters/autoexport
+go get go.opentelemetry.io/otel/sdk
+go get go.opentelemetry.io/otel/sdk/metric
+```
+
+</CodeGroup>
+
+Keep all OpenTelemetry packages on compatible versions. The versions above match the
+current Headgate adapters.
+
+## Configure providers and an exporter
+
+The application owns the providers because it usually needs one resource and one export
+pipeline for HTTP, database, and job telemetry. The examples below use OTLP and standard
+environment variables, so the same binary can send to an OpenTelemetry Collector or a
+vendor endpoint.
+
+```bash
+export OTEL_SERVICE_NAME=billing-worker
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+```
+
+### Rust providers
+
+```rust
+use opentelemetry_sdk::{
+    metrics::SdkMeterProvider,
+    trace::SdkTracerProvider,
+    Resource,
+};
+
+fn telemetry_providers(
+) -> Result<(SdkTracerProvider, SdkMeterProvider), Box<dyn std::error::Error>> {
+    let resource = Resource::builder()
+        .with_service_name("billing-worker")
+        .build();
+
+    let span_exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .build()?;
+    let tracer_provider = SdkTracerProvider::builder()
+        .with_resource(resource.clone())
+        .with_batch_exporter(span_exporter)
+        .build();
+
+    let metric_exporter = opentelemetry_otlp::MetricExporter::builder()
+        .with_tonic()
+        .build()?;
+    let meter_provider = SdkMeterProvider::builder()
+        .with_resource(resource)
+        .with_periodic_exporter(metric_exporter)
+        .build();
+
+    Ok((tracer_provider, meter_provider))
+}
+```
+
+OTLP reads `OTEL_EXPORTER_OTLP_ENDPOINT`, signal-specific endpoints, headers, timeout,
+compression, and protocol from the environment. Configure those before constructing the
+exporters.
+
+### Go providers
+
+```go
+import (
+    "context"
+
+    "go.opentelemetry.io/contrib/exporters/autoexport"
+    "go.opentelemetry.io/otel/attribute"
+    "go.opentelemetry.io/otel/sdk/resource"
+    sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+    sdktrace "go.opentelemetry.io/otel/sdk/trace"
+    semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
+)
+
+func telemetryProviders(ctx context.Context) (
+    *sdktrace.TracerProvider,
+    *sdkmetric.MeterProvider,
+    error,
+) {
+    res, err := resource.Merge(
+        resource.Default(),
+        resource.NewWithAttributes(
+            semconv.SchemaURL,
+            semconv.ServiceName("billing-worker"),
+            attribute.String("deployment.environment.name", "production"),
+        ),
+    )
+    if err != nil {
+        return nil, nil, err
+    }
+
+    spanExporter, err := autoexport.NewSpanExporter(ctx)
+    if err != nil {
+        return nil, nil, err
+    }
+    metricReader, err := autoexport.NewMetricReader(ctx)
+    if err != nil {
+        return nil, nil, err
+    }
+
+    tracerProvider := sdktrace.NewTracerProvider(
+        sdktrace.WithResource(res),
+        sdktrace.WithBatcher(spanExporter),
+    )
+    meterProvider := sdkmetric.NewMeterProvider(
+        sdkmetric.WithResource(res),
+        sdkmetric.WithReader(metricReader),
+    )
+    return tracerProvider, meterProvider, nil
+}
+```
+
+`autoexport` selects exporters from `OTEL_TRACES_EXPORTER` and
+`OTEL_METRICS_EXPORTER`; both default to OTLP. Set either value to `none` to disable that
+signal without changing application code.
+
+## Attach telemetry to execution
+
+This is the step that makes Headgate emit signals. Creating providers alone is not
+enough.
+
+<CodeGroup>
+
+```rust Rust worker
+use std::sync::Arc;
+
+use headgate::{Registry, Worker, WorkerConfig};
+use opentelemetry::{metrics::MeterProvider as _, trace::TracerProvider as _};
+
+let (tracer_provider, meter_provider) = telemetry_providers()?;
+let telemetry = headgate_otel::Telemetry::new(
+    tracer_provider.tracer("headgate-worker"),
+    meter_provider.meter("headgate-worker"),
+);
+
+let config = WorkerConfig {
+    telemetry: Arc::new(telemetry),
+    ..WorkerConfig::default()
+};
+let registry = Registry::new();
+// Register typed handlers on registry before starting the worker.
+let (worker, handle) = Worker::new(store, registry, config);
+
+worker.run().await?;
+
+// Flush buffered telemetry after the worker has stopped.
+tracer_provider.shutdown()?;
+meter_provider.shutdown()?;
+```
+
+```go Go runner
+import (
+    "context"
+
+    headgate "github.com/mujhtech/headgate/go"
+    "github.com/mujhtech/headgate/go/headgateotel"
+)
+
+tracerProvider, meterProvider, err := telemetryProviders(ctx)
+if err != nil {
+    return err
+}
+defer tracerProvider.Shutdown(context.Background())
+defer meterProvider.Shutdown(context.Background())
+
 telemetry, err := headgateotel.New(tracerProvider, meterProvider)
-if err != nil { return err }
-cfg.Telemetry = telemetry
+if err != nil {
+    return err
+}
+
+registry := headgate.NewRegistry()
+// Register typed handlers on registry before starting the runner.
+runner := headgate.NewRunner(store, registry, headgate.Config{
+    Telemetry: telemetry,
+})
+return runner.Run(ctx)
 ```
 
 </CodeGroup>
 
 Passing `nil` to the Go adapter for either provider uses OpenTelemetry's current global
-provider. The adapter never installs or replaces a global provider.
+provider. This is useful when application bootstrap already installs globals, but a no-op
+global provider silently produces no telemetry. Passing providers explicitly makes the
+dependency visible and is easier to test.
 
-## Trace propagation
+## Connect producer and worker traces
 
-Each `job_span` event becomes a `Consumer` span named `headgate.process`, using the
-event's explicit start and end timestamps. A valid envelope `traceparent` becomes a
-remote parent; an absent or malformed value starts a root span.
+Headgate reserves the `traceparent` and `tracestate` envelope headers. The worker parses
+them at dispatch and uses a valid context as the remote parent of `headgate.process`.
+Missing or invalid context starts a root span and never makes the job undecodable.
 
-## Cardinality contract
+Install a W3C propagator once during application startup, then inject the current context
+into every envelope in the enqueue batch.
 
-Job IDs, fingerprints, partition keys, and other unbounded identities may be span
-attributes but never metric labels. Metric dimensions stay bounded to values such as
-queue, job kind, outcome, and backend.
+### Rust producer middleware
+
+This example assumes the application uses `tracing-opentelemetry`, so
+`tracing::Span::current().context()` returns the current OpenTelemetry context.
+
+```rust
+use std::{collections::BTreeMap, sync::Arc};
+
+use headgate::{
+    Client, EnqueueFuture, EnqueueMiddleware, EnqueueNext, EnqueueRequest,
+};
+use opentelemetry::{global, propagation::Injector};
+use opentelemetry_sdk::propagation::TraceContextPropagator;
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+
+struct HeaderInjector<'a>(&'a mut BTreeMap<String, String>);
+
+impl Injector for HeaderInjector<'_> {
+    fn set(&mut self, key: &str, value: String) {
+        self.0.insert(key.to_ascii_lowercase(), value);
+    }
+}
+
+global::set_text_map_propagator(TraceContextPropagator::new());
+
+struct InjectTrace;
+
+impl EnqueueMiddleware for InjectTrace {
+    fn handle<'a>(
+        &'a self,
+        mut request: EnqueueRequest,
+        next: EnqueueNext<'a>,
+    ) -> EnqueueFuture<'a> {
+        Box::pin(async move {
+            let context = tracing::Span::current().context();
+            global::get_text_map_propagator(|propagator| {
+                for envelope in &mut request.batch {
+                    propagator.inject_context(
+                        &context,
+                        &mut HeaderInjector(&mut envelope.headers),
+                    );
+                }
+            });
+            next.run(request).await
+        })
+    }
+}
+
+let client = Client::new(store.clone())
+    .with_enqueue_middleware(Arc::new(InjectTrace));
+```
+
+### Go producer middleware
+
+```go
+import (
+    "context"
+
+    headgate "github.com/mujhtech/headgate/go"
+    "go.opentelemetry.io/otel"
+    "go.opentelemetry.io/otel/propagation"
+)
+
+otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+    propagation.TraceContext{},
+    propagation.Baggage{},
+))
+
+injectTrace := headgate.EnqueueMiddlewareFunc(func(
+    ctx context.Context,
+    request headgate.EnqueueRequest,
+    next headgate.EnqueueNext,
+) error {
+    for i := range request.Batch {
+        if request.Batch[i].Headers == nil {
+            request.Batch[i].Headers = make(map[string]string)
+        }
+        otel.GetTextMapPropagator().Inject(
+            ctx,
+            propagation.MapCarrier(request.Batch[i].Headers),
+        )
+    }
+    return next.Run(ctx, request)
+})
+
+client := headgate.NewClient(
+    store,
+    headgate.WithEnqueueMiddleware(injectTrace),
+)
+```
+
+Use that configured client for direct, bulk, and transactional enqueue. If a handler
+enqueues follow-on work through the client in its job context, Headgate automatically
+inherits the current job's envelope trace context unless the child envelope explicitly
+sets its own `traceparent`.
 
 <Warning>
-  Do not promote tenant or job identity into metric labels in a custom adapter. That
-  turns normal job volume into an unbounded time-series count.
+  The adapter currently emits execution spans only. It does not create a producer
+  `headgate.enqueue` span or inject context automatically when `Client.Enqueue` is called.
+  Use the middleware above to connect traces across the queue boundary.
 </Warning>
 
-## Operational signals
+## Execution span
 
-The control API exposes maintained queue arrival and drain rates, time-to-drain,
-oldest-job age, worker utilization, empty-poll ratio, and policy rejection counts.
-Use those signals alongside traces: depth alone cannot distinguish a growing queue from
-one that is draining normally.
+Every `job_span` runtime event becomes one span with these semantics:
+
+| Field | Value |
+| --- | --- |
+| Name | `headgate.process` |
+| Kind | `Consumer` |
+| Parent | Remote W3C context from the envelope, or none |
+| Time | Actual attempt start and end time, not export time |
+| Status `Ok` | `success` |
+| Status `Error` | `retry`, `undecodable` |
+| Status unset | `skip`, `revoke`, `snooze`, `rate_limited`, `lease_lost` |
+
+Span attributes:
+
+| Attribute | Meaning |
+| --- | --- |
+| `headgate.job.id` | Durable job identifier |
+| `headgate.job.kind` | Registered job kind |
+| `headgate.queue` | Queue selected for the attempt |
+| `headgate.attempt` | Retry attempt number |
+| `headgate.outcome` | Runtime outcome |
+
+The job payload and result are never attached. They can contain credentials, personal
+data, or large documents and should be inspected through access-controlled application
+tools instead.
+
+## Metrics
+
+| Instrument | Type | Unit | Attributes |
+| --- | --- | --- | --- |
+| `headgate.jobs.admitted` | Counter | jobs | `headgate.queue` |
+| `headgate.jobs.rejected` | Counter | jobs | `headgate.queue`, `headgate.policy` |
+| `headgate.jobs.completed` | Counter | jobs | `headgate.kind` |
+| `headgate.jobs.quarantined` | Counter | jobs | none |
+| `headgate.jobs.evicted` | Counter | jobs | `headgate.queue` |
+| `headgate.job.duration` | Histogram | ms | completed-event form: `headgate.kind`; attempt-span form: `headgate.job.kind`, `headgate.queue`, `headgate.outcome` |
+| `headgate.worker.utilization` | Gauge | ratio | `headgate.worker` |
+| `headgate.worker.empty_poll_ratio` | Gauge | ratio | `headgate.worker` |
+| `headgate.worker.inflight` | Gauge | jobs | `headgate.worker` |
+| `headgate.worker.capacity` | Gauge | jobs | `headgate.worker` |
+| `headgate.worker.memory` | Gauge | By | `headgate.worker` |
+| `headgate.worker.memory_limit` | Gauge | By | `headgate.worker` |
+| `headgate.worker.restarts` | Counter | restarts | `headgate.worker` |
+
+Exporter and backend naming rules may translate dots to underscores or append suffixes
+such as `_total`. Inspect the names in your backend before copying a query verbatim.
+
+## Useful dashboards and alerts
+
+Start with operational questions rather than raw queue depth:
+
+- **Why are jobs not starting?** Graph the rejection rate by `headgate.policy` and queue.
+- **Are workers saturated?** Compare utilization, inflight, and capacity by worker.
+- **Is polling wasteful?** Alert on a sustained high empty-poll ratio, not a single sample.
+- **Are attempts slowing down?** Graph duration percentiles by kind, queue, and outcome.
+- **Is the memory guard cycling workers?** Correlate memory, memory limit, and restart count.
+- **Is the fleet falling behind?** Combine runtime metrics with the control API's arrival
+  rate, drain rate, oldest-job age, and time-to-drain. Those durable aggregates are not
+  emitted by this process-local adapter.
+
+Avoid alerting on depth alone. A deep queue that is draining faster than it is growing is
+different from a shallow queue whose oldest job has stopped moving.
+
+## Cardinality and privacy
+
+Job IDs appear on spans because spans are sampled event records. They never appear on
+metric attributes. Fingerprints, partition keys, tenant IDs, and payload fields are also
+excluded from metric attributes.
+
+<Warning>
+  Do not add tenant, job, fingerprint, or arbitrary error text as metric attributes in a
+  custom adapter. Each new value creates more time series and can turn ordinary queue
+  volume into an observability outage or an unexpected vendor bill.
+</Warning>
+
+## Shutdown and flushing
+
+Stop admission and let the worker or runner finish its bounded graceful shutdown first.
+Then shut down the tracer provider and meter provider. Providers commonly buffer spans
+and metrics; exiting without shutdown can lose the final attempts from a deployment.
+
+In Go, use a fresh bounded context for provider shutdown if the runner's context has
+already been cancelled. In Rust, keep both provider values alive until `worker.run()`
+returns.
+
+## Troubleshooting
+
+### No spans or metrics arrive
+
+1. Confirm `Telemetry` is set on `WorkerConfig` or `headgate.Config`.
+2. Confirm the providers have a real exporter and are not no-op globals.
+3. Check `OTEL_EXPORTER_OTLP_ENDPOINT`, protocol, TLS, and authentication headers.
+4. Shut providers down during a local test to force buffered data to flush.
+
+### Job spans appear as separate traces
+
+Inspect the stored envelope headers. The producer must inject a valid W3C `traceparent`.
+Also confirm the enqueue call receives the context containing the active request span.
+Creating the client once is fine; passing `context.Background()` to enqueue is not.
+
+### Metrics arrive but worker gauges do not
+
+Worker gauges are emitted from runtime saturation and memory sampling events. Confirm the
+runner has started and that your metric reader's collection interval has elapsed.
+
+### Duplicate-looking duration measurements
+
+`headgate.job.duration` is recorded from both the compact completion event and the richer
+attempt-span event, with different attribute sets. Select the attribute form you need in
+the dashboard instead of summing both shapes indiscriminately.
+
+### Payload data is missing from traces
+
+This is intentional. Payloads and results are not telemetry attributes. Add a bounded,
+non-sensitive business identifier in application instrumentation when correlation needs
+more than the Headgate job ID.
 
 <Card title="Connection budgets" icon="gauge" href="/docs/operations/connection-budget">
   Keep lease renewal and heartbeat traffic moving while handlers hold transactions.

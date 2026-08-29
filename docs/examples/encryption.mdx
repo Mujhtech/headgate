@@ -1,0 +1,34 @@
+---
+title: "Encryption example"
+description: "Run the Rust and Go payload-encryption examples locally."
+icon: "lock-keyhole"
+---
+
+Both examples construct a typed payload, encrypt its envelope before enqueue would occur,
+verify that stored bytes differ from plaintext, and authenticate the original bytes on
+decode. They use an in-process static keyring so no database or KMS is required.
+
+<CodeGroup>
+
+```bash Rust
+cargo run --manifest-path examples/rust/Cargo.toml --bin encryption
+```
+
+```bash Go
+cd examples/go
+go run ./encryption
+```
+
+</CodeGroup>
+
+Expected output:
+
+```text
+payload encrypted before enqueue and authenticated on decode
+```
+
+The repository verification script compiles and runs both examples. For production key
+rotation, threat boundaries, and encrypted handler registration, continue to the full
+guide.
+
+<Card title="Encryption at rest" icon="book-open" href="/docs/guides/encryption-at-rest" />

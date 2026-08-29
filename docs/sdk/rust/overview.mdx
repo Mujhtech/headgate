@@ -16,6 +16,9 @@ serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
+Add `headgate-workflow` for durable DAGs or `headgate-crypto` for client-side encrypted
+payloads. Both are opt-in layers and keep database drivers out of core.
+
 ## Main types
 
 | Type | Role |

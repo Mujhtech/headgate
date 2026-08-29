@@ -1,0 +1,103 @@
+---
+title: "Handler context"
+description: "Access clients, dependency extractors, task data, output, and tracking inside handlers."
+icon: "container"
+---
+
+Typed handlers receive durable job metadata and a cancellation-aware context. The runtime
+also carries application extensions so handlers can obtain dependencies without global
+state.
+
+## Available job data
+
+Handlers can inspect job ID, queue, partition, rate class, weight, attempt and crash counts,
+maximum attempts, deadline, and fencing identity. Payload decoding has already produced the
+typed task value.
+
+Task-local typed data is non-persisted scratch state for middleware, extractors, and the
+handler in the same attempt. It does not survive a retry or process restart. Put durable
+state in a checkpoint, result, progress record, or application database instead.
+
+## Client from context
+
+Workers install a producer client into handler context. Follow-on jobs therefore use the
+same validation, authorization, middleware, and store configuration as ordinary producers.
+This is convenient for small chains; use workflows when dependency state must be durable
+and inspectable.
+
+<CodeGroup>
+
+```rust Rust
+let config = headgate::WorkerConfig {
+    producer: Some(producer),
+    ..Default::default()
+};
+
+registry.register::<ParentTask, _, _>(|ctx, parent| async move {
+    ctx.client().enqueue(&[child_envelope(parent)]).await?;
+    Ok(())
+})?;
+```
+
+```go Go
+runner := headgate.NewRunner(store, registry, headgate.Config{
+    Producer: producer,
+})
+
+err := headgate.RegisterFunc[ParentTask](registry,
+    func(ctx context.Context, parent *headgate.Job[ParentTask]) error {
+        client, ok := headgate.ClientFromContext(ctx)
+        if !ok { return headgate.ErrClientFromContextUnavailable }
+        return client.Enqueue([]headgate.Envelope{childEnvelope(parent)})
+    })
+```
+
+</CodeGroup>
+
+## Dependency extractors
+
+Handler extractors resolve typed dependencies from runtime extensions before calling the
+task function. Registration validates extractor shape at startup. Missing dependencies
+fail explicitly rather than appearing as a nil service during execution.
+
+<CodeGroup>
+
+```rust Rust
+registry.register_extracted::<
+    SendInvoice,
+    (Data<DatabasePool>, Meta<Tenant>, Attempt, TaskId),
+    _,
+    _,
+>(|ctx, task, (database, tenant, attempt, task_id)| async move {
+    send_invoice(database, tenant, attempt, task_id, task).await
+})?;
+```
+
+```go Go
+err := headgate.RegisterExtracted2[SendInvoice](
+    registry,
+    headgate.ExtractData[*DatabasePool](),
+    headgate.ExtractAttempt(),
+    func(ctx context.Context, job *headgate.Job[SendInvoice],
+        database *DatabasePool, attempt headgate.Attempt) error {
+        return sendInvoice(ctx, database, attempt, job.Args)
+    },
+)
+```
+
+</CodeGroup>
+
+## Progress, output, and results
+
+- progress is the latest durable status for operators;
+- mid-run output is appendable attempt output;
+- logs describe each attempt;
+- a result is the final durable return value.
+
+Payloads and results are distinct. List endpoints redact payloads by default, and encrypted
+payloads do not automatically encrypt progress, output, logs, or results.
+
+<CardGroup cols={2}>
+  <Card title="Typed handlers" icon="braces" href="/docs/guides/handlers" />
+  <Card title="Results and progress" icon="activity" href="/docs/guides/results-and-progress" />
+</CardGroup>

@@ -1,0 +1,52 @@
+---
+title: "Batch handlers"
+description: "Coalesce independently durable jobs into bounded handler calls."
+icon: "layers"
+---
+
+Batch handlers reduce per-call overhead without changing job durability. Each member keeps
+its own payload, lease, fence, timeout, deadline, retry and crash counters, checkpoint,
+result, logs, and terminal state.
+
+<CodeGroup>
+
+```rust Rust
+registry.register_batch::<IndexDocument, _, _>(
+    100,
+    Duration::from_millis(250),
+    |jobs| async move {
+        let outcomes = index_many(&jobs).await;
+        outcomes.into_iter().map(|result| result.map_err(Into::into)).collect()
+    },
+)?;
+```
+
+```go Go
+err := headgate.RegisterBatchFunc[IndexDocument](
+    registry,
+    100,
+    250*time.Millisecond,
+    func(jobs []headgate.BatchJob[IndexDocument]) []error {
+        return indexMany(jobs)
+    },
+)
+```
+
+</CodeGroup>
+
+The result list is positional and must contain exactly one result per input. One member may
+succeed while another retries; a batch call is a shared execution optimization, not a
+shared durability fate.
+
+## Flush behavior
+
+- reaching `max_size` flushes immediately;
+- `max_delay` is measured from the first waiting member, so steady traffic cannot postpone
+  a batch forever;
+- a panic is isolated and converted into a retry result for every affected member;
+- admission accounting still charges rate limits, fairness, and concurrency per member.
+
+<Note>
+This is execution batching. It does not replace multiple enqueued jobs with one synthetic
+job, and it is separate from workflow fan-out and fan-in.
+</Note>

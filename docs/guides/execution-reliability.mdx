@@ -1,0 +1,57 @@
+---
+title: "Execution reliability"
+description: "Retries, crashes, deadlines, leases, shutdown, isolation, and terminal handlers."
+icon: "shield-check"
+---
+
+Headgate provides at-least-once execution. A worker owns a job only while its lease ID and
+fencing token remain current. Every completion, checkpoint, and transactional effect
+verifies that identity so an expired worker cannot overwrite a newer attempt.
+
+## Returned errors and crashes are different
+
+A returned error consumes `attempt`. A panic, process loss, or expired lease consumes
+`crash_attempt`. Poison-pill quarantine depends on that distinction. Panic recovery and
+per-task isolation are enabled by the runtime so one handler cannot take down unrelated
+work.
+
+Retries use bounded backoff and store time. `rate_limited` and configured non-consuming
+errors requeue without consuming an attempt. `snooze` reschedules intentionally, while
+`skip` and `revoke` are terminal decisions.
+
+## Timeouts and deadlines
+
+A task timeout bounds one attempt. A deadline bounds the useful lifetime of the job across
+attempts. The runtime cancels the handler when either expires, on shutdown, on operator
+cancellation, or when renewal reports a lost lease.
+
+<Warning>
+Treat context cancellation as a hard stop. Fencing protects Headgate state, but code that
+ignores cancellation may continue external side effects after ownership has moved.
+</Warning>
+
+## Graceful shutdown and lease control
+
+During graceful shutdown the worker stops admitting new jobs, lets in-flight work finish
+within the configured window, and keeps renewing those leases. Handlers for genuinely long
+operations can use the lease-control surface and report task tracking state. Sticky routing
+can prefer a named worker while retaining a fallback policy when it is unavailable.
+
+## Terminal and suspect-job callbacks
+
+- death handlers observe jobs that exhaust retries or are discarded;
+- stuck-job handlers receive runtime evidence about work that is no longer progressing;
+- a suspect job can be moved behind healthy work without changing its attempt semantics;
+- redrive returns selected archived jobs to execution through bounded operator operations;
+- orphan provenance identifies jobs reclaimed after a crash without inventing a second
+  lifecycle state.
+
+Use isolated execution when application code needs a process boundary. Use resumable steps
+for durable intra-job progress and idempotency helpers when application effects must commit
+with a fence-verified completion.
+
+<CardGroup cols={3}>
+  <Card title="Outcomes" icon="route" href="/docs/concepts/outcomes" />
+  <Card title="Workers and leases" icon="timer-reset" href="/docs/concepts/workers-and-leases" />
+  <Card title="Resumable work" icon="list-checks" href="/docs/guides/resumable-work" />
+</CardGroup>

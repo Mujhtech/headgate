@@ -1,0 +1,59 @@
+---
+title: "Events and subscriptions"
+description: "React to persisted outcomes without blocking worker acknowledgements."
+icon: "radio"
+---
+
+Application subscriptions are bounded, filtered, process-local streams emitted after a
+job outcome commits. They are useful for waking an HTTP waiter, updating a local cache, or
+starting a small follow-on action.
+
+Three event kinds are available: completed, failed, and cancelled. Events include an
+envelope snapshot, persisted state, attempt number, publication time, and error text when
+applicable. A rejected fence emits nothing.
+
+<CodeGroup>
+
+```rust Rust
+let bus = headgate::EventBus::new();
+let mut failures = bus.subscribe(
+    headgate::SubscriptionConfig::new(64)?
+        .with_kinds([headgate::JobEventKind::Failed]),
+);
+
+while let Some(event) = failures.recv().await {
+    println!("{} -> {}", event.job_id(), event.state());
+}
+```
+
+```go Go
+bus := headgate.NewEventBus()
+sub, err := bus.Subscribe(ctx, headgate.SubscriptionConfig{
+    ChanSize: 64,
+    Kinds: []headgate.JobEventKind{headgate.JobEventFailed},
+})
+if err != nil { return err }
+defer sub.Close()
+
+for event := range sub.Events() {
+    log.Printf("%s -> %s", event.Envelope().ID, event.State())
+}
+```
+
+</CodeGroup>
+
+## Backpressure and delivery boundary
+
+Publishing is non-blocking. When one subscriber's finite buffer is full, only that
+subscriber drops the event and its dropped counter increments. Worker completion and other
+subscribers continue.
+
+Subscriptions have no cursor, reconnect replay, or cross-process fanout. A race-free
+wait-for-completion flow subscribes before enqueue and then reconciles durable job state.
+Use an application outbox or event log when audit and replay are required.
+
+<Note>
+Store notifications wake workers, server-to-worker control signals manage the fleet, and
+OpenTelemetry exports operations data. Those are different channels from application
+outcome subscriptions.
+</Note>

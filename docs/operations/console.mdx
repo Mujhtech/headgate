@@ -17,10 +17,19 @@ the list, so operators keep their search and surrounding jobs in view.
 
 ![Headgate jobs list with a running job detail sheet showing progress, admission, timeline, and actions](/docs/assets/console-job-detail.jpg)
 
-The sheet shows the task identity, lifecycle state, queue and partition, rate class,
-attempts and crash attempts, orphan provenance, fingerprint, schedule, progress, current
-admission decision, attempt timeline, output, and permitted actions. Payloads remain
-redacted unless an API caller explicitly requests them.
+The sheet shows the task identity, a Created → Scheduled → Wait → Running → terminal
+lifecycle, queue and partition, rate class, attempts and crash attempts, orphan provenance,
+fingerprint, schedule, progress, current admission decision, attempt history, payload,
+metadata, output, and permitted actions.
+Wait and Running durations advance once per second while their stage is live. Waiting,
+active, completed, failed, and pending stages use distinct colors; nodes and connectors
+enter progressively, with motion disabled when the operating system requests reduced motion.
+Opening the sheet explicitly requests the selected job's payload; list and search
+responses remain payload-free.
+
+Encrypted payloads are detected from Headgate's versioned envelope header. The console
+shows the encryption version, key ID, and copyable ciphertext, but never receives a key or
+decrypts the payload in the browser.
 
 ## Workflows show live execution state
 
@@ -49,7 +58,9 @@ The console currently covers:
 - TanStack Query owns reads, polling, mutations, and invalidation.
 - The UI calls the OpenAPI control surface; it never connects to a store directly.
 - Built assets are embedded in both language packages.
-- Payloads remain excluded unless explicitly requested.
+- List and search responses exclude payloads. Opening an individual job is the explicit
+  payload request and should therefore sit behind the same operator authentication as the
+  rest of the control plane.
 
 <CodeGroup>
 

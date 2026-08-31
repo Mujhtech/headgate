@@ -1,4 +1,4 @@
-import { ChevronLeftIcon, ChevronRightIcon, SearchIcon } from "lucide-react"
+import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, Clock3Icon, CopyIcon, DatabaseIcon, ListIcon, LockKeyholeIcon, PlayIcon, SearchIcon } from "lucide-react"
 import { Link } from "@tanstack/react-router"
 import { useQueryClient } from "@tanstack/react-query"
 import { FormEvent, useMemo, useState } from "react"
@@ -18,6 +18,8 @@ import { Empty, Failure, Loading, useApiMutation, useApiResource, useConsoleQuer
 import { config } from "@/lib/config"
 import { api } from "@/lib/api"
 import { formatDate, formatDuration } from "@/lib/format"
+import { displayPayload } from "@/lib/payload"
+import { useNow } from "@/lib/clock"
 import { Route } from "@/routes/_console.jobs"
 
 interface JobSummary {
@@ -44,9 +46,18 @@ interface AttemptEvent {
 }
 interface JobDetail extends JobSummary {
   schema_version: number
+  priority: number
   partition_key?: string
   rate_class?: string
+  sticky_worker?: string
+  weight?: number
   fingerprint: string
+  enqueued_at_ms?: number
+  claimed_at_ms?: number | null
+  finalized_at_ms?: number | null
+  payload?: string
+  metadata?: Record<string, string>
+  tags?: string[]
   periodic_origin?: { schedule_id: string; tick_ms: number }
   errors?: AttemptEvent[] | string
 }
@@ -65,6 +76,46 @@ interface JobProgress {
 }
 
 const states = ["available", "scheduled", "retryable", "running", "completed", "archived", "cancelled", "undecodable", "quarantined"]
+const terminalStates = new Set(["completed", "archived", "cancelled", "undecodable", "quarantined"])
+
+interface LifecycleStage {
+  label: string
+  at?: number | null
+  detail?: string
+  status: "complete" | "active" | "waiting" | "failed" | "pending"
+  icon: typeof DatabaseIcon
+}
+
+function lifecycle(job: JobDetail, now: number): LifecycleStage[] {
+  const terminal = terminalStates.has(job.state)
+  const scheduledForFuture = job.state === "scheduled" && (job.scheduled_at_ms ?? 0) > now
+  const waiting = !terminal && job.state !== "running" && !scheduledForFuture
+  const waitStarted = Math.max(job.enqueued_at_ms ?? 0, job.scheduled_at_ms ?? 0)
+  const waitEnded = job.claimed_at_ms ?? null
+  const waitDuration = waitEnded && waitStarted ? Math.max(0, waitEnded - waitStarted) : null
+  const runDuration = job.claimed_at_ms && job.finalized_at_ms ? Math.max(0, job.finalized_at_ms - job.claimed_at_ms) : null
+
+  return [
+    { label: "Created", at: job.enqueued_at_ms, status: "complete", icon: DatabaseIcon },
+    { label: "Scheduled", at: job.scheduled_at_ms, detail: scheduledForFuture ? "Waiting for schedule" : undefined, status: scheduledForFuture ? "waiting" : "complete", icon: Clock3Icon },
+    { label: "Wait", at: waitEnded, detail: waitDuration == null ? (waiting ? formatDuration(Math.max(0, now - waitStarted)) : undefined) : formatDuration(waitDuration), status: waiting ? "waiting" : scheduledForFuture ? "pending" : "complete", icon: ListIcon },
+    { label: "Running", at: job.claimed_at_ms, detail: runDuration == null ? (job.state === "running" && job.claimed_at_ms ? formatDuration(now - job.claimed_at_ms) : undefined) : formatDuration(runDuration), status: job.state === "running" ? "active" : terminal ? (job.state === "completed" ? "complete" : "failed") : "pending", icon: PlayIcon },
+    { label: terminal ? job.state[0].toUpperCase() + job.state.slice(1) : "Complete", at: job.finalized_at_ms, status: terminal ? (job.state === "completed" ? "complete" : "failed") : "pending", icon: CheckIcon },
+  ]
+}
+
+function stageTime(at: number | null | undefined, now: number) {
+  if (!at) return null
+  return `${formatDuration(Math.max(0, now - at))} ago`
+}
+
+function stageTone(status: LifecycleStage["status"]) {
+  if (status === "complete") return { line: "bg-success", node: "border-success bg-success text-white" }
+  if (status === "active") return { line: "bg-border", node: "border-primary bg-primary text-primary-foreground" }
+  if (status === "waiting") return { line: "bg-border", node: "border-warning bg-warning text-white" }
+  if (status === "failed") return { line: "bg-destructive", node: "border-destructive bg-destructive text-white" }
+  return { line: "bg-border", node: "border-border bg-background text-muted-foreground" }
+}
 
 function stateVariant(state: string): "success" | "warning" | "destructive" | "outline" {
   if (state === "running") return "success"
@@ -80,9 +131,10 @@ export function JobDrawer({ id, open, setOpen, notify }: {
   notify: ViewProps["notify"]
 }) {
   const actionMutation = useApiMutation()
+  const now = useNow()
   const jobQuery = useConsoleQuery(
     ["api", "job", id],
-    (signal) => api<JobDetail>(`/jobs/${encodeURIComponent(id!)}`, { signal }),
+    (signal) => api<JobDetail>(`/jobs/${encodeURIComponent(id!)}?include_payload=true`, { signal }),
     Boolean(id && open),
   )
   const admissionQuery = useConsoleQuery<Admission>(
@@ -107,6 +159,18 @@ export function JobDrawer({ id, open, setOpen, notify }: {
     if (Array.isArray(job.errors)) return job.errors
     try { return JSON.parse(job.errors) as AttemptEvent[] } catch { return [] }
   }, [job?.errors])
+  const payload = useMemo(() => job?.payload == null ? null : displayPayload(job.payload), [job?.payload])
+  const metadata = job?.metadata ?? null
+  const lifecycleStages = useMemo(() => job ? lifecycle(job, now) : [], [job, now])
+
+  const copy = async (label: string, value: string) => {
+    try {
+      await navigator.clipboard.writeText(value)
+      notify(`${label} copied`)
+    } catch {
+      notify(`Could not copy ${label.toLowerCase()}`, "error")
+    }
+  }
 
   const action = async (name: "retry" | "cancel" | "delete") => {
     if (!id) return
@@ -144,12 +208,49 @@ export function JobDrawer({ id, open, setOpen, notify }: {
             <dt className="text-muted-foreground">State</dt><dd><Badge variant={stateVariant(job.state)}>{job.state}</Badge></dd>
             <dt className="text-muted-foreground">Queue / partition</dt><dd>{job.queue} / {job.partition_key || "—"}</dd>
             <dt className="text-muted-foreground">Rate class</dt><dd>{job.rate_class || "—"}</dd>
+            <dt className="text-muted-foreground">Priority / weight</dt><dd>{job.priority} / {job.weight ?? 1}</dd>
+            <dt className="text-muted-foreground">Sticky worker</dt><dd className="break-all font-mono text-xs">{job.sticky_worker || "—"}</dd>
             <dt className="text-muted-foreground">Attempts</dt><dd>{job.attempt}/{job.max_attempts} · crashes {job.crash_attempt ?? 0}</dd>
             <dt className="text-muted-foreground">Orphan provenance</dt><dd>{job.orphaned ? <span className="text-destructive">Reclaimed after an expired lease</span> : "None"}</dd>
             <dt className="text-muted-foreground">Fingerprint</dt><dd className="break-all font-mono text-xs">{job.fingerprint}</dd>
+            <dt className="text-muted-foreground">Enqueued</dt><dd>{formatDate(job.enqueued_at_ms)}</dd>
             <dt className="text-muted-foreground">Scheduled</dt><dd>{formatDate(job.scheduled_at_ms)}</dd>
+            <dt className="text-muted-foreground">Finalized</dt><dd>{formatDate(job.finalized_at_ms ?? undefined)}</dd>
             <dt className="text-muted-foreground">Periodic origin</dt><dd>{job.periodic_origin ? `${job.periodic_origin.schedule_id} · ${formatDate(job.periodic_origin.tick_ms)}` : "—"}</dd>
           </dl>
+
+          <section aria-labelledby="lifecycle-title">
+            <h2 id="lifecycle-title" className="mb-3 text-sm font-semibold">Lifecycle</h2>
+            <ol className="space-y-0">
+              {lifecycleStages.map((stage, index) => {
+                const Icon = stage.icon
+                const tone = stageTone(stage.status)
+                return <li key={`${stage.label}:${stage.status}`} className="relative flex animate-in gap-3 pb-4 fade-in slide-in-from-top-1 zoom-in-95 last:pb-0 motion-reduce:animate-none" style={{ animationDelay: `${index * 90}ms`, animationFillMode: "both" }} aria-current={["active", "waiting"].includes(stage.status) ? "step" : undefined}>
+                  {index < lifecycleStages.length - 1 && <span className="absolute left-4 top-8 h-[calc(100%-2rem)] w-px overflow-hidden bg-border" aria-hidden="true"><span className={`lifecycle-line-progress block h-full w-full ${tone.line}`} style={{ animationDelay: `${index * 90 + 120}ms` }} /></span>}
+                  <span className={`relative z-10 flex size-8 shrink-0 items-center justify-center rounded-full border transition-[color,background-color,border-color,transform] duration-300 ${tone.node} ${["active", "waiting"].includes(stage.status) ? "animate-pulse motion-reduce:animate-none" : ""}`}><Icon className="size-4" /></span>
+                  <div className="min-w-0 pt-0.5"><p className={`text-sm font-medium ${stage.status === "pending" ? "text-muted-foreground" : ""}`}>{stage.label}</p><p className="text-xs text-muted-foreground">{stageTime(stage.at, now) ?? stage.detail ?? (stage.status === "pending" ? "Pending" : "Recorded")}{stage.at && stage.detail ? ` · ${stage.detail}` : ""}</p></div>
+                </li>
+              })}
+            </ol>
+          </section>
+
+          <section aria-labelledby="payload-title">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2"><h2 id="payload-title" className="text-sm font-semibold">Payload</h2>{payload && <Badge variant="outline">{payload.format}</Badge>}</div>
+              {payload && <Button variant="ghost" size="sm" onClick={() => void copy(payload.encrypted ? "Ciphertext" : "Payload", payload.content)}><CopyIcon />Copy</Button>}
+            </div>
+            {payload?.encrypted && <div className="mb-2 flex gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm"><LockKeyholeIcon className="mt-0.5 size-4 shrink-0 text-primary" /><div><p className="font-medium">AES-256-GCM encrypted payload</p><p className="text-xs text-muted-foreground">Format v{payload.encrypted.version} · key <code>{payload.encrypted.keyId}</code>. The console has no decryption keys; plaintext is available only inside the encrypted worker handler.</p></div></div>}
+            {payload ? <pre className="max-h-80 overflow-auto rounded-lg border bg-muted/50 p-3 font-mono text-xs whitespace-pre-wrap break-words">{payload.content}</pre> : <p className="text-sm text-muted-foreground">No payload stored.</p>}
+          </section>
+
+          <section aria-labelledby="metadata-title">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <h2 id="metadata-title" className="text-sm font-semibold">Metadata</h2>
+              {metadata && <Button variant="ghost" size="sm" onClick={() => void copy("Metadata", JSON.stringify(metadata, null, 2))}><CopyIcon />Copy</Button>}
+            </div>
+            {job.tags?.length ? <div className="mb-2 flex flex-wrap gap-1" aria-label="Job tags">{job.tags.map((tag) => <Badge key={tag} variant="outline">{tag}</Badge>)}</div> : null}
+            {metadata && Object.keys(metadata).length ? <pre className="max-h-80 overflow-auto rounded-lg border bg-muted/50 p-3 font-mono text-xs whitespace-pre-wrap break-words">{JSON.stringify(metadata, null, 2)}</pre> : <p className="text-sm text-muted-foreground">No application metadata stored.</p>}
+          </section>
 
           <section aria-labelledby="progress-title">
             <h2 id="progress-title" className="mb-2 text-sm font-semibold">Progress</h2>
@@ -168,7 +269,7 @@ export function JobDrawer({ id, open, setOpen, notify }: {
           </section>}
 
           <section aria-labelledby="timeline-title">
-            <h2 id="timeline-title" className="mb-2 text-sm font-semibold">Timeline</h2>
+            <h2 id="timeline-title" className="mb-2 text-sm font-semibold">Attempts</h2>
             {events.length ? <ol className="ml-1 border-l pl-4">{events.map((event, index) => <li key={`${event.at_ms}:${index}`} className="mb-4 last:mb-0">
               <div className="flex flex-wrap items-center gap-2"><Badge variant={stateVariant(event.outcome)}>{event.outcome}</Badge><span className="text-xs text-muted-foreground">{formatDate(event.at_ms)}{event.attempt != null ? ` · attempt ${event.attempt}` : ""}{event.crash_attempt != null ? ` · crash ${event.crash_attempt}` : ""}</span></div>
               {event.error && <p className="mt-1 text-sm">{event.error}</p>}

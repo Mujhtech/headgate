@@ -99,7 +99,8 @@ application's admin authentication and authorization. Its `read_only` option onl
 disables browser controls; configure the control API's read-only mode as well so direct
 HTTP requests receive `403 Forbidden`.
 
-Job payloads remain excluded unless an API caller explicitly requests them. Do not put
-the console on a public route merely because the default views omit payloads: job kinds,
+Job list and search responses exclude payloads. Opening a job detail explicitly requests
+and displays that job's payload and metadata. Do not put the console on a public route:
+payloads, job kinds,
 queues, tenant partitions, errors, logs, schedules, and worker hostnames are still
 operationally sensitive.

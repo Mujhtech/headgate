@@ -21,9 +21,10 @@ export const Route = createFileRoute("/_console/jobs")({
 })
 
 function JobsRoute() {
+  const search = Route.useSearch()
   return (
     <>
-      <JobsView {...useConsole()} />
+      <JobsView key={`${search.q ?? ""}:${search.queue ?? ""}:${search.state ?? ""}:${search.cursor ?? ""}`} {...useConsole()} />
       <Outlet />
     </>
   )

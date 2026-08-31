@@ -121,6 +121,14 @@ Headgate stores the key ID in a versioned wire format but never stores key mater
 and Go share the same byte-level format, so either runtime can process a job encrypted by
 the other when both have the same key.
 
+## Inspect encrypted jobs in the console
+
+The job detail view recognizes the encrypted envelope and labels it as AES-256-GCM. It
+shows the wire-format version, key ID, and copyable Base64 ciphertext. It does not decrypt
+the payload: sending application or KMS keys to a browser would break the client-side
+encryption boundary. Routing metadata, tags, progress, results, output, and errors remain
+visible because this layer encrypts only the payload bytes.
+
 <Card title="Run the encryption example" icon="play" href="/docs/examples/encryption">
   Verify ciphertext, authenticated decoding, and the shared application boundary locally.
 </Card>

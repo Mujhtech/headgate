@@ -1,5 +1,7 @@
 //! Durable DAG dependencies layered on headgate's ordinary pending jobs.
 
+pub mod experimental;
+
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::Arc,

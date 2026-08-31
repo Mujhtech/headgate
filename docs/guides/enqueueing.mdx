@@ -21,6 +21,117 @@ and reports typed duplicate or availability errors.
 Bulk enqueue is one atomic request. If validation or authorization rejects one member,
 Headgate writes none of its siblings.
 
+## Enqueue from TypeScript or Python
+
+Headgate does not require the producer to use the Rust or Go SDK. A Node.js, NestJS,
+Python, or other service can call the control API. Send the task arguments as bytes in
+standard base64; for JSON arguments, UTF-8 encode the JSON first and then base64-encode
+those bytes. Headgate derives the content fingerprint on the server.
+
+Use a stable `Idempotency-Key` for one logical enqueue operation. Retrying with the same
+key returns the original job instead of creating another one. Use a new key when you
+intend to create a new job, even when its payload is identical.
+
+<CodeGroup>
+
+```typescript TypeScript
+const headgateUrl = process.env.HEADGATE_URL ?? "http://127.0.0.1:8080";
+const invoiceId = 9481;
+
+const response = await fetch(`${headgateUrl}/api/v1/jobs`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Idempotency-Key": `billing-charge-${invoiceId}`,
+  },
+  body: JSON.stringify({
+    kind: "billing:charge",
+    schema_version: 1,
+    payload: Buffer.from(JSON.stringify({ invoice_id: invoiceId }), "utf8").toString("base64"),
+    queue: "billing",
+    partition_key: "tenant-acme",
+  }),
+});
+
+if (!response.ok) {
+  throw new Error(`Headgate enqueue failed (${response.status}): ${await response.text()}`);
+}
+
+const job = (await response.json()) as { id: string; replayed?: boolean };
+```
+
+```typescript NestJS
+import { Injectable, InternalServerErrorException } from "@nestjs/common";
+
+@Injectable()
+export class HeadgateProducer {
+  private readonly baseUrl = process.env.HEADGATE_URL ?? "http://127.0.0.1:8080";
+
+  async chargeInvoice(invoiceId: number, tenantId: string): Promise<string> {
+    const response = await fetch(`${this.baseUrl}/api/v1/jobs`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": `billing-charge-${invoiceId}`,
+      },
+      body: JSON.stringify({
+        kind: "billing:charge",
+        schema_version: 1,
+        payload: Buffer.from(JSON.stringify({ invoice_id: invoiceId }), "utf8").toString("base64"),
+        queue: "billing",
+        partition_key: tenantId,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new InternalServerErrorException(
+        `Headgate enqueue failed (${response.status}): ${await response.text()}`,
+      );
+    }
+
+    const job = (await response.json()) as { id: string; replayed?: boolean };
+    return job.id;
+  }
+}
+```
+
+```python Python
+import base64
+import json
+import os
+
+import requests
+
+headgate_url = os.getenv("HEADGATE_URL", "http://127.0.0.1:8080")
+invoice_id = 9481
+payload = base64.b64encode(
+    json.dumps({"invoice_id": invoice_id}).encode("utf-8")
+).decode("ascii")
+
+response = requests.post(
+    f"{headgate_url}/api/v1/jobs",
+    headers={"Idempotency-Key": f"billing-charge-{invoice_id}"},
+    json={
+        "kind": "billing:charge",
+        "schema_version": 1,
+        "payload": payload,
+        "queue": "billing",
+        "partition_key": "tenant-acme",
+    },
+    timeout=10,
+)
+response.raise_for_status()
+job = response.json()  # {"id": "..."}; a retry may also include "replayed": true
+```
+
+</CodeGroup>
+
+The `kind` must exactly match a handler registered by a Rust or Go worker, and the decoded
+payload bytes must follow the schema that handler expects. Authentication is supplied by
+the application hosting Headgate; do not expose an unauthenticated control API publicly.
+See the [control API reference](/docs/reference/control-api#enqueue-over-http) for every
+optional enqueue field and response status.
+
 ## IDs and scheduling
 
 Callers may provide a strict job ID for correlation and idempotency. Reusing that ID with

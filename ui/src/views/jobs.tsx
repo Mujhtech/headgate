@@ -17,8 +17,11 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Empty, Failure, Loading, useApiMutation, useApiResource, useConsoleQuery, type ViewProps } from "@/console"
 import { config } from "@/lib/config"
 import { api } from "@/lib/api"
+import { admissionPresentation } from "@/lib/admission"
 import { formatDate, formatDuration } from "@/lib/format"
+import { jobActionDisabledReason, type JobAction } from "@/lib/job-control"
 import { displayPayload } from "@/lib/payload"
+import { hasResumableCheckpoint, type JobCheckpoint } from "@/lib/resumable"
 import { useNow } from "@/lib/clock"
 import { Route } from "@/routes/_console.jobs"
 
@@ -149,8 +152,15 @@ export function JobDrawer({ id, open, setOpen, notify }: {
     Boolean(id && open && job?.state === "running"),
     2_000,
   )
+  const checkpointQuery = useConsoleQuery(
+    ["api", "job-checkpoint", id],
+    (signal) => api<JobCheckpoint>(`/jobs/${encodeURIComponent(id!)}/checkpoint`, { signal }),
+    Boolean(id && open),
+  )
   const admission = admissionQuery.data ?? null
   const progress = progressQuery.data ?? null
+  const checkpoint = checkpointQuery.data ?? null
+  const checkpointError = checkpointQuery.error ? (checkpointQuery.error instanceof Error ? checkpointQuery.error.message : String(checkpointQuery.error)) : null
   const error = jobQuery.error ? (jobQuery.error instanceof Error ? jobQuery.error.message : String(jobQuery.error)) : null
   const pendingPath = actionMutation.variables?.path
 
@@ -162,6 +172,8 @@ export function JobDrawer({ id, open, setOpen, notify }: {
   const payload = useMemo(() => job?.payload == null ? null : displayPayload(job.payload), [job?.payload])
   const metadata = job?.metadata ?? null
   const lifecycleStages = useMemo(() => job ? lifecycle(job, now) : [], [job, now])
+  const admissionView = useMemo(() => job && admission ? admissionPresentation(job.state, admission) : null, [job, admission])
+  const cursor = useMemo(() => checkpoint?.cursor ? displayPayload(checkpoint.cursor) : null, [checkpoint?.cursor])
 
   const copy = async (label: string, value: string) => {
     try {
@@ -261,10 +273,35 @@ export function JobDrawer({ id, open, setOpen, notify }: {
             </> : <p className="text-sm text-muted-foreground">No progress reported.</p>}
           </section>
 
-          {admission && <section aria-labelledby="admission-title">
+          <section aria-labelledby="resumable-title">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <h2 id="resumable-title" className="text-sm font-semibold">Resumable execution</h2>
+              {checkpoint && hasResumableCheckpoint(checkpoint) && <Badge variant="outline">checkpoint v{checkpoint.schema_version || "—"}</Badge>}
+            </div>
+            {checkpointQuery.isPending ? <p className="text-sm text-muted-foreground">Loading checkpoint…</p> : checkpointError ? <Failure message={checkpointError} /> : checkpoint && hasResumableCheckpoint(checkpoint) ? <div className="space-y-3">
+              <ol className="space-y-2" aria-label="Persisted resumable steps">
+                {checkpoint.completed_steps.map((step) => <li key={`completed:${step}`} className="flex items-center gap-2 text-sm"><span className="flex size-6 items-center justify-center rounded-full bg-success text-white"><CheckIcon className="size-3.5" /></span><span className="font-medium">{step}</span><Badge variant="success">completed</Badge></li>)}
+                {checkpoint.in_progress_step && <li className="flex items-center gap-2 text-sm"><span className="flex size-6 items-center justify-center rounded-full bg-primary text-primary-foreground"><PlayIcon className="size-3.5" /></span><span className="font-medium">{checkpoint.in_progress_step}</span><Badge variant="warning">checkpointed before side effects</Badge></li>}
+              </ol>
+              <p className="text-xs text-muted-foreground">Only persisted completed/current steps are shown. Future handler steps are not stored with the job.</p>
+              <dl className="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-1 text-xs">
+                <dt className="text-muted-foreground">Last completed</dt><dd>{checkpoint.last_completed_step ?? "—"}</dd>
+                <dt className="text-muted-foreground">Cursor step</dt><dd>{checkpoint.cursor_step ?? "—"}</dd>
+                <dt className="text-muted-foreground">Step-set hash</dt><dd className="break-all font-mono">{checkpoint.step_set_hash || "—"}</dd>
+              </dl>
+              {Object.keys(checkpoint.crashes_by_step).length > 0 && <div><p className="mb-1 text-xs font-medium">Crashes by step</p><div className="flex flex-wrap gap-1">{Object.entries(checkpoint.crashes_by_step).map(([step, count]) => <Badge key={step} variant="destructive">{step}: {count}</Badge>)}</div></div>}
+              {cursor && <div>
+                <div className="mb-1 flex items-center justify-between gap-2"><p className="text-xs font-medium">Durable cursor <Badge variant="outline">{cursor.format}</Badge></p><Button variant="ghost" size="sm" onClick={() => void copy("Cursor", cursor.content)}><CopyIcon />Copy</Button></div>
+                <p className="mb-2 text-xs text-muted-foreground">Cursor data is explicitly loaded and may contain application-sensitive values.</p>
+                <pre className="max-h-52 overflow-auto rounded-lg border bg-muted/50 p-3 font-mono text-xs whitespace-pre-wrap break-words">{cursor.content}</pre>
+              </div>}
+            </div> : <p className="text-sm text-muted-foreground">No resumable checkpoint has been recorded for this job.</p>}
+          </section>
+
+          {admission && admissionView && <section aria-labelledby="admission-title">
             <h2 id="admission-title" className="mb-2 text-sm font-semibold">Admission</h2>
-            <p className={admission.admissible ? "text-success" : "text-destructive"}>{admission.admissible ? "Admissible now" : `Blocked by ${admission.blocked_by ?? "unknown policy"}`}</p>
-            {!admission.admissible && <p className="text-xs text-muted-foreground">{admission.estimated_admission_ms != null ? `Expected to clear in about ${formatDuration(admission.estimated_admission_ms)}` : "This condition will not clear on its own."}</p>}
+            <p className={admissionView.tone === "success" ? "text-success" : admissionView.tone === "destructive" ? "text-destructive" : admissionView.tone === "warning" ? "text-warning" : "text-muted-foreground"}>{admissionView.title}</p>
+            <p className="text-xs text-muted-foreground">{admissionView.description}</p>
             <div className="mt-2 flex flex-wrap gap-1">{Object.entries(admission.detail ?? {}).map(([key, value]) => <Badge key={key} variant="outline">{key}: {String(value)}</Badge>)}</div>
           </section>}
 
@@ -280,10 +317,20 @@ export function JobDrawer({ id, open, setOpen, notify }: {
           <section aria-labelledby="actions-title">
             <h2 id="actions-title" className="mb-2 text-sm font-semibold">Actions</h2>
             <div className="flex flex-wrap gap-2">
-              <ActionButton variant="outline" disabled={config.readOnly || actionMutation.isPending} pending={actionMutation.isPending && pendingPath?.endsWith("/retry")} pendingLabel="Retrying…" onClick={() => void action("retry")}>Retry</ActionButton>
-              <ActionButton variant="outline" disabled={config.readOnly || actionMutation.isPending} pending={actionMutation.isPending && pendingPath?.endsWith("/cancel")} pendingLabel="Cancelling…" onClick={() => void action("cancel")}>Cancel</ActionButton>
-              <ActionButton variant="outline" disabled={config.readOnly || actionMutation.isPending} pending={actionMutation.isPending && pendingPath?.endsWith("/reschedule")} pendingLabel="Rescheduling…" onClick={() => void reschedule()}>Reschedule</ActionButton>
-              <ActionButton variant="destructive" disabled={config.readOnly || actionMutation.isPending} pending={actionMutation.isPending && pendingPath === `/jobs/${encodeURIComponent(id ?? "")}`} pendingLabel="Deleting…" onClick={() => void action("delete")}>Delete</ActionButton>
+              {([
+                { action: "retry", label: "Retry", pendingLabel: "Retrying…", variant: "outline", run: () => action("retry") },
+                { action: "cancel", label: "Cancel", pendingLabel: "Cancelling…", variant: "outline", run: () => action("cancel") },
+                { action: "reschedule", label: "Reschedule", pendingLabel: "Rescheduling…", variant: "outline", run: reschedule },
+                { action: "delete", label: "Delete", pendingLabel: "Deleting…", variant: "destructive", run: () => action("delete") },
+              ] satisfies Array<{ action: JobAction; label: string; pendingLabel: string; variant: "outline" | "destructive"; run: () => Promise<void> }>).map((control) => {
+                const reason = jobActionDisabledReason(job.state, control.action)
+                const pending = actionMutation.isPending && (control.action === "delete"
+                  ? pendingPath === `/jobs/${encodeURIComponent(id ?? "")}`
+                  : pendingPath?.endsWith(`/${control.action}`))
+                return <span key={control.action} title={reason ?? undefined}>
+                  <ActionButton variant={control.variant} disabled={config.readOnly || actionMutation.isPending || Boolean(reason)} pending={pending} pendingLabel={control.pendingLabel} onClick={() => void control.run()}>{control.label}</ActionButton>
+                </span>
+              })}
             </div>
           </section>
         </div>}

@@ -15,6 +15,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Empty, Failure, Loading, useConsoleQuery, type ViewProps } from "@/console"
 import { api, ApiError } from "@/lib/api"
 import { formatDate } from "@/lib/format"
+import { decodeWorkflowPayload, type WorkflowNode } from "@/lib/workflow"
 import { Route as WorkflowsRoute } from "@/routes/_console.workflows"
 
 interface JobSummary {
@@ -34,17 +35,6 @@ interface JobSummary {
 interface JobPage {
   jobs: JobSummary[]
   next_cursor?: string
-}
-
-interface WorkflowNode {
-  name: string
-  job_id: string
-  deps: string[]
-}
-
-interface CoordinatorPayload {
-  workflow_id: string
-  nodes: WorkflowNode[]
 }
 
 interface NodeStatus extends WorkflowNode {
@@ -74,18 +64,6 @@ function badgeVariant(state: string): "success" | "warning" | "destructive" | "o
 
 function workflowID(jobID: string) {
   return jobID.endsWith(":coordinator") ? jobID.slice(0, -":coordinator".length) : jobID
-}
-
-function decodePayload(payload: string | undefined): CoordinatorPayload {
-  if (!payload) throw new Error("The coordinator payload was withheld by the control API.")
-  try {
-    const bytes = Uint8Array.from(atob(payload), (character) => character.charCodeAt(0))
-    const value = JSON.parse(new TextDecoder().decode(bytes)) as CoordinatorPayload
-    if (!value.workflow_id || !Array.isArray(value.nodes)) throw new Error("missing workflow fields")
-    return value
-  } catch (reason) {
-    throw new Error(`The coordinator payload is not a readable workflow graph: ${reason instanceof Error ? reason.message : String(reason)}`)
-  }
 }
 
 function graphLayers(nodes: NodeStatus[]) {
@@ -218,7 +196,7 @@ export function WorkflowDetailView({ workflowId, selectedJobID }: ViewProps & { 
     async (signal) => {
       const coordinatorID = `${workflowId}:coordinator`
       const coordinator = await api<JobSummary>(`/jobs/${encodeURIComponent(coordinatorID)}?include_payload=true`, { signal })
-      const workflow = decodePayload(coordinator.payload)
+      const workflow = decodeWorkflowPayload(coordinator.payload)
       const nodes = await loadNodeJobs(workflow.nodes, signal)
       return { coordinator, workflow, nodes }
     },

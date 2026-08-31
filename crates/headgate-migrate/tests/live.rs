@@ -46,7 +46,7 @@ async fn live_postgres_migration_lifecycle_and_drift_rejection() {
 
     let result: Result<(), Box<dyn Error>> = async {
         let up = migrate_postgres(&mut client, Direction::Up, MigrateOptions::default()).await?;
-        if up.steps.len() != 11
+        if up.steps.len() != 12
             || up.steps[0].migration.version != 1
             || up.steps[11].migration.version != 12
         {
@@ -65,12 +65,12 @@ async fn live_postgres_migration_lifecycle_and_drift_rejection() {
             },
         )
         .await?;
-        if !dry.dry_run || dry.steps.len() != 11 {
+        if !dry.dry_run || dry.steps.len() != 12 {
             return Err(test_error(format!("down dry run = {:?}", dry.steps)));
         }
         let down =
             migrate_postgres(&mut client, Direction::Down, MigrateOptions::default()).await?;
-        if down.steps.len() != 11 {
+        if down.steps.len() != 12 {
             return Err(test_error(format!("down steps = {:?}", down.steps)));
         }
         let row = client
@@ -203,7 +203,7 @@ async fn live_mysql_migration_lifecycle_and_drift_rejection() {
     let mut conn = pool.get_conn().await.expect("test connect");
     let result: Result<(), Box<dyn Error>> = async {
         let up = migrate_mysql(&mut conn, Direction::Up, MigrateOptions::default()).await?;
-        if up.steps.len() != 11
+        if up.steps.len() != 12
             || up.steps[0].migration.version != 1
             || up.steps[11].migration.version != 12
         {
@@ -222,11 +222,11 @@ async fn live_mysql_migration_lifecycle_and_drift_rejection() {
             },
         )
         .await?;
-        if !dry.dry_run || dry.steps.len() != 11 {
+        if !dry.dry_run || dry.steps.len() != 12 {
             return Err(test_error(format!("down dry run = {:?}", dry.steps)));
         }
         let down = migrate_mysql(&mut conn, Direction::Down, MigrateOptions::default()).await?;
-        if down.steps.len() != 11 {
+        if down.steps.len() != 12 {
             return Err(test_error(format!("down steps = {:?}", down.steps)));
         }
         let job_exists: Option<u64> = conn
@@ -393,7 +393,7 @@ async fn live_mysql_configured_lock_namespace_avoids_an_application_lock() {
         let migrated = tokio::time::timeout(Duration::from_secs(30), &mut migration)
             .await
             .map_err(|_| test_error("migration still blocked after configured lock release"))??;
-        if migrated.steps.len() != 11 {
+        if migrated.steps.len() != 12 {
             return Err(test_error(format!(
                 "configured migration steps = {:?}",
                 migrated.steps

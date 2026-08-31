@@ -28,6 +28,7 @@ The API is mounted at:
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /jobs/{id}/admission` | Explain the policy currently preventing a job from running. |
+| `GET /jobs/{id}/checkpoint` | Explicitly inspect resumable steps, cursor state, and per-step crashes. |
 | `GET /cluster` | Show capacity, utilization, and queues with no live workers. |
 | `GET /rate-classes` | Inspect fleet-wide token budgets and waiting jobs. |
 | `GET /queues/{queue}/history` | Graph arrival, drain, depth, and policy rejection trends. |

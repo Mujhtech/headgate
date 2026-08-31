@@ -42,6 +42,27 @@ local time during a daylight-saving transition is skipped, while a repeated loca
 fires once at its first occurrence. `@every` is always aligned to UTC and rejects a
 `CRON_TZ` prefix.
 
+## Missed runs
+
+The missed-run policy controls recovery when the scheduler was unavailable across one or
+more ticks:
+
+| Policy | Console label | Recovery behavior |
+| --- | --- | --- |
+| `skip` | Skip backlog | Discard older missed ticks and enqueue only the latest due tick. |
+| `run_once` | Run once | Enqueue one catch-up job for the latest due tick and discard older missed ticks. |
+| `backfill` | Backfill up to N | Enqueue the N most recent missed ticks as separate jobs. |
+
+Headgate stores `next_run_ms` durably. Consequently, the latest due tick is always the
+current recovery tick, so `skip` and `run_once` have the same effective behavior today:
+one latest job and no backlog flood. The separate values preserve the schedule's declared
+intent; `backfill` is the policy that materially changes the number of jobs enqueued.
+
+The console's **Enqueue now** action is unrelated to missed-run recovery. It creates one
+extra job from the schedule immediately without changing `next_run_ms`. That job still
+passes through the ordinary admission gate, and an idempotency key prevents a double-click
+from creating two manual runs.
+
 ## Periodic origin
 
 Every scheduler-created job stores `periodic_schedule_id` and `periodic_tick_ms`. Job

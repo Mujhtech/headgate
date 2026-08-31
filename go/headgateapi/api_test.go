@@ -41,8 +41,13 @@ func (s *outputAPIStore) GetJobProgress(context.Context, string) (*headgate.JobP
 	return s.progress, nil
 }
 
-func (s *outputAPIStore) GetJob(_ context.Context, id string, _ bool) (*headgate.JobSummary, error) {
-	return &headgate.JobSummary{ID: id, State: "running"}, nil
+func (s *outputAPIStore) GetJob(_ context.Context, id string, includePayload bool) (*headgate.JobSummary, error) {
+	job := &headgate.JobSummary{ID: id, State: "running"}
+	if includePayload {
+		job.Payload = []byte(`{"recipient":"ops@example.com"}`)
+		job.Headers = map[string]string{"customer_id": "cus-42"}
+	}
+	return job, nil
 }
 
 func (s *errStore) Caps() headgate.Caps { return headgate.CapInspect }
@@ -137,6 +142,20 @@ func TestMidRunOutputHasAnExplicitPayloadEndpoint(t *testing.T) {
 	}
 	if _, leaked := job["output"]; leaked {
 		t.Fatalf("ordinary job detail leaked output: %s", w.Body.String())
+	}
+	if _, leaked := job["payload"]; leaked {
+		t.Fatalf("ordinary job detail leaked payload: %s", w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/jobs/j1?include_payload=true", nil))
+	job = nil
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &job) != nil {
+		t.Fatalf("explicit job detail response = %d %s", w.Code, w.Body.String())
+	}
+	metadata, _ := job["metadata"].(map[string]any)
+	if job["payload"] != "eyJyZWNpcGllbnQiOiJvcHNAZXhhbXBsZS5jb20ifQ==" || metadata["customer_id"] != "cus-42" {
+		t.Fatalf("explicit job detail omitted payload or metadata: %#v", job)
 	}
 }
 

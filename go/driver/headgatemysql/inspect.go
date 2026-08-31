@@ -154,8 +154,8 @@ var _ headgate.ProgressInspectStore = (*MysqlStore)(nil)
 
 const jobCols = `j.ulid, j.kind, j.queue, CAST(j.state AS CHAR) AS state_text,
 	j.schema_version, j.priority, j.attempt, j.crash_attempt, j.max_attempts,
-	j.partition_key, j.rate_class, j.sticky_worker, j.weight, j.fingerprint, j.enqueued_at_ms, j.scheduled_at_ms,
-	j.periodic_schedule_id, j.periodic_tick_ms, j.finalized_at_ms, j.payload,
+	j.partition_key, j.rate_class, j.sticky_worker, j.weight, j.fingerprint, j.enqueued_at_ms, j.scheduled_at_ms, j.claimed_at_ms,
+	j.periodic_schedule_id, j.periodic_tick_ms, j.finalized_at_ms, j.payload, CAST(j.headers AS CHAR),
 	CAST(j.errors AS CHAR) AS errors_text, j.id,
 	COALESCE((SELECT JSON_ARRAYAGG(t.tag) FROM headgate_job_tag t WHERE t.job_id=j.id),JSON_ARRAY()) AS tags_text`
 
@@ -167,14 +167,16 @@ func scanJob(row rowScanner, includePayload bool) (*headgate.JobSummary, int64, 
 	var j headgate.JobSummary
 	var schemaVersion, attempt, crash, maxAtt int64
 	var payload []byte
+	var headersJSON []byte
 	var finalized sql.NullInt64
+	var claimed sql.NullInt64
 	var errorsText sql.NullString
 	var internalID int64
 	var tagsJSON []byte
 	err := row.Scan(&j.ID, &j.Kind, &j.Queue, &j.State, &schemaVersion, &j.Priority,
 		&attempt, &crash, &maxAtt, &j.PartitionKey, &j.RateClass, &j.StickyWorker, &j.Weight, &j.Fingerprint,
-		&j.EnqueuedAtMs, &j.ScheduledAtMs, &j.PeriodicScheduleID, &j.PeriodicTickMs,
-		&finalized, &payload, &errorsText,
+		&j.EnqueuedAtMs, &j.ScheduledAtMs, &claimed, &j.PeriodicScheduleID, &j.PeriodicTickMs,
+		&finalized, &payload, &headersJSON, &errorsText,
 		&internalID, &tagsJSON)
 	if err != nil {
 		return nil, 0, err
@@ -185,6 +187,10 @@ func scanJob(row rowScanner, includePayload bool) (*headgate.JobSummary, int64, 
 		v := finalized.Int64
 		j.FinalizedAtMs = &v
 	}
+	if claimed.Valid {
+		v := claimed.Int64
+		j.ClaimedAtMs = &v
+	}
 	j.ErrorsJSON = errorsText.String
 	_ = json.Unmarshal(tagsJSON, &j.Tags)
 	if j.ErrorsJSON == "" {
@@ -192,6 +198,7 @@ func scanJob(row rowScanner, includePayload bool) (*headgate.JobSummary, int64, 
 	}
 	if includePayload {
 		j.Payload = payload // invariant 9: withheld unless explicitly requested
+		j.Headers = headgate.DecodeHeaders(headersJSON)
 	}
 	return &j, internalID, nil
 }

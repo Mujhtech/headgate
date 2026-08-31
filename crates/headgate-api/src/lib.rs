@@ -617,6 +617,7 @@ fn job_json(j: &JobSummary) -> Value {
         "fingerprint": j.fingerprint,
         "enqueued_at_ms": j.enqueued_at_ms,
         "scheduled_at_ms": j.scheduled_at_ms,
+        "claimed_at_ms": j.claimed_at_ms,
         "periodic_origin": if j.periodic_schedule_id.is_empty() {
             Value::Null
         } else {
@@ -629,6 +630,7 @@ fn job_json(j: &JobSummary) -> Value {
     if let Some(p) = &j.payload {
         // Only present when explicitly requested (invariant 9).
         v["payload"] = json!(base64::engine::general_purpose::STANDARD.encode(p));
+        v["metadata"] = json!(j.headers);
     }
     v
 }
@@ -1700,6 +1702,43 @@ fn gen_id(seq: &AtomicU64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_job_detail_includes_payload_and_metadata() {
+        let summary = JobSummary {
+            id: "job-1".into(),
+            kind: "mail.send".into(),
+            queue: "default".into(),
+            state: "available".into(),
+            schema_version: 1,
+            priority: 0,
+            attempt: 0,
+            crash_attempt: 0,
+            max_attempts: 3,
+            partition_key: String::new(),
+            rate_class: String::new(),
+            sticky_worker: String::new(),
+            weight: 1,
+            fingerprint: "sha256:test".into(),
+            enqueued_at_ms: 1,
+            scheduled_at_ms: 1,
+            claimed_at_ms: None,
+            periodic_schedule_id: String::new(),
+            periodic_tick_ms: 0,
+            finalized_at_ms: None,
+            payload: Some(br#"{"recipient":"ops@example.com"}"#.to_vec()),
+            headers: [("customer_id".into(), "cus-42".into())].into(),
+            errors_json: "[]".into(),
+            tags: vec!["email".into()],
+        };
+
+        let body = job_json(&summary);
+        assert_eq!(
+            body["payload"],
+            "eyJyZWNpcGllbnQiOiJvcHNAZXhhbXBsZS5jb20ifQ=="
+        );
+        assert_eq!(body["metadata"]["customer_id"], "cus-42");
+    }
 
     #[tokio::test]
     async fn enqueue_backpressure_is_a_structured_429() {

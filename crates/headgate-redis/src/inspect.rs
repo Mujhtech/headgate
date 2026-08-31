@@ -16,7 +16,7 @@ use headgate_core::{
     WorkerMeta, noisy_partition_keys,
 };
 
-use crate::{JobHash, RedisStore, hn, hs, map_redis_err};
+use crate::{JobHash, RedisStore, decode_headers, hn, hs, map_redis_err};
 
 /// Queue-position/sampled lookups cap here; "position >= 1000" is answer enough.
 const POSITION_LIMIT: isize = 1_000;
@@ -112,6 +112,7 @@ fn job_from_hash(id: &str, h: &JobHash, include_payload: bool) -> JobSummary {
         fingerprint: hs(h, "fingerprint").to_string(),
         enqueued_at_ms: hn(h, "enqueued_at_ms"),
         scheduled_at_ms: hn(h, "scheduled_at_ms"),
+        claimed_at_ms: h.get("claimed_at_ms").map(|_| hn(h, "claimed_at_ms")),
         periodic_schedule_id: hs(h, "periodic_schedule_id").to_string(),
         periodic_tick_ms: hn(h, "periodic_tick_ms"),
         finalized_at_ms: h.get("finalized_at_ms").map(|_| hn(h, "finalized_at_ms")),
@@ -119,6 +120,11 @@ fn job_from_hash(id: &str, h: &JobHash, include_payload: bool) -> JobSummary {
             Some(h.get("payload").cloned().unwrap_or_default())
         } else {
             None
+        },
+        headers: if include_payload {
+            decode_headers(h.get("headers").map(Vec::as_slice))
+        } else {
+            Default::default()
         },
         errors_json: {
             let e = hs(h, "errors");

@@ -128,20 +128,21 @@ var _ headgate.ProgressInspectStore = (*PgxStore)(nil)
 
 const jobCols = `j.ulid, j.kind, j.queue, j.state::text, j.schema_version, j.priority,
 	j.attempt, j.crash_attempt, j.max_attempts, j.partition_key, j.rate_class, j.sticky_worker,
-	j.weight, j.fingerprint, j.enqueued_at_ms, j.scheduled_at_ms,
-	j.periodic_schedule_id, j.periodic_tick_ms, j.finalized_at_ms, j.payload,
+	j.weight, j.fingerprint, j.enqueued_at_ms, j.scheduled_at_ms, j.claimed_at_ms,
+	j.periodic_schedule_id, j.periodic_tick_ms, j.finalized_at_ms, j.payload, j.headers,
 	j.errors::text, j.id, COALESCE((SELECT json_agg(t.tag ORDER BY t.tag) FROM headgate_job_tag t WHERE t.job_id=j.id),'[]')::text`
 
 func scanJob(row pgx.Row, includePayload bool) (*headgate.JobSummary, int64, error) {
 	var j headgate.JobSummary
 	var schemaVersion, attempt, crash, maxAtt int32
 	var payload []byte
+	var headersJSON []byte
 	var internalID int64
 	var tagsJSON string
 	err := row.Scan(&j.ID, &j.Kind, &j.Queue, &j.State, &schemaVersion, &j.Priority,
 		&attempt, &crash, &maxAtt, &j.PartitionKey, &j.RateClass, &j.StickyWorker, &j.Weight, &j.Fingerprint,
-		&j.EnqueuedAtMs, &j.ScheduledAtMs, &j.PeriodicScheduleID, &j.PeriodicTickMs,
-		&j.FinalizedAtMs, &payload, &j.ErrorsJSON,
+		&j.EnqueuedAtMs, &j.ScheduledAtMs, &j.ClaimedAtMs, &j.PeriodicScheduleID, &j.PeriodicTickMs,
+		&j.FinalizedAtMs, &payload, &headersJSON, &j.ErrorsJSON,
 		&internalID, &tagsJSON)
 	if err != nil {
 		return nil, 0, err
@@ -151,6 +152,7 @@ func scanJob(row pgx.Row, includePayload bool) (*headgate.JobSummary, int64, err
 	_ = json.Unmarshal([]byte(tagsJSON), &j.Tags)
 	if includePayload {
 		j.Payload = payload // invariant 9: withheld unless explicitly requested
+		j.Headers = headgate.DecodeHeaders(headersJSON)
 	}
 	return &j, internalID, nil
 }

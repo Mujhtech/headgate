@@ -812,7 +812,7 @@ func jobJSON(j headgate.JobSummary) map[string]any {
 		"sticky_worker": j.StickyWorker,
 		"weight":        j.Weight,
 		"fingerprint":   j.Fingerprint, "enqueued_at_ms": j.EnqueuedAtMs,
-		"scheduled_at_ms": j.ScheduledAtMs, "finalized_at_ms": finalized,
+		"scheduled_at_ms": j.ScheduledAtMs, "claimed_at_ms": j.ClaimedAtMs, "finalized_at_ms": finalized,
 		"errors": errs,
 		"tags":   j.Tags,
 	}
@@ -823,6 +823,7 @@ func jobJSON(j headgate.JobSummary) map[string]any {
 	}
 	if j.Payload != nil {
 		v["payload"] = base64.StdEncoding.EncodeToString(j.Payload)
+		v["metadata"] = j.Headers
 	}
 	return v
 }

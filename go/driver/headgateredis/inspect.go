@@ -131,6 +131,10 @@ func jobFromHash(id string, h map[string]string, includePayload bool) *headgate.
 		PeriodicTickMs:     hnum(h, "periodic_tick_ms"),
 		ErrorsJSON:         h["errors"],
 	}
+	if _, ok := h["claimed_at_ms"]; ok {
+		v := hnum(h, "claimed_at_ms")
+		j.ClaimedAtMs = &v
+	}
 	if j.ErrorsJSON == "" {
 		j.ErrorsJSON = "[]"
 	}
@@ -141,6 +145,7 @@ func jobFromHash(id string, h map[string]string, includePayload bool) *headgate.
 	}
 	if includePayload {
 		j.Payload = []byte(h["payload"])
+		j.Headers = headgate.DecodeHeaders([]byte(h["headers"]))
 	}
 	return j
 }

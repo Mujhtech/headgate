@@ -14,7 +14,7 @@ use headgate_core::{
 };
 use tokio_postgres::types::ToSql;
 
-use crate::{NOW_MS, PgStore, map_pg_err};
+use crate::{NOW_MS, PgStore, decode_headers, map_pg_err};
 
 /// The most rows any counting query may touch. Past this, counts are approximate.
 const SAMPLE_LIMIT: i64 = 50_000;
@@ -41,6 +41,7 @@ fn job_from_row(row: &tokio_postgres::Row, include_payload: bool) -> JobSummary 
         fingerprint: row.get("fingerprint"),
         enqueued_at_ms: row.get("enqueued_at_ms"),
         scheduled_at_ms: row.get("scheduled_at_ms"),
+        claimed_at_ms: row.get("claimed_at_ms"),
         periodic_schedule_id: row.get("periodic_schedule_id"),
         periodic_tick_ms: row.get("periodic_tick_ms"),
         finalized_at_ms: row.get("finalized_at_ms"),
@@ -49,6 +50,11 @@ fn job_from_row(row: &tokio_postgres::Row, include_payload: bool) -> JobSummary 
         } else {
             None
         },
+        headers: if include_payload {
+            decode_headers(row.get("headers"))
+        } else {
+            Default::default()
+        },
         errors_json: row.get("errors_text"),
         tags: serde_json::from_str(row.get("tags_text")).unwrap_or_default(),
     }
@@ -56,8 +62,8 @@ fn job_from_row(row: &tokio_postgres::Row, include_payload: bool) -> JobSummary 
 
 const JOB_COLS: &str = "j.ulid, j.kind, j.queue, j.state::text AS state_text, \
      j.schema_version, j.priority, j.attempt, j.crash_attempt, j.max_attempts, \
-     j.partition_key, j.rate_class, j.sticky_worker, j.weight, j.fingerprint, j.enqueued_at_ms, j.scheduled_at_ms, \
-     j.periodic_schedule_id, j.periodic_tick_ms, j.finalized_at_ms, j.payload, \
+     j.partition_key, j.rate_class, j.sticky_worker, j.weight, j.fingerprint, j.enqueued_at_ms, j.scheduled_at_ms, j.claimed_at_ms, \
+     j.periodic_schedule_id, j.periodic_tick_ms, j.finalized_at_ms, j.payload, j.headers, \
      j.errors::text AS errors_text, j.id, COALESCE((SELECT json_agg(t.tag ORDER BY t.tag) FROM headgate_job_tag t WHERE t.job_id=j.id),'[]')::text AS tags_text";
 
 #[async_trait::async_trait]

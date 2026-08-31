@@ -123,6 +123,9 @@ paths:
             /admin. River hides job args by default behind
             RIVER_JOB_LIST_HIDE_ARGS_BY_DEFAULT; here the safe value IS the default.
             Server config may forbid opting in at all.
+            An explicitly included detail also returns opaque envelope headers as the
+            `metadata` object. The detail response includes `claimed_at_ms` while an
+            attempt is actively leased. List responses omit payload and metadata.
         - {name: cursor, in: query, schema: {type: string}}
         - {name: limit,  in: query, schema: {type: integer, default: 50, maximum: 200}}
       responses:

@@ -946,12 +946,17 @@ pub struct JobSummary {
     pub fingerprint: String,
     pub enqueued_at_ms: i64,
     pub scheduled_at_ms: i64,
+    /// Store-stamped start of the active attempt. Absent once no lease is active.
+    pub claimed_at_ms: Option<i64>,
     pub periodic_schedule_id: String,
     pub periodic_tick_ms: i64,
     pub finalized_at_ms: Option<i64>,
     /// Invariant 9: `None` unless the caller explicitly asked. Payloads carry PII and
     /// the console mounts at /admin.
     pub payload: Option<Vec<u8>>,
+    /// Opaque producer metadata. Kept out of list responses with the payload and returned
+    /// only for an explicitly requested detail read.
+    pub headers: std::collections::BTreeMap<String, String>,
     /// The per-attempt error history, as the JSON the store keeps (attempt-log contract timeline).
     pub errors_json: String,
     pub tags: Vec<String>,

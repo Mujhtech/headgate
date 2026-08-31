@@ -17,7 +17,7 @@ use headgate_core::{
 use mysql_async::prelude::*;
 use mysql_async::{Params, Row, TxOpts, Value};
 
-use crate::{MysqlStore, NOW_MS, map_err};
+use crate::{MysqlStore, NOW_MS, decode_headers, map_err};
 
 /// The most rows any counting query may touch. Past this, counts are approximate.
 const SAMPLE_LIMIT: i64 = 50_000;
@@ -28,8 +28,8 @@ const MAX_PAGE: u32 = 200;
 
 const JOB_COLS: &str = "j.ulid, j.kind, j.queue, CAST(j.state AS CHAR) AS state_text, \
      j.schema_version, j.priority, j.attempt, j.crash_attempt, j.max_attempts, \
-     j.partition_key, j.rate_class, j.sticky_worker, j.weight, j.fingerprint, j.enqueued_at_ms, j.scheduled_at_ms, \
-     j.periodic_schedule_id, j.periodic_tick_ms, j.finalized_at_ms, j.payload, \
+     j.partition_key, j.rate_class, j.sticky_worker, j.weight, j.fingerprint, j.enqueued_at_ms, j.scheduled_at_ms, j.claimed_at_ms, \
+     j.periodic_schedule_id, j.periodic_tick_ms, j.finalized_at_ms, j.payload, CAST(j.headers AS CHAR) AS headers_text, \
      CAST(j.errors AS CHAR) AS errors_text, j.id,
      COALESCE((SELECT JSON_ARRAYAGG(t.tag) FROM headgate_job_tag t WHERE t.job_id=j.id), JSON_ARRAY()) AS tags_text";
 
@@ -57,6 +57,7 @@ fn job_from_row(row: &Row, include_payload: bool) -> JobSummary {
         fingerprint: s("fingerprint"),
         enqueued_at_ms: i("enqueued_at_ms"),
         scheduled_at_ms: i("scheduled_at_ms"),
+        claimed_at_ms: row.get::<Option<i64>, _>("claimed_at_ms").flatten(),
         periodic_schedule_id: s("periodic_schedule_id"),
         periodic_tick_ms: i("periodic_tick_ms"),
         finalized_at_ms: row.get::<Option<i64>, _>("finalized_at_ms").flatten(),
@@ -68,6 +69,11 @@ fn job_from_row(row: &Row, include_payload: bool) -> JobSummary {
             )
         } else {
             None
+        },
+        headers: if include_payload {
+            decode_headers(Some(&s("headers_text")))
+        } else {
+            Default::default()
         },
         errors_json: {
             let e = s("errors_text");

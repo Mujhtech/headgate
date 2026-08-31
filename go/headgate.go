@@ -1006,11 +1006,14 @@ type JobSummary struct {
 	Weight                                uint32
 	Fingerprint                           string
 	EnqueuedAtMs, ScheduledAtMs           int64
+	ClaimedAtMs                           *int64
 	PeriodicScheduleID                    string
 	PeriodicTickMs                        int64
 	FinalizedAtMs                         *int64
 	// Payload is nil unless explicitly requested (invariant 9).
-	Payload    []byte
+	Payload []byte
+	// Headers are opaque producer metadata and accompany only an explicit detail read.
+	Headers    map[string]string
 	ErrorsJSON string
 	Tags       []string
 }

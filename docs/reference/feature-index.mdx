@@ -62,8 +62,9 @@ tests remain the source of truth when a backend has a narrower boundary.
 
 - crash accounting separate from returned failures, at-least-once delivery, lease fencing,
   and retry-time FIFO;
-- archive/dead-letter behavior, redrive, death handlers, stuck-job callbacks, and
-  move-suspect-to-back, including explicit abort and discard outcomes;
+- [archive/dead-letter behavior](/docs/guides/dead-letter-queue), redrive, death handlers,
+  stuck-job callbacks, and move-suspect-to-back, including explicit abort and discard
+  outcomes;
 - idempotent effects, transactional step effects, injectable clocks, and step-resume
   helpers;
 - orphan provenance and rate-limited-as-nonfailure semantics.

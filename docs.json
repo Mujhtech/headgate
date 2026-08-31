@@ -95,6 +95,7 @@
               "docs/guides/resumable-work",
               "docs/guides/results-and-progress",
               "docs/guides/execution-reliability",
+              "docs/guides/dead-letter-queue",
               "docs/guides/batch-handlers",
               "docs/guides/periodic-jobs",
               "docs/guides/workflows",

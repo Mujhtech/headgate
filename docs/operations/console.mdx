@@ -13,6 +13,11 @@ The jobs route combines state filters, structured search, queue/state bulk actio
 paginated job table. Selecting a job opens a route-owned detail sheet instead of replacing
 the list, so operators keep their search and surrounding jobs in view.
 
+The **archived** filter is the dead-letter queue. Open an archived job to diagnose its
+errors and payload, retry one job from the detail sheet, or select reviewed rows for a
+bounded redrive. `quarantined` and `undecodable` remain separate filters because their
+recovery paths are different.
+
 ![Headgate jobs list with state filters, structured search, and bulk actions](/docs/assets/console-jobs.png)
 
 ![Headgate jobs list with a running job detail sheet showing progress, admission, timeline, and actions](/docs/assets/console-job-detail.jpg)

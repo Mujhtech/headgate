@@ -27,6 +27,10 @@ Terminal retention controls when a job leaves the hot admission table. PostgreSQ
 MySQL can copy selected queues into a monthly cold archive during that bounded sweep. The
 active gate remains unpartitioned so global IDs and uniqueness guarantees do not weaken.
 
+Do not confuse that cold storage with the live dead-letter queue. A job in the hot
+`archived` state is searchable and redrivable. After retention moves it to the optional SQL
+cold archive, it is audit-only and ordinary job inspection and retry no longer return it.
+
 Archive pruning validates a closed month and every row's retention deadline before using
 the database's partition-truncate operation. Redis supports terminal retention but does not
 advertise SQL table partitioning.
@@ -62,6 +66,7 @@ Schema installation remains in the migration CLIs so incident credentials and DD
 credentials stay separate.
 
 <CardGroup cols={2}>
+  <Card title="Dead-letter queue" icon="archive" href="/docs/guides/dead-letter-queue" />
   <Card title="Operations console" icon="panel-top" href="/docs/operations/console" />
   <Card title="Control API" icon="waypoints" href="/docs/reference/control-api" />
 </CardGroup>

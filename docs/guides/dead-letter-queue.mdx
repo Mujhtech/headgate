@@ -1,0 +1,189 @@
+---
+title: "Dead-letter queue"
+description: "Understand archived jobs, inspect failures, redrive safely, and configure retention."
+icon: "archive"
+---
+
+Headgate's `archived` job state **is the dead-letter queue (DLQ)**. There is no second
+active queue or `dead_jobs` table. When a job enters `archived`, it remains in the ordinary
+job store with the same ID, payload, metadata, attempt history, and errors until its
+terminal retention expires.
+
+Keeping the dead letter as a state avoids a move between two stores and lets the same
+bounded inspection and control API search, diagnose, and redrive the job.
+
+<Note>
+`archived` is not the optional SQL cold archive. An archived job is still hot,
+inspectable, and redrivable. A cold-archive row is retained for long-term audit after the
+hot job expires and is not part of normal job inspection or admission.
+</Note>
+
+## What enters the DLQ
+
+| Cause | Terminal state | Meaning |
+| --- | --- | --- |
+| A returned failure consumes the last permitted attempt | `archived` | Automatic retries are exhausted |
+| A handler returns `skip` | `archived` | The handler deliberately stops retrying |
+| The absolute job deadline elapses | `archived` | The work is no longer useful |
+
+Several terminal-looking states are deliberately separate because they need different
+operator responses:
+
+| State | Why it is not the DLQ | Recovery |
+| --- | --- | --- |
+| `quarantined` | Repeated crashes identify a possible poison-pill fingerprint | Diagnose the crash and release the fingerprint from Quarantine |
+| `undecodable` | The payload version or resumable-step definition is incompatible | Deploy an upcaster or compatible handler, or repair the payload |
+| `cancelled` | An operator intentionally stopped the job | Keep it for audit or enqueue replacement work |
+| deleted | A handler returned `revoke`, or terminal retention removed the row | It cannot be redriven from Headgate |
+
+Returned errors increment `attempt`; process loss and expired leases increment
+`crash_attempt`. A crashing job can therefore reach `quarantined` without being mislabeled
+as an ordinary retry-exhausted dead letter.
+
+## Inspect archived jobs
+
+In the console, open **Jobs**, choose the **archived** state filter, and select a row. The
+detail sheet keeps the job list visible and shows the error and attempt timeline, payload,
+metadata, lifecycle, and available actions.
+
+![Headgate jobs list with state filters and job details](/docs/assets/console-job-detail.jpg)
+
+List queries remain payload-free. Request the payload only for the job being diagnosed:
+
+```bash
+curl 'http://127.0.0.1:8080/api/v1/jobs?state=archived&limit=50'
+
+curl 'http://127.0.0.1:8080/api/v1/jobs/JOB_ID?include_payload=true'
+```
+
+<Warning>
+Payloads and metadata may contain personal data or credentials. Protect both the control
+API and console with operator authentication, and grant payload inspection separately when
+your application needs a narrower role.
+</Warning>
+
+## Redrive after fixing the cause
+
+Retry is defined only for `archived → available`. It preserves the job's identity,
+attempt counters, errors, and other history, clears finalization, and makes the job
+eligible for admission immediately. Because history is preserved, another returned
+failure can archive it again; redrive is not a way to erase an exhausted retry budget.
+
+For one job, use the Retry action in its console sheet, the CLI, or the control API:
+
+```bash
+headgatectl --api http://127.0.0.1:8080 jobs retry JOB_ID
+
+curl --request POST \
+  --header 'Idempotency-Key: redrive-JOB_ID-1' \
+  'http://127.0.0.1:8080/api/v1/jobs/JOB_ID/retry'
+```
+
+For a reviewed set of at most 1,000 jobs, select their checkboxes in the console or send
+the explicit IDs. The response reports success or failure for each ID:
+
+```bash
+curl --request POST \
+  --header 'Content-Type: application/json' \
+  --header 'Idempotency-Key: billing-redrive-2026-08-31' \
+  --data '{"action":"retry","ids":["JOB_1","JOB_2"]}' \
+  'http://127.0.0.1:8080/api/v1/jobs/actions'
+```
+
+For a larger set, use the asynchronous bulk operation. Start with `dry_run: true`, review
+the matched count, then submit the same non-empty selector with a new idempotency key and
+`dry_run: false`:
+
+```bash
+curl --request POST \
+  --header 'Content-Type: application/json' \
+  --header 'Idempotency-Key: billing-redrive-preview-1' \
+  --data '{
+    "action":"retry",
+    "selector":{"state":"archived","queue":"billing"},
+    "dry_run":true
+  }' \
+  'http://127.0.0.1:8080/api/v1/jobs/bulk'
+```
+
+The bulk route returns an operation ID to poll at `GET /api/v1/operations/{id}`. Empty
+selectors are rejected, and the operation processes matches in bounded batches instead of
+holding one request open for the whole queue depth.
+
+<Tip>
+Repair the root cause before redriving. A transient dependency outage may need no job
+change. Bad input may need `PUT /api/v1/jobs/{id}/payload` before retry. An incompatible
+schema belongs in `undecodable`, not `archived`, and must be fixed through payload
+versioning or an upcaster.
+</Tip>
+
+## Use death handlers for notification
+
+A death handler runs once per successful fence-verified transition to `archived`. A job
+that is redriven and later archived again produces a new death event. The handler receives
+the job snapshot, terminal error, and one of `attempts_exhausted`, `skipped`, or
+`deadline_exceeded`. Use it for alerts, metrics, or an incident record—not for deciding
+whether the archive transition is allowed.
+
+<CodeGroup>
+
+```rust Rust
+use headgate::{DeathHandlerFn, WorkerConfig};
+use std::sync::Arc;
+
+let notify = DeathHandlerFn::new(|event: &headgate::DeathEvent| {
+    tracing::error!(
+        job_id = %event.envelope().id,
+        reason = ?event.reason(),
+        error = event.error(),
+        "job entered the dead-letter queue"
+    );
+});
+
+let worker_config = WorkerConfig {
+    death_handlers: vec![Arc::new(notify)],
+    ..WorkerConfig::default()
+};
+```
+
+```go Go
+runnerConfig.DeathHandlers = append(
+    runnerConfig.DeathHandlers,
+    headgate.DeathHandlerFunc(func(ctx context.Context, event headgate.DeathEvent) {
+        slog.ErrorContext(ctx, "job entered the dead-letter queue",
+            "job_id", event.Envelope().ID,
+            "reason", event.Reason(),
+            "error", event.ErrorMessage(),
+        )
+    }),
+)
+```
+
+</CodeGroup>
+
+Death handlers run synchronously in registration order inside the worker, after the durable
+store write. A process can die after archiving and before sending an external notification,
+so do not treat the callback as a transactional outbox. Callback code should tolerate
+application-level duplicates, and durable alerting should reconcile from
+`state=archived` inspection.
+
+## Choose retention deliberately
+
+`retention_ms` controls how long a terminal job stays in the hot store. Configure a
+positive window long enough for your on-call and redrive process; once the hot row is
+removed, the ordinary retry operation no longer has a job to restore.
+
+PostgreSQL and MySQL can copy selected queues into monthly cold-archive partitions during
+the bounded retention sweep. Those rows are for audit and later pruning, not admission or
+redrive. Redis supports terminal retention but does not claim SQL cold-archive partitions.
+
+| Storage | Search with `state=archived` | Redrive | Purpose |
+| --- | --- | --- | --- |
+| Hot archived job | Yes | Yes | Operational DLQ |
+| SQL cold archive | No | No | Long-term audit after hot retention |
+
+<CardGroup cols={3}>
+  <Card title="Execution reliability" icon="shield-check" href="/docs/guides/execution-reliability" />
+  <Card title="Operations console" icon="panel-top" href="/docs/operations/console" />
+  <Card title="Queue retention" icon="settings-2" href="/docs/operations/queue-and-runtime-management" />
+</CardGroup>

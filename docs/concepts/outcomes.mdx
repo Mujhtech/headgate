@@ -11,7 +11,7 @@ semantics.
 | --- | --- | --- |
 | `success` | Yes, current attempt ran | Complete and retain/delete by policy |
 | `retry` | Yes | Schedule deterministic backoff |
-| `skip` | Yes | Archive without another retry |
+| `skip` | No additional failure | Archive without another retry |
 | `revoke` | No additional failure | Delete |
 | `snooze` | No | Schedule for a handler-selected delay |
 | `rate_limited` | No | Requeue as a non-failure |
@@ -33,3 +33,7 @@ return headgate.ErrSkipJob
 ```
 
 </CodeGroup>
+
+`archived` is Headgate's dead-letter queue. See the
+[dead-letter queue guide](/docs/guides/dead-letter-queue) for inspection, redrive,
+notifications, and retention.

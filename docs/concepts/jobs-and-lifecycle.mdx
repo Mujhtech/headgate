@@ -35,7 +35,7 @@ stateDiagram-v2
   running --> completed: success
   running --> retryable: retry
   running --> scheduled: snooze / rate limited
-  running --> archived: skip / attempts exhausted
+  running --> archived: skip / attempts exhausted / deadline elapsed
   running --> quarantined: repeated crashes
   running --> cancelled: operator cancel
   running --> undecodable: incompatible payload or steps
@@ -44,6 +44,15 @@ stateDiagram-v2
 
 `attempt` counts returned failures. `crash_attempt` counts expired leases and process
 crashes. The distinction is durable because quarantine depends on it.
+
+The `archived` state is Headgate's dead-letter queue: retry-exhausted, skipped, and
+deadline-expired jobs remain inspectable and can be redriven while their terminal retention
+is active. It is distinct from `quarantined` poison-pill fingerprints, `undecodable`
+payloads, and the optional SQL cold archive used only for long-term audit.
+
+<Card title="Dead-letter queue" icon="archive" href="/docs/guides/dead-letter-queue">
+  Inspect, diagnose, redrive, and retain archived jobs safely.
+</Card>
 
 <Warning>
 Job payloads are excluded from inspection by default. Operators must explicitly request

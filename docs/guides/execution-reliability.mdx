@@ -39,7 +39,9 @@ can prefer a named worker while retaining a fallback policy when it is unavailab
 
 ## Terminal and suspect-job callbacks
 
-- death handlers observe jobs that exhaust retries or are discarded;
+- `archived` is the operational dead-letter queue for jobs that exhaust retries, are
+  skipped, or pass their absolute deadline;
+- death handlers observe those jobs only after the archive transition is durable;
 - stuck-job handlers receive runtime evidence about work that is no longer progressing;
 - a suspect job can be moved behind healthy work without changing its attempt semantics;
 - redrive returns selected archived jobs to execution through bounded operator operations;
@@ -50,8 +52,9 @@ Use isolated execution when application code needs a process boundary. Use resum
 for durable intra-job progress and idempotency helpers when application effects must commit
 with a fence-verified completion.
 
-<CardGroup cols={3}>
+<CardGroup cols={2}>
   <Card title="Outcomes" icon="route" href="/docs/concepts/outcomes" />
+  <Card title="Dead-letter queue" icon="archive" href="/docs/guides/dead-letter-queue" />
   <Card title="Workers and leases" icon="timer-reset" href="/docs/concepts/workers-and-leases" />
   <Card title="Resumable work" icon="list-checks" href="/docs/guides/resumable-work" />
 </CardGroup>

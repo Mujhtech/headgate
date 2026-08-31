@@ -58,6 +58,13 @@ check_release() {
     exit 1
   fi
 
+  local go_version
+  go_version=$(sed -n 's/^const Version = "\([^"]*\)"$/\1/p' go/version.go)
+  if [[ $go_version != "$version" ]]; then
+    echo "Go version is $go_version, release version is $version" >&2
+    exit 1
+  fi
+
   local dir actual expected crate
   for dir in "${go_module_dirs[@]}"; do
     actual=$(sed -n 's/^module //p' "$dir/go.mod")

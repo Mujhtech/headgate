@@ -630,7 +630,7 @@ func (a *api) meta(w http.ResponseWriter, _ *http.Request) {
 		capabilities = append(capabilities, "inspect")
 	}
 	writeJSON(w, 200, map[string]any{
-		"version":      "0.1.2",
+		"version":      headgate.Version,
 		"backend":      a.backend,
 		"capabilities": capabilities,
 		"limits":       map[string]any{"max_page_size": 200, "approximate_count_threshold": 50000},

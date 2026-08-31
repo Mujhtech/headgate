@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/headgate-core", "crates/headgate-postgres", "crates/headgate", "crates/headgate-proto", "crates/headgate-macros", "crates/headgate-api", "crates/headgate-redis", "crates/headgate-testkit", "crates/headgate-mysql", "crates/headgate-ui", "crates/headgate-migrate", "crates/headgate-sql", "crates/headgate-workflow", "crates/headgate-crypto", "crates/headgate-otel", "examples/rust"]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 authors = ["The headgate Authors"]
 description = "A policy-aware distributed job queue with PostgreSQL, MySQL, and Redis backends."
@@ -18,14 +18,14 @@ license = "Apache-2.0"
 [workspace.dependencies]
 async-trait = "0.1"
 sha2 = "0.10"
-headgate = { version = "0.1.2", path = "crates/headgate" }
-headgate-core = { version = "0.1.2", path = "crates/headgate-core" }
-headgate-macros = { version = "0.1.2", path = "crates/headgate-macros" }
-headgate-migrate = { version = "0.1.2", path = "crates/headgate-migrate" }
-headgate-mysql = { version = "0.1.2", path = "crates/headgate-mysql" }
-headgate-postgres = { version = "0.1.2", path = "crates/headgate-postgres" }
-headgate-redis = { version = "0.1.2", path = "crates/headgate-redis" }
-headgate-sql = { version = "0.1.2", path = "crates/headgate-sql" }
-headgate-testkit = { version = "0.1.2", path = "crates/headgate-testkit" }
-headgate-ui = { version = "0.1.2", path = "crates/headgate-ui" }
-headgate-otel = { version = "0.1.2", path = "crates/headgate-otel" }
+headgate = { version = "0.1.3", path = "crates/headgate" }
+headgate-core = { version = "0.1.3", path = "crates/headgate-core" }
+headgate-macros = { version = "0.1.3", path = "crates/headgate-macros" }
+headgate-migrate = { version = "0.1.3", path = "crates/headgate-migrate" }
+headgate-mysql = { version = "0.1.3", path = "crates/headgate-mysql" }
+headgate-postgres = { version = "0.1.3", path = "crates/headgate-postgres" }
+headgate-redis = { version = "0.1.3", path = "crates/headgate-redis" }
+headgate-sql = { version = "0.1.3", path = "crates/headgate-sql" }
+headgate-testkit = { version = "0.1.3", path = "crates/headgate-testkit" }
+headgate-ui = { version = "0.1.3", path = "crates/headgate-ui" }
+headgate-otel = { version = "0.1.3", path = "crates/headgate-otel" }

@@ -74,3 +74,32 @@ func TestUnknownJobReturnsNotFound(t *testing.T) {
 		t.Fatalf("status = %d, want 404", response.Code)
 	}
 }
+
+func TestEveryAdvertisedStateReturnsItsJobs(t *testing.T) {
+	handler := newDemoHandler(time.UnixMilli(1_777_000_000_000))
+	states := map[string]int{
+		"available": 1, "scheduled": 1, "retryable": 1, "running": 3,
+		"completed": 3, "archived": 2, "cancelled": 1, "undecodable": 1,
+		"quarantined": 1,
+	}
+	for state, want := range states {
+		t.Run(state, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/jobs?state="+state, nil))
+			var page struct {
+				Jobs []map[string]any `json:"jobs"`
+			}
+			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &page) != nil {
+				t.Fatalf("response = %d %s", response.Code, response.Body.String())
+			}
+			if len(page.Jobs) != want {
+				t.Fatalf("jobs = %d, want %d: %s", len(page.Jobs), want, response.Body.String())
+			}
+			for _, job := range page.Jobs {
+				if job["state"] != state {
+					t.Fatalf("filter leaked state %v into %s", job["state"], state)
+				}
+			}
+		})
+	}
+}

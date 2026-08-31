@@ -98,13 +98,18 @@ func (d *demoAPI) allJobs() []map[string]any {
 		{"id": "wf-customers", "kind": "imports:customers", "queue": "imports", "state": "completed", "attempt": 1, "crash_attempt": 0, "max_attempts": 5, "schema_version": 1, "fingerprint": "sha256:wf-customers", "enqueued_at_ms": d.milliseconds(-16 * time.Minute), "finalized_at_ms": d.milliseconds(-12 * time.Minute)},
 		{"id": "wf-invoices", "kind": "imports:invoices", "queue": "imports", "state": "running", "attempt": 1, "crash_attempt": 0, "max_attempts": 5, "schema_version": 1, "fingerprint": "sha256:wf-invoices", "enqueued_at_ms": d.milliseconds(-16 * time.Minute)},
 		{"id": "wf-reconcile", "kind": "imports:reconcile", "queue": "imports", "state": "scheduled", "attempt": 0, "crash_attempt": 0, "max_attempts": 5, "schema_version": 1, "fingerprint": "sha256:wf-reconcile", "enqueued_at_ms": d.milliseconds(-16 * time.Minute), "scheduled_at_ms": d.milliseconds(4 * time.Minute)},
+		{"id": "job-archived-retries-441", "kind": "webhook:deliver", "queue": "default", "state": "archived", "attempt": 8, "crash_attempt": 0, "max_attempts": 8, "schema_version": 2, "partition_key": "tenant-west", "fingerprint": "sha256:archived-retries", "enqueued_at_ms": d.milliseconds(-3 * time.Hour), "scheduled_at_ms": d.milliseconds(-2 * time.Hour), "finalized_at_ms": d.milliseconds(-90 * time.Minute), "payload": base64.StdEncoding.EncodeToString([]byte(`{"endpoint":"https://example.invalid/hooks"}`)), "metadata": map[string]string{"customer_id": "cus-west"}, "tags": []string{"webhook", "exhausted"}, "errors": []map[string]any{{"outcome": "retry", "at_ms": d.milliseconds(-90 * time.Minute), "attempt": 8, "error": "maximum attempts reached"}}},
+		{"id": "job-archived-operator-442", "kind": "exports:legacy", "queue": "maintenance", "state": "archived", "attempt": 1, "crash_attempt": 0, "max_attempts": 3, "schema_version": 1, "fingerprint": "sha256:archived-operator", "enqueued_at_ms": d.milliseconds(-26 * time.Hour), "scheduled_at_ms": d.milliseconds(-25 * time.Hour), "finalized_at_ms": d.milliseconds(-24 * time.Hour), "tags": []string{"operator-archived"}},
+		{"id": "job-cancelled-551", "kind": "reports:export", "queue": "default", "state": "cancelled", "attempt": 1, "crash_attempt": 0, "max_attempts": 5, "schema_version": 1, "partition_key": "tenant-acme", "fingerprint": "sha256:cancelled-export", "enqueued_at_ms": d.milliseconds(-35 * time.Minute), "scheduled_at_ms": d.milliseconds(-34 * time.Minute), "finalized_at_ms": d.milliseconds(-30 * time.Minute), "payload": base64.StdEncoding.EncodeToString([]byte(`{"report_id":"rpt-551"}`)), "metadata": map[string]string{"requested_by": "ops@example.com"}, "tags": []string{"manual-cancel"}},
+		{"id": "job-undecodable-661", "kind": "billing:charge", "queue": "critical", "state": "undecodable", "attempt": 1, "crash_attempt": 0, "max_attempts": 5, "schema_version": 7, "partition_key": "tenant-south", "fingerprint": "sha256:undecodable-charge", "enqueued_at_ms": d.milliseconds(-70 * time.Minute), "scheduled_at_ms": d.milliseconds(-69 * time.Minute), "finalized_at_ms": d.milliseconds(-68 * time.Minute), "payload": base64.StdEncoding.EncodeToString([]byte(`{"invoice_id":9481}`)), "tags": []string{"schema-mismatch"}, "errors": []map[string]any{{"outcome": "undecodable", "at_ms": d.milliseconds(-68 * time.Minute), "attempt": 1, "error": "no upcaster from schema version 7"}}},
+		{"id": "job-quarantined-771", "kind": "images:resize", "queue": "media", "state": "quarantined", "attempt": 1, "crash_attempt": 5, "max_attempts": 5, "schema_version": 1, "partition_key": "tenant-north", "fingerprint": "sha256:7ac401b3f5d531bd", "enqueued_at_ms": d.milliseconds(-2 * time.Hour), "scheduled_at_ms": d.milliseconds(-40 * time.Minute), "finalized_at_ms": d.milliseconds(-38 * time.Minute), "tags": []string{"poison-pill"}, "errors": []map[string]any{{"outcome": "revoke", "at_ms": d.milliseconds(-38 * time.Minute), "crash_attempt": 5, "error": "worker process exited while decoding image"}}},
 	}
 }
 
 func withoutPayload(job map[string]any) map[string]any {
 	copy := make(map[string]any, len(job))
 	for key, value := range job {
-		if key != "payload" {
+		if key != "payload" && key != "metadata" {
 			copy[key] = value
 		}
 	}
@@ -142,8 +147,15 @@ func (d *demoAPI) job(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, `{"error":"job not found"}`, http.StatusNotFound)
 }
 
-func (d *demoAPI) jobCounts(w http.ResponseWriter, _ *http.Request) {
-	d.writeJSON(w, map[string]any{"counts": map[string]int{"available": 1, "scheduled": 1, "retryable": 1, "running": 3, "completed": 3, "archived": 2, "cancelled": 1, "undecodable": 1, "quarantined": 1}})
+func (d *demoAPI) jobCounts(w http.ResponseWriter, r *http.Request) {
+	queue := r.URL.Query().Get("queue")
+	counts := make(map[string]int)
+	for _, job := range d.allJobs() {
+		if queue == "" || job["queue"] == queue {
+			counts[fmt.Sprint(job["state"])]++
+		}
+	}
+	d.writeJSON(w, map[string]any{"counts": counts})
 }
 
 func (d *demoAPI) admission(w http.ResponseWriter, r *http.Request) {

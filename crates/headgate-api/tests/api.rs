@@ -7,8 +7,8 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use headgate_api::{ApiConfig, router};
 use headgate_core::{
-    AdmitRequest, Envelope, Inspect, JobResult, MissedPolicy, Outcome, OutputStore, ProgressStore,
-    ProgressUpdate, Schedule, Store,
+    AdmitRequest, Checkpoint, Envelope, Inspect, JobResult, MissedPolicy, Outcome, OutputStore,
+    ProgressStore, ProgressUpdate, Schedule, Store,
 };
 use headgate_postgres::PgStore;
 use http_body_util::BodyExt;
@@ -40,6 +40,99 @@ async fn call_with_key(
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let v = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, v)
+}
+
+#[tokio::test]
+async fn job_checkpoint_has_an_explicit_operator_endpoint() {
+    let Ok(conninfo) = std::env::var("HG_TEST_PG") else {
+        eprintln!("HG_TEST_PG not set; skipping job checkpoint API proof");
+        return;
+    };
+    let store = Arc::new(PgStore::connect(&conninfo, 2).expect("connect"));
+    {
+        let tx = store.begin().await.unwrap();
+        tx.client()
+            .unwrap()
+            .execute(
+                "DELETE FROM headgate_job WHERE ulid = 'api-checkpoint'",
+                &[],
+            )
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+    store
+        .enqueue(&[Envelope {
+            id: "api-checkpoint".into(),
+            kind: "api.checkpoint".into(),
+            queue: "api-checkpoint".into(),
+            payload: b"{}".to_vec(),
+            fingerprint: headgate_core::fingerprint("api.checkpoint", b"api-checkpoint"),
+            scheduled_at_ms: 1,
+            retention_ms: 0,
+            ..Default::default()
+        }])
+        .await
+        .unwrap();
+    let lease = store
+        .admit(AdmitRequest {
+            worker: "api-checkpoint-worker".into(),
+            lease_id: "api-checkpoint-lease".into(),
+            queues: vec!["api-checkpoint".into()],
+            capacity: 1,
+            lease: std::time::Duration::from_secs(30),
+            quantum: 1,
+        })
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
+        .claims[0]
+        .lease_ref();
+    store
+        .checkpoint(
+            &lease,
+            &Checkpoint {
+                last_completed_step: Some("download".into()),
+                completed_steps: vec!["download".into()],
+                in_progress_step: Some("transform".into()),
+                cursor_step: Some("transform".into()),
+                cursor: Some(br#"{"offset":42}"#.to_vec()),
+                schema_version: 2,
+                step_set_hash: "sha256:steps".into(),
+                crashes_by_step: vec![("transform".into(), 1)],
+            },
+        )
+        .await
+        .unwrap();
+    let inspect: Arc<dyn Inspect> = store.clone();
+    let app = router(inspect, ApiConfig::default());
+
+    let (status, body) = call(
+        &app,
+        Method::GET,
+        "/api/v1/jobs/api-checkpoint/checkpoint",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["completed_steps"], json!(["download"]));
+    assert_eq!(body["in_progress_step"], "transform");
+    assert_eq!(body["cursor"], "eyJvZmZzZXQiOjQyfQ==");
+    assert_eq!(body["crashes_by_step"]["transform"], 1);
+
+    let (status, body) = call(&app, Method::GET, "/api/v1/jobs/api-checkpoint", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.get("checkpoint").is_none(),
+        "ordinary job detail leaked checkpoint"
+    );
+
+    store
+        .ack(&lease, Outcome::Success, None, None)
+        .await
+        .unwrap();
 }
 
 async fn call(
@@ -952,6 +1045,9 @@ async fn phase4_periodic_bulk_workers_search() {
             inflight: 6,
             polls: 10,
             empty_polls: 2,
+            status: "running".into(),
+            duties_active: true,
+            pending_command: None,
         })
         .await
         .unwrap();
@@ -991,6 +1087,9 @@ async fn phase4_periodic_bulk_workers_search() {
         .unwrap_or_else(|| panic!("p4-w1 must be listed: {ws}"));
     assert_eq!(mine["concurrency"], 8, "{mine}");
     assert_eq!(mine["inflight"], 6, "{mine}");
+    assert_eq!(mine["status"], "running", "{mine}");
+    assert_eq!(mine["duties_active"], true, "{mine}");
+    assert!(mine["pending_command"].is_null(), "{mine}");
     let live: i64 = ws.as_array().unwrap().len() as i64;
     let (_, v) = call(&app, Method::GET, "/api/v1/cluster", None).await;
     assert_eq!(

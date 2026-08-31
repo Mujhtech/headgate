@@ -151,6 +151,7 @@ var _ headgate.InspectStore = (*MysqlStore)(nil)
 var _ headgate.ResultInspectStore = (*MysqlStore)(nil)
 var _ headgate.OutputInspectStore = (*MysqlStore)(nil)
 var _ headgate.ProgressInspectStore = (*MysqlStore)(nil)
+var _ headgate.CheckpointInspectStore = (*MysqlStore)(nil)
 
 const jobCols = `j.ulid, j.kind, j.queue, CAST(j.state AS CHAR) AS state_text,
 	j.schema_version, j.priority, j.attempt, j.crash_attempt, j.max_attempts,
@@ -266,6 +267,22 @@ func (s *MysqlStore) GetJobProgress(ctx context.Context, id string) (*headgate.J
 		Current: current, Total: total, Message: message.String,
 		Fence: fence, UpdatedAtMs: updatedAtMs,
 	}, nil
+}
+
+func (s *MysqlStore) GetJobCheckpoint(ctx context.Context, id string) (*headgate.Checkpoint, error) {
+	var raw sql.NullString
+	var cursor []byte
+	err := s.db.QueryRowContext(ctx,
+		`SELECT CAST(checkpoint AS CHAR), cp_cursor FROM headgate_job WHERE ulid = ?`, id).
+		Scan(&raw, &cursor)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	checkpoint := decodeCheckpoint(raw, cursor)
+	return &checkpoint, nil
 }
 
 func (s *MysqlStore) ListJobs(ctx context.Context, f headgate.JobFilter, cursor string, limit uint32) (headgate.JobPage, error) {
@@ -1355,6 +1372,10 @@ func (s *MysqlStore) ListScheduleEvents(ctx context.Context, scheduleID string, 
 // ---------- worker registry + surveyed policy behavior control channel ----------
 
 func (s *MysqlStore) HeartbeatWorker(ctx context.Context, w headgate.WorkerMeta) (string, error) {
+	status := w.Status
+	if status == "" {
+		status = "running"
+	}
 	queues, err := json.Marshal(w.Queues)
 	if err != nil || w.Queues == nil {
 		queues = []byte("[]")
@@ -1371,17 +1392,19 @@ func (s *MysqlStore) HeartbeatWorker(ctx context.Context, w headgate.WorkerMeta)
 	if _, err := conn.ExecContext(ctx, `
 		INSERT INTO headgate_worker
 		       (worker_id, host, pid, queues, concurrency, started_at_ms, heartbeat_at_ms,
-		        inflight, polls, empty_polls)
-		VALUES (?, ?, ?, CAST(? AS JSON), ?, ?, `+nowMS+`, ?, ?, ?) AS new
+		        inflight, polls, empty_polls, status, duties_active)
+		VALUES (?, ?, ?, CAST(? AS JSON), ?, ?, `+nowMS+`, ?, ?, ?, ?, ?) AS new
 		ON DUPLICATE KEY UPDATE
 		  queues = new.queues, concurrency = new.concurrency,
 		  heartbeat_at_ms = new.heartbeat_at_ms,
 		  -- ADDITIVE: LEVELS, so the beat overwrites rather than
 		  -- accumulating (same rule as the PG adapter).
 		  inflight = new.inflight, polls = new.polls,
-		  empty_polls = new.empty_polls`,
+		  empty_polls = new.empty_polls, status = new.status,
+		  duties_active = new.duties_active`,
 		w.WorkerID, w.Host, int64(w.PID), string(queues), int64(w.Concurrency),
-		w.StartedAtMs, int64(w.Inflight), int64(w.Polls), int64(w.EmptyPolls)); err != nil {
+		w.StartedAtMs, int64(w.Inflight), int64(w.Polls), int64(w.EmptyPolls),
+		status, w.DutiesActive); err != nil {
 		return "", err
 	}
 	var cmd sql.NullString
@@ -1400,7 +1423,7 @@ func (s *MysqlStore) ListWorkers(ctx context.Context, staleAfterMs int64) ([]hea
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT worker_id, host, pid, CAST(queues AS CHAR) AS queues_json,
 		       concurrency, started_at_ms, heartbeat_at_ms,
-		       inflight, polls, empty_polls
+		       inflight, polls, empty_polls, status, duties_active, command
 		FROM headgate_worker
 		WHERE heartbeat_at_ms >= `+nowMS+` - ?
 		ORDER BY worker_id LIMIT 10000`, staleAfterMs)
@@ -1412,9 +1435,10 @@ func (s *MysqlStore) ListWorkers(ctx context.Context, staleAfterMs int64) ([]hea
 	for rows.Next() {
 		var w headgate.WorkerMeta
 		var pid, conc, inflight, polls, emptyPolls int64
-		var queuesJSON sql.NullString
+		var queuesJSON, command sql.NullString
 		if err := rows.Scan(&w.WorkerID, &w.Host, &pid, &queuesJSON, &conc,
-			&w.StartedAtMs, &w.HeartbeatAtMs, &inflight, &polls, &emptyPolls); err != nil {
+			&w.StartedAtMs, &w.HeartbeatAtMs, &inflight, &polls, &emptyPolls,
+			&w.Status, &w.DutiesActive, &command); err != nil {
 			return nil, err
 		}
 		w.PID = int32(pid)
@@ -1423,6 +1447,9 @@ func (s *MysqlStore) ListWorkers(ctx context.Context, staleAfterMs int64) ([]hea
 		}
 		w.Concurrency = uint32(conc)
 		w.Inflight, w.Polls, w.EmptyPolls = uint32(inflight), uint64(polls), uint64(emptyPolls)
+		if command.Valid {
+			w.PendingCommand = command.String
+		}
 		out = append(out, w)
 	}
 	return out, rows.Err()

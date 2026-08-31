@@ -96,7 +96,8 @@ required_columns!(POSTGRES_COLUMNS {
     ],
     "headgate_worker" => [
         "worker_id", "host", "pid", "queues", "concurrency", "started_at_ms",
-        "heartbeat_at_ms", "command", "inflight", "polls", "empty_polls"
+        "heartbeat_at_ms", "command", "inflight", "polls", "empty_polls", "status",
+        "duties_active"
     ],
     "headgate_effect" => ["key", "at_ms"],
     "headgate_operation" => [

@@ -948,6 +948,14 @@ type ProgressInspectStore interface {
 	GetJobProgress(ctx context.Context, id string) (*JobProgress, error)
 }
 
+// CheckpointInspectStore explicitly exposes resumable-step state. Cursor bytes may carry
+// application data, so ordinary job/list reads never include them.
+type CheckpointInspectStore interface {
+	// A nil checkpoint means the job does not exist. Existing jobs with no resumable
+	// progress return an empty Checkpoint.
+	GetJobCheckpoint(ctx context.Context, id string) (*Checkpoint, error)
+}
+
 // Tx is a caller-owned store transaction. Drivers wrap their concrete handle and
 // recover it via Unwrap — the Go mirror of Rust's TxHandle::as_any (transactional API): the
 // compile-time path is typed, the dyn path downcasts, and a foreign handle is a hard
@@ -1232,6 +1240,13 @@ type WorkerMeta struct {
 	// signal; the two counters ride the wire instead of a float so the aggregate is
 	// exact and so neither language has to agree with the other about float formatting.
 	EmptyPolls uint64
+
+	// Status is the worker-acknowledged control state: running, quiet, restarting,
+	// or terminating. PendingCommand is the store mailbox and is populated only by
+	// inspection reads; workers never write it in a heartbeat.
+	Status         string
+	DutiesActive   bool
+	PendingCommand string
 }
 
 // Utilization is backlog metrics's Inflight / Concurrency. 0 when capacity is 0 — never a division
@@ -1338,7 +1353,8 @@ type InspectStore interface {
 	// "" = none.
 	HeartbeatWorker(ctx context.Context, w WorkerMeta) (command string, err error)
 	ListWorkers(ctx context.Context, staleAfterMs int64) ([]WorkerMeta, error)
-	// SignalWorker sets (or clears, with "") a worker's pending command.
+	// SignalWorker sets (or clears, with "") a worker's pending command. Runtimes
+	// clear every command after applying it, then publish the acknowledged state.
 	SignalWorker(ctx context.Context, workerID, command string) error
 	// DistinctKinds: kinds present among waiting jobs (bounded sample), for typed dispatch's
 	// startup warning about kinds no registered handler answers.

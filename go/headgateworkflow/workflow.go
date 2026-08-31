@@ -50,7 +50,7 @@ func (w *Workflow) Retention(d time.Duration) error {
 }
 
 func (w *Workflow) Add(name string, env headgate.Envelope, deps ...string) *Workflow {
-	w.nodes = append(w.nodes, draftNode{name: name, env: env, deps: append([]string(nil), deps...)})
+	w.nodes = append(w.nodes, draftNode{name: name, env: env, deps: append([]string{}, deps...)})
 	return w
 }
 

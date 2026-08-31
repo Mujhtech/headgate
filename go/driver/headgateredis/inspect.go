@@ -48,6 +48,7 @@ var inspectStates = []string{
 
 var _ headgate.InspectStore = (*RedisStore)(nil)
 var _ headgate.ResultInspectStore = (*RedisStore)(nil)
+var _ headgate.CheckpointInspectStore = (*RedisStore)(nil)
 var _ headgate.OutputInspectStore = (*RedisStore)(nil)
 var _ headgate.ProgressInspectStore = (*RedisStore)(nil)
 
@@ -312,6 +313,28 @@ func (s *RedisStore) GetJobProgress(ctx context.Context, id string) (*headgate.J
 		Current: current, Total: total, Message: fmt.Sprint(values[2]),
 		Fence: fence, UpdatedAtMs: int64(updated),
 	}, nil
+}
+
+func (s *RedisStore) GetJobCheckpoint(ctx context.Context, id string) (*headgate.Checkpoint, error) {
+	key := s.key("job", id)
+	pipe := s.rdb.Pipeline()
+	exists := pipe.Exists(ctx, key)
+	raw := pipe.HGet(ctx, key, "checkpoint")
+	cursor := pipe.HGet(ctx, key, "cp_cursor")
+	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
+		return nil, err
+	}
+	if exists.Val() == 0 {
+		return nil, nil
+	}
+	var cursorBytes []byte
+	if err := cursor.Err(); err == nil {
+		cursorBytes = []byte(cursor.Val())
+	} else if !errors.Is(err, redis.Nil) {
+		return nil, err
+	}
+	checkpoint := decodeCheckpoint(raw.Val(), cursorBytes)
+	return &checkpoint, nil
 }
 
 func (s *RedisStore) ListJobs(ctx context.Context, f headgate.JobFilter, cursor string, limit uint32) (headgate.JobPage, error) {
@@ -1362,11 +1385,15 @@ func (s *RedisStore) ListScheduleEvents(ctx context.Context, scheduleID string, 
 }
 
 func (s *RedisStore) HeartbeatWorker(ctx context.Context, w headgate.WorkerMeta) (string, error) {
+	status := w.Status
+	if status == "" {
+		status = "running"
+	}
 	cmd, err := workerLua.Run(ctx, s.rdb, []string{s.prefix},
 		"beat", w.WorkerID, w.Host, w.PID, strings.Join(w.Queues, ","),
 		w.Concurrency, w.StartedAtMs,
 		// ADDITIVE trailing args on worker.lua's beat.
-		w.Inflight, w.Polls, w.EmptyPolls).Text()
+		w.Inflight, w.Polls, w.EmptyPolls, status, w.DutiesActive).Text()
 	if err != nil && errors.Is(err, redis.Nil) {
 		return "", nil
 	}
@@ -1413,6 +1440,10 @@ func (s *RedisStore) ListWorkers(ctx context.Context, staleAfterMs int64) ([]hea
 			Inflight:   uint32(hnum(h, "inflight")),
 			Polls:      uint64(hnum(h, "polls")),
 			EmptyPolls: uint64(hnum(h, "empty_polls")),
+			Status:     h["status"],
+			// Older worker hashes predate this level and did run duties.
+			DutiesActive:   h["duties_active"] == "1" || h["duties_active"] == "",
+			PendingCommand: h["command"],
 		})
 	}
 	return out, nil

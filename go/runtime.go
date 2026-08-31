@@ -453,6 +453,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	seq := 0
 	admitting := true
 	rollingRestart := false
+	workerStatus := "running"
+	dutiesActive := !r.cfg.DisableDuties
 
 	// typed dispatch startup validation: warn on kinds waiting in the store that no registered
 	// handler (or alias) answers — before they fail one at a time in production.
@@ -494,36 +496,37 @@ loop:
 				break loop
 			}
 		case <-heartbeat.C:
-			switch r.heartbeat(ctx, &mu, inflight) {
+			switch r.heartbeat(ctx, &mu, inflight, workerStatus, dutiesActive) {
 			case "quiet":
 				if admitting {
 					slog.Warn("headgate: operator signal: quiet — admission paused")
 					admitting = false
 				}
+				workerStatus = "quiet"
+				r.ackWorkerCommand(ctx, &mu, inflight, workerStatus, dutiesActive)
 			case "resume":
 				if !admitting {
 					slog.Warn("headgate: operator signal: resume — admission resumed")
 					admitting = true
 				}
+				workerStatus = "running"
+				r.ackWorkerCommand(ctx, &mu, inflight, workerStatus, dutiesActive)
 			case "terminate":
 				slog.Warn("headgate: operator signal: terminate — shutting down")
-				// terminate is CONSUME-ONCE: left sticky, it would kill every future
-				// worker re-registering under this id the moment it heartbeats.
-				// quiet/resume stay sticky on purpose.
-				if insp, ok := r.store.(InspectStore); ok {
-					_ = insp.SignalWorker(ctx, r.workerID, "")
-				}
+				workerStatus, dutiesActive = "terminating", false
+				stopDuties.Do(func() { close(dutyStop) })
+				r.releaseDuties(context.WithoutCancel(ctx))
+				r.ackWorkerCommand(ctx, &mu, inflight, workerStatus, dutiesActive)
 				r.Shutdown() // the duty loops watch this channel too
 				break loop
 			case "restart":
 				slog.Warn("headgate: operator signal: restart — draining without timeout")
-				if insp, ok := r.store.(InspectStore); ok {
-					_ = insp.SignalWorker(ctx, r.workerID, "")
-				}
 				// A replacement should be able to acquire singleton duties while this
 				// worker finishes long-running jobs.
 				stopDuties.Do(func() { close(dutyStop) })
 				r.releaseDuties(context.WithoutCancel(ctx))
+				workerStatus, dutiesActive = "restarting", false
+				r.ackWorkerCommand(ctx, &mu, inflight, workerStatus, dutiesActive)
 				rollingRestart = true
 				break loop
 			case "resign":
@@ -531,11 +534,10 @@ loop:
 				// Consume once and stop this process's duty loops until restart. Merely
 				// releasing here would let the same loops reacquire on their next tick,
 				// racing the operator's intended takeover.
-				if insp, ok := r.store.(InspectStore); ok {
-					_ = insp.SignalWorker(ctx, r.workerID, "")
-				}
 				stopDuties.Do(func() { close(dutyStop) })
 				r.releaseDuties(context.WithoutCancel(ctx))
+				dutiesActive = false
+				r.ackWorkerCommand(ctx, &mu, inflight, workerStatus, dutiesActive)
 			}
 		// push wakeups layered fetch: a notify shortcuts the wait; the poll timer is the
 		// correctness fallback (a missed notification costs latency only).
@@ -623,7 +625,7 @@ func (r *Runner) admitOnce(ctx context.Context, seq, capacity int, mu *sync.Mute
 // heartbeat renews every held lease and CANCELS handlers whose lease was lost —
 // finishing them would race the job's next holder. No ack: the job is not ours.
 // Returns any pending operator command (surveyed policy behavior).
-func (r *Runner) heartbeat(ctx context.Context, mu *sync.Mutex, inflight map[string]*inflightJob) string {
+func (r *Runner) heartbeat(ctx context.Context, mu *sync.Mutex, inflight map[string]*inflightJob, status string, dutiesActive bool) string {
 	mu.Lock()
 	leases := make([]LeaseRef, 0, len(inflight))
 	for _, j := range inflight {
@@ -631,7 +633,7 @@ func (r *Runner) heartbeat(ctx context.Context, mu *sync.Mutex, inflight map[str
 	}
 	mu.Unlock()
 	if len(leases) == 0 {
-		return r.registerWorker(ctx, 0)
+		return r.registerWorker(ctx, 0, status, dutiesActive)
 	}
 	lost, err := r.store.Renew(ctx, leases, r.cfg.LeaseDuration)
 	if err != nil {
@@ -650,7 +652,7 @@ func (r *Runner) heartbeat(ctx context.Context, mu *sync.Mutex, inflight map[str
 	}
 	n := len(inflight)
 	mu.Unlock()
-	return r.registerWorker(ctx, n)
+	return r.registerWorker(ctx, n, status, dutiesActive)
 }
 
 // registerWorker upserts the registry row and returns any pending operator command —
@@ -661,13 +663,14 @@ func (r *Runner) heartbeat(ctx context.Context, mu *sync.Mutex, inflight map[str
 // the telemetry facade as gauges from the same struct that goes to the store, so a
 // metrics dashboard and GET /cluster cannot disagree — and the gauges fire even for a
 // store with no registry at all.
-func (r *Runner) registerWorker(ctx context.Context, inflight int) string {
+func (r *Runner) registerWorker(ctx context.Context, inflight int, status string, dutiesActive bool) string {
 	polls, emptyPolls := r.pollStats()
 	host, _ := os.Hostname()
 	meta := WorkerMeta{
 		WorkerID: r.workerID, Host: host, PID: int32(os.Getpid()),
 		Queues: r.queues(), Concurrency: uint32(r.capacity()),
 		Inflight: uint32(inflight), Polls: polls, EmptyPolls: emptyPolls,
+		Status: status, DutiesActive: dutiesActive,
 	}
 	if r.cfg.Telemetry != nil {
 		r.cfg.Telemetry.OnEvent(Event{
@@ -686,6 +689,20 @@ func (r *Runner) registerWorker(ctx context.Context, inflight int) string {
 		return ""
 	}
 	return cmd
+}
+
+// ackWorkerCommand clears the one-slot mailbox, then immediately publishes the
+// acknowledged state instead of making the console wait for another heartbeat.
+func (r *Runner) ackWorkerCommand(ctx context.Context, mu *sync.Mutex, inflight map[string]*inflightJob, status string, dutiesActive bool) {
+	insp, ok := r.store.(InspectStore)
+	if !ok {
+		return
+	}
+	_ = insp.SignalWorker(ctx, r.workerID, "")
+	mu.Lock()
+	n := len(inflight)
+	mu.Unlock()
+	_ = r.registerWorker(ctx, n, status, dutiesActive)
 }
 
 // drain: stop admitting, wait out in-flight work, then cancel the rest and VOLUNTARILY

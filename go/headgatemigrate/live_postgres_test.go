@@ -50,19 +50,19 @@ SELECT count(*) FROM information_schema.schemata WHERE schema_name = $1`, schema
 	}
 
 	result, err := MigratePostgres(ctx, conn, Up, Options{})
-	if err != nil || len(result.Steps) != 11 || result.Steps[0].Migration.Version != 1 || result.Steps[10].Migration.Version != 11 {
+	if err != nil || len(result.Steps) != 12 || result.Steps[0].Migration.Version != 1 || result.Steps[11].Migration.Version != 12 {
 		t.Fatalf("fresh up = %#v, %v", result, err)
 	}
 	validation, err := ValidatePostgres(ctx, conn)
-	if err != nil || !validation.OK() || validation.CurrentVersion != 11 {
+	if err != nil || !validation.OK() || validation.CurrentVersion != 12 {
 		t.Fatalf("fresh validation = %#v, %v", validation, err)
 	}
 	dry, err := MigratePostgres(ctx, conn, Down, Options{DryRun: true})
-	if err != nil || !dry.DryRun || len(dry.Steps) != 11 {
+	if err != nil || !dry.DryRun || len(dry.Steps) != 12 {
 		t.Fatalf("down dry-run = %#v, %v", dry, err)
 	}
 	downResult, err := MigratePostgres(ctx, conn, Down, Options{})
-	if err != nil || len(downResult.Steps) != 11 {
+	if err != nil || len(downResult.Steps) != 12 {
 		t.Fatalf("down = %#v, %v", downResult, err)
 	}
 	var jobExists bool
@@ -95,7 +95,7 @@ UPDATE headgate_schema_migration SET checksum = 'tampered' WHERE version = 1`); 
 		t.Fatalf("unversioned up error = %v", err)
 	}
 	adopted, err := AdoptPostgres(ctx, conn)
-	if err != nil || len(adopted) != 11 || adopted[10].Version != 11 {
+	if err != nil || len(adopted) != 12 || adopted[11].Version != 12 {
 		t.Fatalf("adopted = %#v, %v", adopted, err)
 	}
 	validation, err = ValidatePostgres(ctx, conn)

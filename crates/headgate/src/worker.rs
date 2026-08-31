@@ -41,6 +41,21 @@ struct Inflight {
     abort: tokio::task::AbortHandle,
 }
 
+async fn acknowledge_worker_command(
+    inspect: &dyn headgate_core::Inspect,
+    worker_id: &str,
+    heartbeat: &headgate_core::WorkerMeta,
+    status: &str,
+    duties_active: bool,
+) {
+    let _ = inspect.signal_worker(worker_id, None).await;
+    let mut acknowledged = heartbeat.clone();
+    acknowledged.status = status.to_string();
+    acknowledged.duties_active = duties_active;
+    acknowledged.pending_command = None;
+    let _ = inspect.heartbeat_worker(&acknowledged).await;
+}
+
 /// backlog metrics how many admissions the empty-poll ratio is computed over. Both runtimes use
 /// this same number so a mixed-language fleet's aggregate is not a weighted average of
 /// two different windows.
@@ -129,6 +144,8 @@ impl<S: Store> Worker<S> {
         let mut seq: u64 = 0;
         let mut admitting = true;
         let mut rolling_restart = false;
+        let mut worker_status = "running".to_string();
+        let mut duties_active = self.cfg.run_duties;
         let mut next_poll = tokio::time::Instant::now(); // poll immediately at start
         // backlog metrics the rolling empty-poll window behind the scale-down signal.
         let mut poll_window = PollWindow::default();
@@ -186,6 +203,9 @@ impl<S: Store> Worker<S> {
                         inflight: inflight.len() as u32,
                         polls: poll_window.polls(),
                         empty_polls: poll_window.empty_polls(),
+                        status: worker_status.clone(),
+                        duties_active,
+                        pending_command: None,
                     };
                     self.cfg.telemetry.on_event(Event::WorkerSaturation {
                         worker: &saturation.worker_id,
@@ -202,31 +222,41 @@ impl<S: Store> Worker<S> {
                         let meta = saturation;
                         match insp.heartbeat_worker(&meta).await {
                             Ok(Some(cmd)) => match cmd.as_str() {
-                                "quiet" if admitting => {
-                                    tracing::warn!("operator signal: quiet — admission paused");
-                                    admitting = false;
+                                "quiet" => {
+                                    if admitting {
+                                        tracing::warn!("operator signal: quiet — admission paused");
+                                        admitting = false;
+                                    }
+                                    worker_status = "quiet".to_string();
+                                    acknowledge_worker_command(insp, &worker_id, &meta, &worker_status, duties_active).await;
                                 }
-                                "resume" if !admitting => {
-                                    tracing::warn!("operator signal: resume — admission resumed");
-                                    admitting = true;
+                                "resume" => {
+                                    if !admitting {
+                                        tracing::warn!("operator signal: resume — admission resumed");
+                                        admitting = true;
+                                    }
+                                    worker_status = "running".to_string();
+                                    acknowledge_worker_command(insp, &worker_id, &meta, &worker_status, duties_active).await;
                                 }
                                 "terminate" => {
                                     tracing::warn!("operator signal: terminate — shutting down");
-                                    // terminate is CONSUME-ONCE: left sticky, it would
-                                    // kill every future worker re-registering under
-                                    // this id the moment it heartbeats. quiet/resume
-                                    // stay sticky on purpose.
-                                    let _ = insp.signal_worker(&worker_id, None).await;
+                                    worker_status = "terminating".to_string();
+                                    duties_active = false;
+                                    duty_tasks.shutdown().await;
+                                    release_duties(&self.store, &worker_id).await;
+                                    acknowledge_worker_command(insp, &worker_id, &meta, &worker_status, duties_active).await;
                                     let _ = self.shutdown_tx.send(true); // duties too
                                     break;
                                 }
                                 "restart" => {
                                     tracing::warn!("operator signal: restart — draining without timeout");
-                                    let _ = insp.signal_worker(&worker_id, None).await;
                                     // Let the replacement acquire singleton duties while
                                     // this worker finishes arbitrarily long handlers.
                                     duty_tasks.shutdown().await;
                                     release_duties(&self.store, &worker_id).await;
+                                    worker_status = "restarting".to_string();
+                                    duties_active = false;
+                                    acknowledge_worker_command(insp, &worker_id, &meta, &worker_status, duties_active).await;
                                     rolling_restart = true;
                                     break;
                                 }
@@ -236,9 +266,10 @@ impl<S: Store> Worker<S> {
                                     // restart. Releasing without stopping them lets this same
                                     // worker reacquire on the next interval and defeats the
                                     // operator's intended takeover.
-                                    let _ = insp.signal_worker(&worker_id, None).await;
                                     duty_tasks.shutdown().await;
                                     release_duties(&self.store, &worker_id).await;
+                                    duties_active = false;
+                                    acknowledge_worker_command(insp, &worker_id, &meta, &worker_status, duties_active).await;
                                 }
                                 _ => {}
                             },

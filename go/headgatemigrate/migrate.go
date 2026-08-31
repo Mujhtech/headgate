@@ -102,6 +102,12 @@ var postgresPartitionedArchiveUp string
 //go:embed migrations/postgres/0011_partitioned_archive.down.sql
 var postgresPartitionedArchiveDown string
 
+//go:embed migrations/postgres/0012_worker_control_state.up.sql
+var postgresWorkerControlStateUp string
+
+//go:embed migrations/postgres/0012_worker_control_state.down.sql
+var postgresWorkerControlStateDown string
+
 //go:embed migrations/mysql/0001_init.up.sql
 var mysqlInitialUp string
 
@@ -168,6 +174,12 @@ var mysqlPartitionedArchiveUp string
 //go:embed migrations/mysql/0011_partitioned_archive.down.sql
 var mysqlPartitionedArchiveDown string
 
+//go:embed migrations/mysql/0012_worker_control_state.up.sql
+var mysqlWorkerControlStateUp string
+
+//go:embed migrations/mysql/0012_worker_control_state.down.sql
+var mysqlWorkerControlStateDown string
+
 var byBackend = map[Backend][]Migration{
 	Postgres: {
 		{Version: 1, Name: "initial_schema", UpSQL: postgresInitialUp, DownSQL: postgresInitialDown, OnlineSafe: false},
@@ -181,6 +193,7 @@ var byBackend = map[Backend][]Migration{
 		{Version: 9, Name: "pending_tags_metrics", UpSQL: postgresPendingTagsMetricsV9Up, DownSQL: postgresPendingTagsMetricsV9Down, OnlineSafe: false},
 		{Version: 10, Name: "sticky_routing", UpSQL: postgresStickyRoutingUp, DownSQL: postgresStickyRoutingDown, OnlineSafe: false},
 		{Version: 11, Name: "partitioned_archive", UpSQL: postgresPartitionedArchiveUp, DownSQL: postgresPartitionedArchiveDown, OnlineSafe: true},
+		{Version: 12, Name: "worker_control_state", UpSQL: postgresWorkerControlStateUp, DownSQL: postgresWorkerControlStateDown, OnlineSafe: true},
 	},
 	MySQL: {
 		{Version: 1, Name: "initial_schema", UpSQL: mysqlInitialUp, DownSQL: mysqlInitialDown, OnlineSafe: false},
@@ -194,6 +207,7 @@ var byBackend = map[Backend][]Migration{
 		{Version: 9, Name: "pending_tags_metrics", UpSQL: mysqlPendingTagsMetricsV9Up, DownSQL: mysqlPendingTagsMetricsV9Down, OnlineSafe: false},
 		{Version: 10, Name: "sticky_routing", UpSQL: mysqlStickyRoutingUp, DownSQL: mysqlStickyRoutingDown, OnlineSafe: false},
 		{Version: 11, Name: "partitioned_archive", UpSQL: mysqlPartitionedArchiveUp, DownSQL: mysqlPartitionedArchiveDown, OnlineSafe: false},
+		{Version: 12, Name: "worker_control_state", UpSQL: mysqlWorkerControlStateUp, DownSQL: mysqlWorkerControlStateDown, OnlineSafe: false},
 	},
 }
 

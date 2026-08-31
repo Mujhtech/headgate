@@ -8,12 +8,12 @@
 //! word-for-word: the API surface must read identically whichever store answers.
 
 use headgate_core::{
-    AdmissionExplain, BlockedBy, BulkRequest, ConcurrencyLimitConfig, HistoryBucket, Inspect,
-    JobFilter, JobOutput, JobPage, JobProgress, JobResult, JobSummary, MissedPolicy,
-    OperationStatus, OutputInspect, PartitionState, ProgressInspect, QuarantineEntry, QueueStats,
-    QuietGroupMetrics, RateClassConfig, RateClassState, ResultInspect, SCHEDULE_EVENT_LIMIT,
-    SaturationStrategy, Schedule, ScheduleEvent, ScheduleEventOutcome, StateCounts, StoreError,
-    WorkerMeta, noisy_partition_keys,
+    AdmissionExplain, BlockedBy, BulkRequest, Checkpoint, CheckpointInspect,
+    ConcurrencyLimitConfig, HistoryBucket, Inspect, JobFilter, JobOutput, JobPage, JobProgress,
+    JobResult, JobSummary, MissedPolicy, OperationStatus, OutputInspect, PartitionState,
+    ProgressInspect, QuarantineEntry, QueueStats, QuietGroupMetrics, RateClassConfig,
+    RateClassState, ResultInspect, SCHEDULE_EVENT_LIMIT, SaturationStrategy, Schedule,
+    ScheduleEvent, ScheduleEventOutcome, StateCounts, StoreError, WorkerMeta, noisy_partition_keys,
 };
 
 use crate::{JobHash, RedisStore, decode_headers, hn, hs, map_redis_err};
@@ -247,6 +247,10 @@ impl Inspect for RedisStore {
     }
 
     fn as_progress_inspect(&self) -> Option<&dyn ProgressInspect> {
+        Some(self)
+    }
+
+    fn as_checkpoint_inspect(&self) -> Option<&dyn CheckpointInspect> {
         Some(self)
     }
 
@@ -1263,6 +1267,11 @@ impl Inspect for RedisStore {
 
     async fn heartbeat_worker(&self, w: &WorkerMeta) -> Result<Option<String>, StoreError> {
         let mut conn = self.conn.clone();
+        let status = if w.status.is_empty() {
+            "running"
+        } else {
+            &w.status
+        };
         let cmd: String = self
             .worker
             .key(&self.prefix)
@@ -1277,6 +1286,8 @@ impl Inspect for RedisStore {
             .arg(w.inflight)
             .arg(w.polls)
             .arg(w.empty_polls)
+            .arg(status)
+            .arg(w.duties_active)
             .invoke_async(&mut conn)
             .await
             .map_err(map_redis_err)?;
@@ -1330,6 +1341,13 @@ impl Inspect for RedisStore {
                 inflight: hn(h, "inflight") as u32,
                 polls: hn(h, "polls") as u64,
                 empty_polls: hn(h, "empty_polls") as u64,
+                status: hs(h, "status").to_string(),
+                // Older worker hashes predate this level and did run duties.
+                duties_active: hs(h, "duties_active").is_empty() || hn(h, "duties_active") != 0,
+                pending_command: {
+                    let command = hs(h, "command");
+                    (!command.is_empty()).then(|| command.to_string())
+                },
             });
         }
         Ok(out)
@@ -1778,6 +1796,20 @@ impl ProgressInspect for RedisStore {
             fence: hn(h, "progress_fence") as u64,
             updated_at_ms: hn(h, "progress_updated_at_ms"),
         }))
+    }
+}
+
+#[async_trait::async_trait]
+impl CheckpointInspect for RedisStore {
+    async fn get_job_checkpoint(&self, id: &str) -> Result<Option<Checkpoint>, StoreError> {
+        let h = &self.hashes(&[format!("{}:job:{id}", self.prefix)]).await?[0];
+        if h.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(crate::decode_checkpoint(
+            h.get("checkpoint").map(Vec::as_slice),
+            h.get("cp_cursor").cloned(),
+        )))
     }
 }
 

@@ -183,6 +183,14 @@ pub struct WorkerInfo {
     pub started_at_ms: i64,
     #[prost(int64, tag = "8")]
     pub heartbeat_at_ms: i64,
+    #[prost(uint32, tag = "9")]
+    pub inflight: u32,
+    #[prost(string, tag = "10")]
+    pub status: ::prost::alloc::string::String,
+    #[prost(bool, tag = "11")]
+    pub duties_active: bool,
+    #[prost(string, tag = "12")]
+    pub pending_command: ::prost::alloc::string::String,
 }
 /// admission policy Admission policy, evaluated store-side inside the claim.
 #[derive(Clone, PartialEq, ::prost::Message)]

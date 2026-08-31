@@ -501,6 +501,9 @@ async fn the_inspect_surface_answers_over_redis() {
         inflight: 3,
         polls: 10,
         empty_polls: 4,
+        status: "running".into(),
+        duties_active: true,
+        pending_command: None,
     };
     assert_eq!(insp.heartbeat_worker(&w).await.unwrap(), None);
     insp.signal_worker("ri-w", Some("quiet")).await.unwrap();

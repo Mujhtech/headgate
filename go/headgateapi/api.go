@@ -150,6 +150,7 @@ func handler(
 	mux.HandleFunc("GET /api/v1/jobs/{id}/result", a.getJobResult)
 	mux.HandleFunc("GET /api/v1/jobs/{id}/output", a.getJobOutput)
 	mux.HandleFunc("GET /api/v1/jobs/{id}/progress", a.getJobProgress)
+	mux.HandleFunc("GET /api/v1/jobs/{id}/checkpoint", a.getJobCheckpoint)
 	mux.HandleFunc("DELETE /api/v1/jobs/{id}", a.deleteJob)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/retry", a.retryJob)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/cancel", a.cancelJob)
@@ -1162,6 +1163,54 @@ func (a *api) getJobProgress(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (a *api) getJobCheckpoint(w http.ResponseWriter, r *http.Request) {
+	checkpoints, ok := a.store.(headgate.CheckpointInspectStore)
+	if !ok {
+		errJSON(w, http.StatusNotImplemented, "job checkpoint inspection is not supported by this backend")
+		return
+	}
+	checkpoint, err := checkpoints.GetJobCheckpoint(r.Context(), r.PathValue("id"))
+	if err != nil {
+		storeErr(w, err)
+		return
+	}
+	if checkpoint == nil {
+		errJSON(w, http.StatusNotFound, "no such job")
+		return
+	}
+	var lastCompleted, inProgress, cursorStep, cursor any
+	if checkpoint.LastCompletedStep != "" {
+		lastCompleted = checkpoint.LastCompletedStep
+	}
+	if checkpoint.InProgressStep != "" {
+		inProgress = checkpoint.InProgressStep
+	}
+	if checkpoint.CursorStep != "" {
+		cursorStep = checkpoint.CursorStep
+	}
+	if checkpoint.Cursor != nil {
+		cursor = base64.StdEncoding.EncodeToString(checkpoint.Cursor)
+	}
+	completed := checkpoint.CompletedSteps
+	if completed == nil {
+		completed = []string{}
+	}
+	crashes := checkpoint.CrashesByStep
+	if crashes == nil {
+		crashes = map[string]uint32{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"last_completed_step": lastCompleted,
+		"completed_steps":     completed,
+		"in_progress_step":    inProgress,
+		"cursor_step":         cursorStep,
+		"cursor":              cursor,
+		"schema_version":      checkpoint.SchemaVersion,
+		"step_set_hash":       checkpoint.StepSetHash,
+		"crashes_by_step":     crashes,
+	})
+}
+
 func (a *api) deleteJob(w http.ResponseWriter, r *http.Request) {
 	if err := a.store.DeleteJob(r.Context(), r.PathValue("id")); err != nil {
 		storeErr(w, err)
@@ -1779,9 +1828,25 @@ func (a *api) workers(w http.ResponseWriter, r *http.Request) {
 			// the additive beat payload behind /cluster and backlog metrics.
 			"inflight": wk.Inflight, "polls": wk.Polls, "empty_polls": wk.EmptyPolls,
 			"utilization": wk.Utilization(), "empty_poll_ratio": wk.EmptyPollRatio(),
+			"status": normalizeWorkerStatus(wk.Status), "duties_active": wk.DutiesActive,
+			"pending_command": nilIfEmpty(wk.PendingCommand),
 		})
 	}
 	writeJSON(w, 200, out)
+}
+
+func normalizeWorkerStatus(status string) string {
+	if status == "" {
+		return "running"
+	}
+	return status
+}
+
+func nilIfEmpty(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 // cluster is surveyed policy behavior's CLUSTER VIEW — the piece the multi-node-heartbeat row

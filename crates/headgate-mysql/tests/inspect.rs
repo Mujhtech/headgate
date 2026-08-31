@@ -407,6 +407,9 @@ async fn the_inspect_surface_answers_over_mysql() {
         inflight: 1,
         polls: 8,
         empty_polls: 2,
+        status: "running".into(),
+        duties_active: true,
+        pending_command: None,
     };
     assert_eq!(insp.heartbeat_worker(&w).await.unwrap(), None);
     insp.signal_worker("mi-w", Some("quiet")).await.unwrap();

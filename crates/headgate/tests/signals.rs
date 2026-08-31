@@ -119,8 +119,8 @@ async fn operator_signals_quiet_resume_terminate_over_the_heartbeat() {
         ..Default::default()
     };
     // Hygiene: a previous run's worker row may hold a stale signal; clear it before
-    // OUR worker's first heartbeat can read it. (terminate self-clears in the runtime
-    // now, but quiet/resume are sticky by design.)
+    // OUR worker's first heartbeat can read it. Every command self-clears after the
+    // worker publishes its acknowledged state.
     let _ = store.as_ref().signal_worker("sig-w", None).await;
     let (worker, _handle) = Worker::new(store.clone(), reg, cfg);
     let running = tokio::spawn(worker.run());
@@ -136,7 +136,7 @@ async fn operator_signals_quiet_resume_terminate_over_the_heartbeat() {
                 .await
                 .unwrap()
                 .iter()
-                .any(|w| w.worker_id == "sig-w")
+                .any(|w| w.worker_id == "sig-w" && w.status == "running" && w.duties_active)
         },
         Duration::from_secs(60),
     )
@@ -171,6 +171,19 @@ async fn operator_signals_quiet_resume_terminate_over_the_heartbeat() {
     wait_for(
         || async {
             store
+                .as_ref()
+                .list_workers(60_000)
+                .await
+                .unwrap()
+                .iter()
+                .any(|w| w.worker_id == "sig-w" && !w.duties_active && w.pending_command.is_none())
+        },
+        Duration::from_secs(60),
+    )
+    .await;
+    wait_for(
+        || async {
+            store
                 .claim_duty("scheduler", "sig-contender", Duration::from_secs(60))
                 .await
                 .unwrap_or(false)
@@ -197,10 +210,25 @@ async fn operator_signals_quiet_resume_terminate_over_the_heartbeat() {
         .signal_worker("sig-w", Some("quiet"))
         .await
         .unwrap();
+    wait_for(
+        || async {
+            store
+                .as_ref()
+                .list_workers(60_000)
+                .await
+                .unwrap()
+                .iter()
+                .any(|w| {
+                    w.worker_id == "sig-w" && w.status == "quiet" && w.pending_command.is_none()
+                })
+        },
+        Duration::from_secs(60),
+    )
+    .await;
 
     // Quiet-confirmation loop: enqueue probe jobs until one SURVIVES a observation
-    // window unclaimed — proof the quiet signal was consumed (it is sticky, so once
-    // confirmed it stays confirmed). Probes eaten before that were admitted in the
+    // window unclaimed — proof the quiet signal was consumed and acknowledged. Probes
+    // eaten before that were admitted in the
     // window between signal and consumption; that is expected, not a failure.
     let mut probe = 0;
     let quiet_probe = loop {
@@ -225,7 +253,20 @@ async fn operator_signals_quiet_resume_terminate_over_the_heartbeat() {
         .await
         .unwrap();
     wait_for(
-        || async { job_row(&store, &quiet_probe).await.map(|r| r.0) == Some("completed".into()) },
+        || async {
+            let completed =
+                job_row(&store, &quiet_probe).await.map(|r| r.0) == Some("completed".into());
+            let running = store
+                .as_ref()
+                .list_workers(60_000)
+                .await
+                .unwrap()
+                .iter()
+                .any(|w| {
+                    w.worker_id == "sig-w" && w.status == "running" && w.pending_command.is_none()
+                });
+            completed && running
+        },
         Duration::from_secs(60),
     )
     .await;
@@ -243,6 +284,17 @@ async fn operator_signals_quiet_resume_terminate_over_the_heartbeat() {
         .expect("restart must stop the old worker after draining")
         .expect("worker task")
         .expect("worker run");
+    let restarted = store
+        .as_ref()
+        .list_workers(60_000)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|w| w.worker_id == "sig-w")
+        .expect("restarted worker registry row");
+    assert_eq!(restarted.status, "restarting");
+    assert!(!restarted.duties_active);
+    assert!(restarted.pending_command.is_none());
 
     // Keep the pre-existing terminate path independently live-proven as well.
     let mut term_reg = Registry::new();
@@ -267,7 +319,7 @@ async fn operator_signals_quiet_resume_terminate_over_the_heartbeat() {
                 .await
                 .unwrap()
                 .iter()
-                .any(|w| w.worker_id == "sig-term-w")
+                .any(|w| w.worker_id == "sig-term-w" && w.status == "running" && !w.duties_active)
         },
         Duration::from_secs(60),
     )
@@ -282,6 +334,17 @@ async fn operator_signals_quiet_resume_terminate_over_the_heartbeat() {
         .expect("terminate must stop the worker")
         .expect("worker task")
         .expect("worker run");
+    let terminated = store
+        .as_ref()
+        .list_workers(60_000)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|w| w.worker_id == "sig-term-w")
+        .expect("terminated worker registry row");
+    assert_eq!(terminated.status, "terminating");
+    assert!(!terminated.duties_active);
+    assert!(terminated.pending_command.is_none());
 }
 
 #[tokio::test]

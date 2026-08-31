@@ -29,8 +29,9 @@ type errStore struct {
 
 type outputAPIStore struct {
 	errStore
-	output   *headgate.JobOutput
-	progress *headgate.JobProgress
+	output     *headgate.JobOutput
+	progress   *headgate.JobProgress
+	checkpoint *headgate.Checkpoint
 }
 
 func (s *outputAPIStore) GetJobOutput(context.Context, string) (*headgate.JobOutput, error) {
@@ -39,6 +40,10 @@ func (s *outputAPIStore) GetJobOutput(context.Context, string) (*headgate.JobOut
 
 func (s *outputAPIStore) GetJobProgress(context.Context, string) (*headgate.JobProgress, error) {
 	return s.progress, nil
+}
+
+func (s *outputAPIStore) GetJobCheckpoint(context.Context, string) (*headgate.Checkpoint, error) {
+	return s.checkpoint, nil
 }
 
 func (s *outputAPIStore) GetJob(_ context.Context, id string, includePayload bool) (*headgate.JobSummary, error) {
@@ -194,6 +199,36 @@ func TestJobProgressHasAnExplicitOperatorEndpoint(t *testing.T) {
 	progress = nil
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &progress) != nil || progress["message"] != nil {
 		t.Fatalf("absent progress message must encode as null: %d %#v", w.Code, progress)
+	}
+}
+
+func TestJobCheckpointHasAnExplicitOperatorEndpoint(t *testing.T) {
+	store := &outputAPIStore{checkpoint: &headgate.Checkpoint{
+		LastCompletedStep: "download", CompletedSteps: []string{"download"},
+		InProgressStep: "transform", CursorStep: "transform", Cursor: []byte(`{"offset":42}`),
+		SchemaVersion: 2, StepSetHash: "sha256:steps", CrashesByStep: map[string]uint32{"transform": 1},
+	}}
+	h := Handler(store)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/jobs/j1/checkpoint", nil))
+	var checkpoint map[string]any
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &checkpoint) != nil {
+		t.Fatalf("checkpoint response = %d %s", w.Code, w.Body.String())
+	}
+	if checkpoint["last_completed_step"] != "download" || checkpoint["in_progress_step"] != "transform" ||
+		checkpoint["cursor"] != "eyJvZmZzZXQiOjQyfQ==" || checkpoint["schema_version"] != float64(2) {
+		t.Fatalf("checkpoint body = %#v", checkpoint)
+	}
+
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/jobs/j1", nil))
+	var job map[string]any
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &job) != nil {
+		t.Fatalf("job response = %d %s", w.Code, w.Body.String())
+	}
+	if _, leaked := job["checkpoint"]; leaked {
+		t.Fatalf("ordinary job detail leaked checkpoint: %s", w.Body.String())
 	}
 }
 

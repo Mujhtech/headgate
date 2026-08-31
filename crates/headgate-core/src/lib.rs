@@ -1321,6 +1321,12 @@ pub struct WorkerMeta {
     /// the two counters ride the wire instead of a float so the aggregate is exact
     /// and so neither language has to agree with the other about float formatting.
     pub empty_polls: u64,
+    /// Worker-acknowledged control state: running, quiet, restarting, or terminating.
+    pub status: String,
+    /// Whether this process is still eligible to hold singleton duties.
+    pub duties_active: bool,
+    /// Store mailbox populated by inspection reads. Heartbeats never write this field.
+    pub pending_command: Option<String>,
 }
 
 impl WorkerMeta {
@@ -1387,6 +1393,11 @@ pub trait Inspect: Store {
     /// Optional explicit reader for operator-facing progress. It stays outside ordinary
     /// job/list reads because even a short application message may contain sensitive data.
     fn as_progress_inspect(&self) -> Option<&dyn ProgressInspect> {
+        None
+    }
+    /// Optional explicit reader for resumable-step checkpoints. Cursor bytes may carry
+    /// application data, so ordinary job/list responses never include them.
+    fn as_checkpoint_inspect(&self) -> Option<&dyn CheckpointInspect> {
         None
     }
     async fn get_job(
@@ -1505,8 +1516,8 @@ pub trait Inspect: Store {
     async fn heartbeat_worker(&self, w: &WorkerMeta) -> Result<Option<String>, StoreError>;
     /// Workers whose heartbeat is within `stale_after_ms` of store-now.
     async fn list_workers(&self, stale_after_ms: i64) -> Result<Vec<WorkerMeta>, StoreError>;
-    /// surveyed policy behavior set (or clear, with `None`) a worker's pending command. Delivered on its
-    /// next heartbeat; sticky until changed.
+    /// Set (or clear, with `None`) a worker's pending command. It is delivered on the
+    /// next heartbeat; runtimes clear it after applying it, then publish acknowledged state.
     async fn signal_worker(&self, worker_id: &str, command: Option<&str>)
     -> Result<(), StoreError>;
     /// typed dispatch distinct kinds currently present among waiting jobs (bounded sample), so a
@@ -1550,6 +1561,13 @@ pub trait ProgressInspect: Send + Sync + 'static {
     /// A previous attempt's last report may remain until the current holder replaces it;
     /// `JobProgress::fence` makes that provenance explicit.
     async fn get_job_progress(&self, id: &str) -> Result<Option<JobProgress>, StoreError>;
+}
+
+#[async_trait::async_trait]
+pub trait CheckpointInspect: Send + Sync + 'static {
+    /// Explicit checkpoint access. `None` means the job does not exist; an existing job
+    /// with no resumable progress returns an empty [`Checkpoint`].
+    async fn get_job_checkpoint(&self, id: &str) -> Result<Option<Checkpoint>, StoreError>;
 }
 
 // ---------- step replay step replay ----------

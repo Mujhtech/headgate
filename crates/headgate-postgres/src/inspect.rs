@@ -5,12 +5,12 @@
 //! for seconds in production, and monitoring caused that outage.
 
 use headgate_core::{
-    AdmissionExplain, BlockedBy, BulkRequest, ConcurrencyLimitConfig, HistoryBucket, Inspect,
-    JobFilter, JobOutput, JobPage, JobProgress, JobResult, JobSummary, MissedPolicy,
-    OperationStatus, OutputInspect, PartitionState, ProgressInspect, QuarantineEntry, QueueStats,
-    QuietGroupMetrics, RateClassConfig, RateClassState, ResultInspect, SCHEDULE_EVENT_LIMIT,
-    SaturationStrategy, Schedule, ScheduleEvent, ScheduleEventOutcome, StateCounts, StoreError,
-    WorkerMeta, noisy_partition_keys,
+    AdmissionExplain, BlockedBy, BulkRequest, Checkpoint, CheckpointInspect,
+    ConcurrencyLimitConfig, HistoryBucket, Inspect, JobFilter, JobOutput, JobPage, JobProgress,
+    JobResult, JobSummary, MissedPolicy, OperationStatus, OutputInspect, PartitionState,
+    ProgressInspect, QuarantineEntry, QueueStats, QuietGroupMetrics, RateClassConfig,
+    RateClassState, ResultInspect, SCHEDULE_EVENT_LIMIT, SaturationStrategy, Schedule,
+    ScheduleEvent, ScheduleEventOutcome, StateCounts, StoreError, WorkerMeta, noisy_partition_keys,
 };
 use tokio_postgres::types::ToSql;
 
@@ -77,6 +77,10 @@ impl Inspect for PgStore {
     }
 
     fn as_progress_inspect(&self) -> Option<&dyn ProgressInspect> {
+        Some(self)
+    }
+
+    fn as_checkpoint_inspect(&self) -> Option<&dyn CheckpointInspect> {
         Some(self)
     }
 
@@ -1147,12 +1151,17 @@ impl Inspect for PgStore {
 
     async fn heartbeat_worker(&self, w: &WorkerMeta) -> Result<Option<String>, StoreError> {
         let c = self.client().await?;
+        let status = if w.status.is_empty() {
+            "running"
+        } else {
+            &w.status
+        };
         let sql = format!(
             r#"
             INSERT INTO headgate_worker
                    (worker_id, host, pid, queues, concurrency, started_at_ms, heartbeat_at_ms,
-                    inflight, polls, empty_polls)
-            SELECT $1, $2, $3, $4, $5, $6, {NOW_MS}, $7, $8, $9
+                    inflight, polls, empty_polls, status, duties_active)
+            SELECT $1, $2, $3, $4, $5, $6, {NOW_MS}, $7, $8, $9, $10, $11
             ON CONFLICT (worker_id) DO UPDATE SET
               queues = EXCLUDED.queues, concurrency = EXCLUDED.concurrency,
               heartbeat_at_ms = EXCLUDED.heartbeat_at_ms,
@@ -1160,7 +1169,8 @@ impl Inspect for PgStore {
               -- so the beat overwrites them rather than accumulating. A worker that
               -- stops beating keeps its last reported level and ages out as stale.
               inflight = EXCLUDED.inflight, polls = EXCLUDED.polls,
-              empty_polls = EXCLUDED.empty_polls
+              empty_polls = EXCLUDED.empty_polls, status = EXCLUDED.status,
+              duties_active = EXCLUDED.duties_active
             RETURNING command
             "#
         );
@@ -1177,6 +1187,8 @@ impl Inspect for PgStore {
                     &(w.inflight as i32),
                     &(w.polls as i64),
                     &(w.empty_polls as i64),
+                    &status,
+                    &w.duties_active,
                 ],
             )
             .await
@@ -1251,6 +1263,9 @@ impl Inspect for PgStore {
                 inflight: r.get::<_, i32>("inflight") as u32,
                 polls: r.get::<_, i64>("polls") as u64,
                 empty_polls: r.get::<_, i64>("empty_polls") as u64,
+                status: r.get("status"),
+                duties_active: r.get("duties_active"),
+                pending_command: r.get("command"),
             })
             .collect())
     }
@@ -1568,6 +1583,26 @@ impl ProgressInspect for PgStore {
             message: row.get(2),
             fence: row.get::<_, i64>(3) as u64,
             updated_at_ms: row.get(4),
+        }))
+    }
+}
+
+#[async_trait::async_trait]
+impl CheckpointInspect for PgStore {
+    async fn get_job_checkpoint(&self, id: &str) -> Result<Option<Checkpoint>, StoreError> {
+        let c = self.client().await?;
+        let row = c
+            .query_opt(
+                "SELECT checkpoint, cp_cursor FROM headgate_job WHERE ulid = $1",
+                &[&id],
+            )
+            .await
+            .map_err(map_pg_err)?;
+        Ok(row.map(|row| {
+            crate::decode_checkpoint(
+                row.get::<_, Option<serde_json::Value>>(0),
+                row.get::<_, Option<Vec<u8>>>(1),
+            )
         }))
     }
 }

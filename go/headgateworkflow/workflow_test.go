@@ -66,6 +66,9 @@ func TestPrepareBuildsCoordinatorAndPendingFanOutFanIn(t *testing.T) {
 	if got := strings.Join(coordinator.Nodes[3].Deps, ","); got != "left,right" {
 		t.Fatalf("join deps = %q", got)
 	}
+	if coordinator.Nodes[0].Deps == nil {
+		t.Fatal("root dependencies must be encoded as an empty array, not null")
+	}
 }
 
 func TestPrepareRejectsMissingDependenciesAndCycles(t *testing.T) {

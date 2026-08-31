@@ -125,6 +125,7 @@ var _ headgate.InspectStore = (*PgxStore)(nil) // transactional API's compile-ti
 var _ headgate.ResultInspectStore = (*PgxStore)(nil)
 var _ headgate.OutputInspectStore = (*PgxStore)(nil)
 var _ headgate.ProgressInspectStore = (*PgxStore)(nil)
+var _ headgate.CheckpointInspectStore = (*PgxStore)(nil)
 
 const jobCols = `j.ulid, j.kind, j.queue, j.state::text, j.schema_version, j.priority,
 	j.attempt, j.crash_attempt, j.max_attempts, j.partition_key, j.rate_class, j.sticky_worker,
@@ -221,6 +222,21 @@ func (s *PgxStore) GetJobProgress(ctx context.Context, id string) (*headgate.Job
 		progress.Message = *message
 	}
 	return progress, nil
+}
+
+func (s *PgxStore) GetJobCheckpoint(ctx context.Context, id string) (*headgate.Checkpoint, error) {
+	var raw, cursor []byte
+	err := s.pool.QueryRow(ctx,
+		`SELECT checkpoint, cp_cursor FROM headgate_job WHERE ulid = $1`, id).
+		Scan(&raw, &cursor)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	checkpoint := decodeCheckpoint(raw, cursor)
+	return &checkpoint, nil
 }
 
 func (s *PgxStore) ListJobs(ctx context.Context, f headgate.JobFilter, cursor string, limit uint32) (headgate.JobPage, error) {
@@ -1211,12 +1227,16 @@ func (s *PgxStore) ListScheduleEvents(ctx context.Context, scheduleID string, be
 // ---------- worker registry + surveyed policy behavior control channel ----------
 
 func (s *PgxStore) HeartbeatWorker(ctx context.Context, w headgate.WorkerMeta) (string, error) {
+	status := w.Status
+	if status == "" {
+		status = "running"
+	}
 	var cmd *string
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO headgate_worker
 		       (worker_id, host, pid, queues, concurrency, started_at_ms, heartbeat_at_ms,
-		        inflight, polls, empty_polls)
-		SELECT $1, $2, $3, $4, $5, $6, `+nowMS+`, $7, $8, $9
+		        inflight, polls, empty_polls, status, duties_active)
+		SELECT $1, $2, $3, $4, $5, $6, `+nowMS+`, $7, $8, $9, $10, $11
 		ON CONFLICT (worker_id) DO UPDATE SET
 		  queues = EXCLUDED.queues, concurrency = EXCLUDED.concurrency,
 		  heartbeat_at_ms = EXCLUDED.heartbeat_at_ms,
@@ -1224,10 +1244,11 @@ func (s *PgxStore) HeartbeatWorker(ctx context.Context, w headgate.WorkerMeta) (
 		  -- beat overwrites them rather than accumulating. A worker that stops beating
 		  -- keeps its last reported level and ages out as stale.
 		  inflight = EXCLUDED.inflight, polls = EXCLUDED.polls,
-		  empty_polls = EXCLUDED.empty_polls
+		  empty_polls = EXCLUDED.empty_polls, status = EXCLUDED.status,
+		  duties_active = EXCLUDED.duties_active
 		RETURNING command`,
 		w.WorkerID, w.Host, w.PID, w.Queues, int32(w.Concurrency), w.StartedAtMs,
-		int32(w.Inflight), int64(w.Polls), int64(w.EmptyPolls)).Scan(&cmd)
+		int32(w.Inflight), int64(w.Polls), int64(w.EmptyPolls), status, w.DutiesActive).Scan(&cmd)
 	if err != nil {
 		return "", err
 	}
@@ -1240,7 +1261,7 @@ func (s *PgxStore) HeartbeatWorker(ctx context.Context, w headgate.WorkerMeta) (
 func (s *PgxStore) ListWorkers(ctx context.Context, staleAfterMs int64) ([]headgate.WorkerMeta, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT worker_id, host, pid, queues, concurrency, started_at_ms, heartbeat_at_ms,
-		       inflight, polls, empty_polls
+		       inflight, polls, empty_polls, status, duties_active, command
 		FROM headgate_worker
 		WHERE heartbeat_at_ms >= `+nowMS+` - $1
 		ORDER BY worker_id LIMIT 10000`, staleAfterMs)
@@ -1253,9 +1274,14 @@ func (s *PgxStore) ListWorkers(ctx context.Context, staleAfterMs int64) ([]headg
 		var w headgate.WorkerMeta
 		var conc, inflight int32
 		var polls, emptyPolls int64
+		var command *string
 		if err := rows.Scan(&w.WorkerID, &w.Host, &w.PID, &w.Queues, &conc,
-			&w.StartedAtMs, &w.HeartbeatAtMs, &inflight, &polls, &emptyPolls); err != nil {
+			&w.StartedAtMs, &w.HeartbeatAtMs, &inflight, &polls, &emptyPolls,
+			&w.Status, &w.DutiesActive, &command); err != nil {
 			return nil, err
+		}
+		if command != nil {
+			w.PendingCommand = *command
 		}
 		w.Concurrency = uint32(conc)
 		w.Inflight, w.Polls, w.EmptyPolls = uint32(inflight), uint64(polls), uint64(emptyPolls)

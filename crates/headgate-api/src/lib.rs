@@ -114,6 +114,7 @@ pub fn router(store: Arc<dyn Inspect>, cfg: ApiConfig) -> Router {
         .route("/jobs/{id}/result", get(get_job_result))
         .route("/jobs/{id}/output", get(get_job_output))
         .route("/jobs/{id}/progress", get(get_job_progress))
+        .route("/jobs/{id}/checkpoint", get(get_job_checkpoint))
         .route("/jobs/{id}/retry", post(retry_job))
         .route("/jobs/{id}/cancel", post(cancel_job))
         .route("/jobs/{id}/promote", post(promote_job))
@@ -932,6 +933,40 @@ async fn get_job_progress(State(s): State<ApiState>, Path(id): Path<String>) -> 
     }
 }
 
+async fn get_job_checkpoint(State(s): State<ApiState>, Path(id): Path<String>) -> ApiResult {
+    let Some(checkpoints) = s.store.as_checkpoint_inspect() else {
+        return Err(err_response(
+            StatusCode::NOT_IMPLEMENTED,
+            "job checkpoint inspection is not supported by this backend",
+        ));
+    };
+    match checkpoints
+        .get_job_checkpoint(&id)
+        .await
+        .map_err(store_err)?
+    {
+        Some(checkpoint) => {
+            let crashes: std::collections::BTreeMap<&str, u32> = checkpoint
+                .crashes_by_step
+                .iter()
+                .map(|(step, count)| (step.as_str(), *count))
+                .collect();
+            Ok(Json(json!({
+                "last_completed_step": checkpoint.last_completed_step,
+                "completed_steps": checkpoint.completed_steps,
+                "in_progress_step": checkpoint.in_progress_step,
+                "cursor_step": checkpoint.cursor_step,
+                "cursor": checkpoint.cursor.map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes)),
+                "schema_version": checkpoint.schema_version,
+                "step_set_hash": checkpoint.step_set_hash,
+                "crashes_by_step": crashes,
+            }))
+            .into_response())
+        }
+        None => Err(err_response(StatusCode::NOT_FOUND, "no such job")),
+    }
+}
+
 async fn delete_job(State(s): State<ApiState>, Path(id): Path<String>) -> ApiResult {
     s.store.delete_job(&id).await.map_err(store_err)?;
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -1530,6 +1565,9 @@ async fn workers(State(s): State<ApiState>) -> ApiResult {
                 "empty_polls": w.empty_polls,
                 "utilization": w.utilization(),
                 "empty_poll_ratio": w.empty_poll_ratio(),
+                "status": if w.status.is_empty() { "running" } else { &w.status },
+                "duties_active": w.duties_active,
+                "pending_command": w.pending_command,
             })
         })
         .collect();

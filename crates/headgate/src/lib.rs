@@ -76,8 +76,8 @@ pub use worker::{Worker, WorkerHandle};
 // The facade: user code says `headgate::Task` for the trait AND the derive (the serde
 // pattern — same name, different namespaces), and gets the core types from here.
 pub use headgate_core::{
-    AdmissionUnit, AdmitRequest, BoxError as JobError, Caps, Checkpoint, Claim, CodecError,
-    Envelope, Event, IsFailure, JobOutput, JobProgress, JobResult, LeaseRef,
+    AdmissionUnit, AdmitRequest, BoxError as JobError, Caps, Checkpoint, CheckpointInspect, Claim,
+    CodecError, Envelope, Event, IsFailure, JobOutput, JobProgress, JobResult, LeaseRef,
     MAX_OPAQUE_SCHEMA_VERSION, MAX_PROGRESS_MESSAGE_BYTES, MAX_PROGRESS_VALUE, NoopTelemetry,
     Outcome, OutputInspect, OutputStore, ProgressInspect, ProgressStore, ProgressUpdate, Reclaimed,
     ResultInspect, ResultStore, Store, StoreError, TRACEPARENT, TRACESTATE, Task, TaskOptions,

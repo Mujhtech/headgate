@@ -7,12 +7,12 @@
 //! mutation-diff discipline).
 
 use headgate_core::{
-    AdmissionExplain, BlockedBy, BulkRequest, ConcurrencyLimitConfig, HistoryBucket, Inspect,
-    JobFilter, JobOutput, JobPage, JobProgress, JobResult, JobSummary, MissedPolicy,
-    OperationStatus, OutputInspect, PartitionState, ProgressInspect, QuarantineEntry, QueueStats,
-    QuietGroupMetrics, RateClassConfig, RateClassState, ResultInspect, SCHEDULE_EVENT_LIMIT,
-    SaturationStrategy, Schedule, ScheduleEvent, ScheduleEventOutcome, StateCounts, StoreError,
-    WorkerMeta, noisy_partition_keys,
+    AdmissionExplain, BlockedBy, BulkRequest, Checkpoint, CheckpointInspect,
+    ConcurrencyLimitConfig, HistoryBucket, Inspect, JobFilter, JobOutput, JobPage, JobProgress,
+    JobResult, JobSummary, MissedPolicy, OperationStatus, OutputInspect, PartitionState,
+    ProgressInspect, QuarantineEntry, QueueStats, QuietGroupMetrics, RateClassConfig,
+    RateClassState, ResultInspect, SCHEDULE_EVENT_LIMIT, SaturationStrategy, Schedule,
+    ScheduleEvent, ScheduleEventOutcome, StateCounts, StoreError, WorkerMeta, noisy_partition_keys,
 };
 use mysql_async::prelude::*;
 use mysql_async::{Params, Row, TxOpts, Value};
@@ -106,6 +106,10 @@ impl Inspect for MysqlStore {
     }
 
     fn as_progress_inspect(&self) -> Option<&dyn ProgressInspect> {
+        Some(self)
+    }
+
+    fn as_checkpoint_inspect(&self) -> Option<&dyn CheckpointInspect> {
         Some(self)
     }
 
@@ -1206,21 +1210,27 @@ impl Inspect for MysqlStore {
     async fn heartbeat_worker(&self, w: &WorkerMeta) -> Result<Option<String>, StoreError> {
         let mut c = self.raw_conn().await?;
         let queues = serde_json::to_string(&w.queues).unwrap_or_else(|_| "[]".into());
+        let status = if w.status.is_empty() {
+            "running"
+        } else {
+            &w.status
+        };
         // No RETURNING on MySQL: upsert, then read the command on the SAME connection.
         // The surveyed policy behavior channel is sticky, so the window between the two reads nothing away.
         c.exec_drop(
             format!(
                 "INSERT INTO headgate_worker
                         (worker_id, host, pid, queues, concurrency, started_at_ms, heartbeat_at_ms,
-                         inflight, polls, empty_polls)
-                 VALUES (?, ?, ?, CAST(? AS JSON), ?, ?, {NOW_MS}, ?, ?, ?) AS new
+                         inflight, polls, empty_polls, status, duties_active)
+                 VALUES (?, ?, ?, CAST(? AS JSON), ?, ?, {NOW_MS}, ?, ?, ?, ?, ?) AS new
                  ON DUPLICATE KEY UPDATE
                    queues = new.queues, concurrency = new.concurrency,
                    heartbeat_at_ms = new.heartbeat_at_ms,
                    -- ADDITIVE: LEVELS, so the beat overwrites rather than
                    -- accumulating (same rule as the PG adapter).
                    inflight = new.inflight, polls = new.polls,
-                   empty_polls = new.empty_polls"
+                   empty_polls = new.empty_polls, status = new.status,
+                   duties_active = new.duties_active"
             ),
             (
                 &w.worker_id,
@@ -1232,6 +1242,8 @@ impl Inspect for MysqlStore {
                 w.inflight,
                 w.polls,
                 w.empty_polls,
+                status,
+                w.duties_active,
             ),
         )
         .await
@@ -1253,6 +1265,7 @@ impl Inspect for MysqlStore {
                     "SELECT worker_id, host, pid, CAST(queues AS CHAR) AS queues_json,
                             concurrency, started_at_ms, heartbeat_at_ms,
                             inflight, polls, empty_polls
+                            , status, duties_active, command
                      FROM headgate_worker
                      WHERE heartbeat_at_ms >= {NOW_MS} - ?
                      ORDER BY worker_id LIMIT 10000"
@@ -1279,6 +1292,9 @@ impl Inspect for MysqlStore {
                     inflight: i("inflight") as u32,
                     polls: i("polls") as u64,
                     empty_polls: i("empty_polls") as u64,
+                    status: s("status"),
+                    duties_active: i("duties_active") != 0,
+                    pending_command: r.get::<Option<String>, _>("command").flatten(),
                 }
             })
             .collect())
@@ -1642,6 +1658,21 @@ impl ProgressInspect for MysqlStore {
                 updated_at_ms,
             },
         ))
+    }
+}
+
+#[async_trait::async_trait]
+impl CheckpointInspect for MysqlStore {
+    async fn get_job_checkpoint(&self, id: &str) -> Result<Option<Checkpoint>, StoreError> {
+        let mut c = self.raw_conn().await?;
+        let row: Option<(Option<String>, Option<Vec<u8>>)> = c
+            .exec_first(
+                "SELECT CAST(checkpoint AS CHAR), cp_cursor FROM headgate_job WHERE ulid = ?",
+                (id,),
+            )
+            .await
+            .map_err(map_err)?;
+        Ok(row.map(|(checkpoint, cursor)| crate::decode_checkpoint(checkpoint.as_deref(), cursor)))
     }
 }
 

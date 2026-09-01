@@ -86,6 +86,7 @@ function useLiveRefresh(refresh: () => Promise<void>) {
   const [paused, setPausedState] = useState(false)
   const pausedRef = useRef(false)
   const debounce = useRef<number | null>(null)
+  const maxWait = useRef<number | null>(null)
 
   const setPaused = useCallback((next: boolean) => {
     pausedRef.current = next
@@ -93,21 +94,48 @@ function useLiveRefresh(refresh: () => Promise<void>) {
   }, [])
   useEffect(() => {
     const source = new EventSource(`${config.apiBase}/events`)
-    const schedule = () => {
-      if (pausedRef.current) return
-      if (debounce.current) window.clearTimeout(debounce.current)
-      debounce.current = window.setTimeout(() => { void refresh() }, 700)
-    }
+    const scheduler = createRefreshScheduler(refresh, () => pausedRef.current, debounce, maxWait)
     source.onopen = () => setConnected(true)
     source.onerror = () => setConnected(false)
-    source.onmessage = schedule
-    source.addEventListener("queue_activity", schedule)
+    source.onmessage = scheduler.schedule
+    source.addEventListener("queue_activity", scheduler.schedule)
     return () => {
       source.close()
-      if (debounce.current) window.clearTimeout(debounce.current)
+      scheduler.dispose()
     }
   }, [refresh])
   return { connected, paused, setPaused }
+}
+
+export function createRefreshScheduler(
+  refresh: () => Promise<void>,
+  isPaused: () => boolean,
+  debounce = { current: null as number | null },
+  maxWait = { current: null as number | null },
+) {
+  const run = () => {
+    if (debounce.current !== null) window.clearTimeout(debounce.current)
+    if (maxWait.current !== null) window.clearTimeout(maxWait.current)
+    debounce.current = null
+    maxWait.current = null
+    void refresh()
+  }
+  return {
+    schedule: () => {
+      if (isPaused()) return
+      if (debounce.current !== null) window.clearTimeout(debounce.current)
+      debounce.current = window.setTimeout(run, 700)
+      // The trailing debounce coalesces bursts; this fixed ceiling prevents a stream
+      // that never goes quiet from postponing refresh forever.
+      if (maxWait.current === null) maxWait.current = window.setTimeout(run, 2_000)
+    },
+    dispose: () => {
+      if (debounce.current !== null) window.clearTimeout(debounce.current)
+      if (maxWait.current !== null) window.clearTimeout(maxWait.current)
+      debounce.current = null
+      maxWait.current = null
+    },
+  }
 }
 
 const titles: Record<string, string> = {
@@ -151,7 +179,7 @@ export function ConsoleLayout() {
 
   return (
     <ConsoleContext.Provider value={context}>
-      <a href="#main-content" className="sr-only fixed left-3 top-3 z-[100] rounded-md bg-background px-3 py-2 focus:not-sr-only">Skip to content</a>
+      <a href="#main-content" className="sr-only fixed left-3 top-3 z-100 rounded-md bg-background px-3 py-2 focus:not-sr-only">Skip to content</a>
       <SidebarProvider>
         <AppSidebar />
         <SidebarInset>
@@ -170,7 +198,7 @@ export function ConsoleLayout() {
           <main id="main-content" className="flex-1 scroll-mt-16 p-4 lg:p-6"><Outlet /></main>
         </SidebarInset>
       </SidebarProvider>
-      <div aria-live="polite" className={`pointer-events-none fixed bottom-4 left-1/2 z-[70] -translate-x-1/2 rounded-lg px-4 py-2 text-sm shadow-lg transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none ${notice?.tone === "error" ? "bg-destructive text-white" : "bg-foreground text-background"} ${notice ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0"}`}>{notice?.message}</div>
+      <div aria-live="polite" className={`pointer-events-none fixed bottom-4 left-1/2 z-70 -translate-x-1/2 rounded-lg px-4 py-2 text-sm shadow-lg transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none ${notice?.tone === "error" ? "bg-destructive text-white" : "bg-foreground text-background"} ${notice ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0"}`}>{notice?.message}</div>
     </ConsoleContext.Provider>
   )
 }

@@ -8,6 +8,7 @@ export interface JobsSearch {
   queue?: string
   state?: string
   cursor?: string
+  cursorTrail?: string
 }
 
 export const Route = createFileRoute("/_console/jobs")({
@@ -16,6 +17,7 @@ export const Route = createFileRoute("/_console/jobs")({
     queue: typeof search.queue === "string" && search.queue ? search.queue : undefined,
     state: typeof search.state === "string" && search.state ? search.state : undefined,
     cursor: typeof search.cursor === "string" && search.cursor ? search.cursor : undefined,
+    cursorTrail: typeof search.cursorTrail === "string" && search.cursorTrail ? search.cursorTrail : undefined,
   }),
   component: JobsRoute,
 })

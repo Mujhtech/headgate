@@ -1,7 +1,7 @@
 import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, Clock3Icon, CopyIcon, DatabaseIcon, ListIcon, LockKeyholeIcon, PlayIcon, SearchIcon } from "lucide-react"
 import { Link } from "@tanstack/react-router"
 import { useQueryClient } from "@tanstack/react-query"
-import { FormEvent, useMemo, useState } from "react"
+import { SubmitEvent, useMemo, useState } from "react"
 
 import { Badge } from "@/components/ui/badge"
 import { ActionButton } from "@/components/ui/action-button"
@@ -252,7 +252,7 @@ export function JobDrawer({ id, open, setOpen, notify }: {
               {payload && <Button variant="ghost" size="sm" onClick={() => void copy(payload.encrypted ? "Ciphertext" : "Payload", payload.content)}><CopyIcon />Copy</Button>}
             </div>
             {payload?.encrypted && <div className="mb-2 flex gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm"><LockKeyholeIcon className="mt-0.5 size-4 shrink-0 text-primary" /><div><p className="font-medium">AES-256-GCM encrypted payload</p><p className="text-xs text-muted-foreground">Format v{payload.encrypted.version} · key <code>{payload.encrypted.keyId}</code>. The console has no decryption keys; plaintext is available only inside the encrypted worker handler.</p></div></div>}
-            {payload ? <pre className="max-h-80 overflow-auto rounded-lg border bg-muted/50 p-3 font-mono text-xs whitespace-pre-wrap break-words">{payload.content}</pre> : <p className="text-sm text-muted-foreground">No payload stored.</p>}
+            {payload ? <pre className="max-h-80 overflow-auto rounded-lg border bg-muted/50 p-3 font-mono text-xs whitespace-pre-wrap wrap-break-word">{payload.content}</pre> : <p className="text-sm text-muted-foreground">No payload stored.</p>}
           </section>
 
           <section aria-labelledby="metadata-title">
@@ -261,7 +261,7 @@ export function JobDrawer({ id, open, setOpen, notify }: {
               {metadata && <Button variant="ghost" size="sm" onClick={() => void copy("Metadata", JSON.stringify(metadata, null, 2))}><CopyIcon />Copy</Button>}
             </div>
             {job.tags?.length ? <div className="mb-2 flex flex-wrap gap-1" aria-label="Job tags">{job.tags.map((tag) => <Badge key={tag} variant="outline">{tag}</Badge>)}</div> : null}
-            {metadata && Object.keys(metadata).length ? <pre className="max-h-80 overflow-auto rounded-lg border bg-muted/50 p-3 font-mono text-xs whitespace-pre-wrap break-words">{JSON.stringify(metadata, null, 2)}</pre> : <p className="text-sm text-muted-foreground">No application metadata stored.</p>}
+            {metadata && Object.keys(metadata).length ? <pre className="max-h-80 overflow-auto rounded-lg border bg-muted/50 p-3 font-mono text-xs whitespace-pre-wrap wrap-break-word">{JSON.stringify(metadata, null, 2)}</pre> : <p className="text-sm text-muted-foreground">No application metadata stored.</p>}
           </section>
 
           <section aria-labelledby="progress-title">
@@ -293,7 +293,7 @@ export function JobDrawer({ id, open, setOpen, notify }: {
               {cursor && <div>
                 <div className="mb-1 flex items-center justify-between gap-2"><p className="text-xs font-medium">Durable cursor <Badge variant="outline">{cursor.format}</Badge></p><Button variant="ghost" size="sm" onClick={() => void copy("Cursor", cursor.content)}><CopyIcon />Copy</Button></div>
                 <p className="mb-2 text-xs text-muted-foreground">Cursor data is explicitly loaded and may contain application-sensitive values.</p>
-                <pre className="max-h-52 overflow-auto rounded-lg border bg-muted/50 p-3 font-mono text-xs whitespace-pre-wrap break-words">{cursor.content}</pre>
+                <pre className="max-h-52 overflow-auto rounded-lg border bg-muted/50 p-3 font-mono text-xs whitespace-pre-wrap wrap-break-word">{cursor.content}</pre>
               </div>}
             </div> : <p className="text-sm text-muted-foreground">No resumable checkpoint has been recorded for this job.</p>}
           </section>
@@ -361,10 +361,44 @@ export function JobsView({ notify }: ViewProps) {
   const { data, error, loading } = useApiResource<JobPage>(`/jobs?${params}`)
   const countsQuery = search.queue ? `?queue=${encodeURIComponent(search.queue)}` : ""
   const counts = useApiResource<JobCounts>(`/jobs/counts${countsQuery}`)
+  const cursorTrail = useMemo<Array<string | null>>(() => {
+    if (!search.cursorTrail) return []
+    try {
+      const value: unknown = JSON.parse(search.cursorTrail)
+      return Array.isArray(value) && value.every((entry) => entry === null || typeof entry === "string") ? value : []
+    } catch {
+      return []
+    }
+  }, [search.cursorTrail])
+  const hasBulkSelector = Boolean(search.queue || search.state)
 
-  const submit = (event: FormEvent) => {
+  const submit = (event: SubmitEvent) => {
     event.preventDefault()
     void navigate({ search: { q: query || undefined, queue: queue || undefined, state: state || undefined } })
+  }
+
+  const previousPage = () => {
+    if (!cursorTrail.length) return
+    const previousCursor = cursorTrail.at(-1) ?? undefined
+    const remaining = cursorTrail.slice(0, -1)
+    void navigate({
+      search: (current) => ({
+        ...current,
+        cursor: previousCursor,
+        cursorTrail: remaining.length ? JSON.stringify(remaining) : undefined,
+      }),
+    })
+  }
+
+  const nextPage = () => {
+    if (!data?.next_cursor) return
+    void navigate({
+      search: (current) => ({
+        ...current,
+        cursor: data.next_cursor,
+        cursorTrail: JSON.stringify([...cursorTrail, search.cursor ?? null]),
+      }),
+    })
   }
 
   const actOnSelection = async () => {
@@ -418,11 +452,11 @@ export function JobsView({ notify }: ViewProps) {
   return <>
     <div className="mb-4"><h1 className="text-lg font-semibold">Jobs</h1><p className="text-sm text-muted-foreground">Search, inspect admission decisions, and perform bounded control actions.</p></div>
     <nav aria-label="Job state" className="mb-4 flex gap-2 overflow-x-auto pb-1">
-      <Button variant={!search.state ? "secondary" : "outline"} size="sm" onClick={() => void navigate({ search: (previous) => ({ ...previous, state: undefined, cursor: undefined }) })}>
+      <Button variant={!search.state ? "secondary" : "outline"} size="sm" onClick={() => void navigate({ search: (previous) => ({ ...previous, state: undefined, cursor: undefined, cursorTrail: undefined }) })}>
         All
       </Button>
       {states.map((value) => (
-        <Button key={value} variant={search.state === value ? "secondary" : "outline"} size="sm" onClick={() => void navigate({ search: (previous) => ({ ...previous, state: value, cursor: undefined }) })}>
+        <Button key={value} variant={search.state === value ? "secondary" : "outline"} size="sm" onClick={() => void navigate({ search: (previous) => ({ ...previous, state: value, cursor: undefined, cursorTrail: undefined }) })}>
           {value}<Badge variant="outline">{counts.data?.counts[value] ?? 0}</Badge>
         </Button>
       ))}
@@ -436,21 +470,20 @@ export function JobsView({ notify }: ViewProps) {
           <div className="grid gap-1"><Label htmlFor="job-state">State</Label><Select value={state || "all"} onValueChange={(value) => setState(value === "all" || value == null ? "" : value)}><SelectTrigger id="job-state" className="w-40"><SelectValue>{state || "All states"}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All states</SelectItem>{states.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select></div>
           <Button type="submit"><SearchIcon />Search</Button>
           <div className="ml-auto flex gap-2">
-            <Button variant="outline" disabled={!search.cursor} onClick={() => window.history.back()}><ChevronLeftIcon />Previous</Button>
-            <Button variant="outline" disabled={!data?.next_cursor} onClick={() => void navigate({ search: (previous) => ({ ...previous, cursor: data?.next_cursor }) })}>Next<ChevronRightIcon /></Button>
+            <Button variant="outline" disabled={!cursorTrail.length} onClick={previousPage}><ChevronLeftIcon />Previous</Button>
+            <Button variant="outline" disabled={!data?.next_cursor} onClick={nextPage}>Next<ChevronRightIcon /></Button>
           </div>
         </form>
-        <div className="flex flex-wrap items-end gap-2 border-t pt-3">
-          <div className="grid gap-1"><Label htmlFor="bulk-action">Bulk action for current queue/state filter</Label><Select value={bulkAction} onValueChange={(value) => value && setBulkAction(value)}><SelectTrigger id="bulk-action" className="w-36"><SelectValue>{bulkAction[0].toUpperCase() + bulkAction.slice(1)}</SelectValue></SelectTrigger><SelectContent><SelectItem value="cancel">Cancel</SelectItem><SelectItem value="retry">Retry</SelectItem><SelectItem value="delete">Delete</SelectItem></SelectContent></Select></div>
-          <ActionButton variant="outline" disabled={config.readOnly || bulkWorking !== null} pending={bulkWorking === "dry-run"} pendingLabel="Checking…" onClick={() => void bulk(true)}>Dry run</ActionButton>
-          <ActionButton variant="destructive" disabled={config.readOnly || bulkWorking !== null} pending={bulkWorking === "apply"} pendingLabel="Applying…" onClick={() => void bulk(false)}>Apply</ActionButton>
-          <p className="text-sm text-muted-foreground" aria-live="polite">{bulkStatus}</p>
-        </div>
-        {selectedIds.size > 0 && <div className="flex flex-wrap items-center gap-2 rounded-lg bg-muted p-2" aria-label="Selected job actions">
-          <strong className="text-sm">{selectedIds.size} selected</strong>
+        {selectedIds.size > 0 ? <div className="flex flex-wrap items-center gap-2 border-t pt-3" aria-label="Selected job actions">
+          <strong className="mr-1 text-sm">Actions for {selectedIds.size} selected job{selectedIds.size === 1 ? "" : "s"}</strong>
           <Select value={selectionAction} onValueChange={(value) => value && setSelectionAction(value)}><SelectTrigger className="w-36" aria-label="Action for selected jobs"><SelectValue>{selectionAction[0].toUpperCase() + selectionAction.slice(1)}</SelectValue></SelectTrigger><SelectContent><SelectItem value="retry">Retry</SelectItem><SelectItem value="archive">Archive</SelectItem><SelectItem value="cancel">Cancel</SelectItem><SelectItem value="delete">Delete</SelectItem></SelectContent></Select>
-          <ActionButton size="sm" disabled={config.readOnly} pending={selectionMutation.isPending} pendingLabel="Applying…" onClick={() => void actOnSelection()}>Apply to selected</ActionButton>
-          <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>Clear</Button>
+          <ActionButton size="sm" variant={["cancel", "delete"].includes(selectionAction) ? "destructive" : "default"} disabled={config.readOnly} pending={selectionMutation.isPending} pendingLabel="Applying…" onClick={() => void actOnSelection()}>Apply to selected</ActionButton>
+          <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>Clear selection</Button>
+        </div> : <div className="flex flex-wrap items-end gap-2 border-t pt-3">
+          <div className="grid gap-1"><Label htmlFor="bulk-action">Bulk action for current queue/state filter</Label><Select value={bulkAction} onValueChange={(value) => value && setBulkAction(value)}><SelectTrigger id="bulk-action" className="w-36"><SelectValue>{bulkAction[0].toUpperCase() + bulkAction.slice(1)}</SelectValue></SelectTrigger><SelectContent><SelectItem value="cancel">Cancel</SelectItem><SelectItem value="retry">Retry</SelectItem><SelectItem value="delete">Delete</SelectItem></SelectContent></Select></div>
+          <ActionButton variant="outline" disabled={config.readOnly || bulkWorking !== null || !hasBulkSelector} pending={bulkWorking === "dry-run"} pendingLabel="Checking…" onClick={() => void bulk(true)}>Dry run</ActionButton>
+          <ActionButton variant={["cancel", "delete"].includes(bulkAction) ? "destructive" : "default"} disabled={config.readOnly || bulkWorking !== null || !hasBulkSelector} pending={bulkWorking === "apply"} pendingLabel="Applying…" onClick={() => void bulk(false)}>Apply</ActionButton>
+          <p className="text-sm text-muted-foreground" aria-live="polite">{hasBulkSelector ? bulkStatus : "Choose a queue or state filter to enable filter-wide actions."}</p>
         </div>}
         {loading && !data ? <Loading /> : error ? <Failure message={error} /> : data?.jobs.length ? <Table>
           <TableHeader><TableRow><TableHead><Checkbox aria-label="Select all visible jobs" checked={data.jobs.length > 0 && data.jobs.every((job) => selectedIds.has(job.id))} onCheckedChange={(checked) => setSelectedIds(checked ? new Set(data.jobs.map((job) => job.id)) : new Set())} /></TableHead><TableHead>ID</TableHead><TableHead>Kind</TableHead><TableHead>Queue</TableHead><TableHead>State</TableHead><TableHead>Attempt</TableHead><TableHead>Scheduled</TableHead></TableRow></TableHeader>

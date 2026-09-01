@@ -285,7 +285,9 @@ chk0 "trap 0: a bucket emptied at STORE now refills ~nothing — a 60s-fast work
      "$($PSQL -c "SELECT count(*) FROM headgate_job WHERE state='available' AND rate_class='t0rc';")"
 
 reset_pg
-$H enqueue count=5000 prefix=n queue=default partition=noisy fp=fp sched=1000 >/dev/null
+for batch in 0 1 2 3 4; do
+  $H enqueue count=1000 prefix=n$batch- queue=default partition=noisy fp=fp sched=1000 >/dev/null
+done
 $H enqueue count=3    prefix=a queue=default partition=A     fp=fp sched=1000 >/dev/null
 $H enqueue count=3    prefix=b queue=default partition=B     fp=fp sched=1000 >/dev/null
 r=$($H admit queues=default capacity=9 lease_ms=30000 worker=w1 lease=L1 quantum=3 | cut -d'|' -f4 | sort -u | wc -l | tr -d ' ')
@@ -1610,7 +1612,9 @@ chk "Redis priority: ...and the independently stored value is the ordering input
     "$($RED hget hg:job:pb1 priority)" "9"
 
 $RED flushall >/dev/null
-$HR enqueue count=5000 prefix=n queue=default partition=noisy fp=fp sched=1000 >/dev/null
+for batch in 0 1 2 3 4; do
+  $HR enqueue count=1000 prefix=n$batch- queue=default partition=noisy fp=fp sched=1000 >/dev/null
+done
 $HR enqueue count=3    prefix=a queue=default partition=A     fp=fp sched=1000 >/dev/null
 $HR enqueue count=3    prefix=b queue=default partition=B     fp=fp sched=1000 >/dev/null
 r=$($HR admit queues=default capacity=9 lease_ms=30000 worker=w1 lease=L1 quantum=3 | cut -d'|' -f4 | sort -u | wc -l)
@@ -4016,7 +4020,8 @@ $PSQL -c "DELETE FROM headgate_job WHERE queue='inv16q'; DELETE FROM headgate_ac
 # (Postgres only. The Redis and MySQL paths share the same POSITION_LIMIT by construction
 # but are NOT separately seeded here — see the round 32i note in CAPABILITY_REGISTER.md.)
 $PSQL -c "INSERT INTO headgate_rate_bucket VALUES ('inv6rc',5,5,5,1000,1000000);" >/dev/null
-$H enqueue count=1200 prefix=i6 queue=inv6q rate=inv6rc fp=fp sched=1000 >/dev/null
+$H enqueue count=600 prefix=i6a- queue=inv6q rate=inv6rc fp=fp sched=1000 >/dev/null
+$H enqueue count=600 prefix=i6b- queue=inv6q rate=inv6rc fp=fp sched=1000 >/dev/null
 chk "invariant 6: ...the fixture really is deeper than the cap (1200 available on the class)" \
     "$($PSQL -c "SELECT count(*) FROM headgate_job WHERE state='available' AND rate_class='inv6rc';")" "1200"
 for p in "8091 PG rust" "8092 PG go"; do

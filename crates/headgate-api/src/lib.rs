@@ -1734,6 +1734,14 @@ async fn signal_worker(
     Path(worker_id): Path<String>,
     ApiJson(body): ApiJson<SignalBody>,
 ) -> ApiResult {
+    if let Some(command) = body.command.as_deref()
+        && (command.is_empty() || !headgate_core::valid_worker_command(command))
+    {
+        return Err(err_response(
+            StatusCode::BAD_REQUEST,
+            "command must be quiet, resume, restart, terminate, or resign",
+        ));
+    }
     s.store
         .signal_worker(&worker_id, body.command.as_deref())
         .await

@@ -88,6 +88,7 @@ func TestTelemetry_OperationalEventsReachBoundedMetricNames(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	telemetry.OnEvent(headgate.Event{Type: "admitted", Queue: "default", Count: 3})
+	telemetry.OnEvent(headgate.Event{Type: "completed", Kind: "mail.send", Duration: 12 * time.Millisecond})
 	telemetry.OnEvent(headgate.Event{
 		Type: "worker_memory", Worker: "worker-a", MemoryBytes: 90,
 		MemoryLimitBytes: 100, RestartRequested: true,
@@ -99,6 +100,7 @@ func TestTelemetry_OperationalEventsReachBoundedMetricNames(t *testing.T) {
 	}
 	for _, name := range []string{
 		"headgate.jobs.admitted",
+		"headgate.jobs.completed",
 		"headgate.worker.memory",
 		"headgate.worker.restarts",
 	} {

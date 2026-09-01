@@ -695,10 +695,6 @@ pub(crate) async fn process_one(
     // a span that silently vanished would hide exactly the crash quarantine counts.
     let outcome_name = match result {
         Ok(()) => {
-            telemetry.on_event(Event::Completed {
-                kind: &kind,
-                ms: started.elapsed().as_millis() as u64,
-            });
             // transactional effects a `once` block already committed the completion transactionally.
             let result = ctx.result();
             let persisted = if ctx.finished_transactionally() {
@@ -723,6 +719,10 @@ pub(crate) async fn process_one(
                 .await
             };
             if persisted {
+                telemetry.on_event(Event::Completed {
+                    kind: &kind,
+                    ms: started.elapsed().as_millis() as u64,
+                });
                 publish_job_event(
                     &event_bus,
                     crate::JobEventKind::Completed,
@@ -1352,6 +1352,148 @@ mod the_runtime_loop_without_a_database {
                     .push((used_bytes, limit_bytes, restart_requested));
             }
         }
+    }
+
+    struct CompletionStore {
+        fail_ack: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Store for CompletionStore {
+        async fn admit(&self, _: AdmitRequest) -> Result<Vec<AdmissionUnit>, StoreError> {
+            Ok(vec![])
+        }
+        async fn ack_attempt_with_actual_weight(
+            &self,
+            _: &LeaseRef,
+            _: Outcome,
+            _: Option<&str>,
+            _: Option<i64>,
+            _: &[String],
+            _: Option<u32>,
+        ) -> Result<(), StoreError> {
+            if self.fail_ack {
+                Err(StoreError::Backend("ack unavailable".into()))
+            } else {
+                Ok(())
+            }
+        }
+        async fn renew(&self, _: &[LeaseRef], _: Duration) -> Result<Vec<String>, StoreError> {
+            Ok(vec![])
+        }
+        async fn enqueue(&self, _: &[Envelope]) -> Result<(), StoreError> {
+            Ok(())
+        }
+        async fn checkpoint(&self, _: &LeaseRef, _: &Checkpoint) -> Result<(), StoreError> {
+            Ok(())
+        }
+        async fn reclaim_expired(&self, _: i64) -> Result<Vec<Reclaimed>, StoreError> {
+            Ok(vec![])
+        }
+        async fn promote_due(&self, _: i64) -> Result<u64, StoreError> {
+            Ok(0)
+        }
+        async fn evict_retained(&self, _: i64) -> Result<u64, StoreError> {
+            Ok(0)
+        }
+        async fn claim_duty(&self, _: &str, _: &str, _: Duration) -> Result<bool, StoreError> {
+            Ok(true)
+        }
+        async fn release_duty(&self, _: &str, _: &str) -> Result<(), StoreError> {
+            Ok(())
+        }
+        fn caps(&self) -> Caps {
+            Caps(0)
+        }
+    }
+
+    #[derive(Default)]
+    struct CompletionCapture(std::sync::Mutex<Vec<(String, u64)>>);
+
+    impl Telemetry for CompletionCapture {
+        fn on_event(&self, ev: Event<'_>) {
+            if let Event::Completed { kind, ms } = ev {
+                self.0.lock().unwrap().push((kind.into(), ms));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn completion_telemetry_requires_durable_ack() {
+        use crate::{JobCtx, Registry};
+
+        struct CompletionTask;
+        impl headgate_core::Task for CompletionTask {
+            const TYPE: &'static str = "completion";
+
+            fn encode(&self) -> Result<Vec<u8>, headgate_core::CodecError> {
+                Ok(vec![])
+            }
+
+            fn decode(_: &[u8]) -> Result<Self, headgate_core::CodecError> {
+                Ok(Self)
+            }
+        }
+
+        struct Failures;
+        impl headgate_core::IsFailure for Failures {
+            fn is_failure(&self, _: &(dyn std::error::Error + 'static)) -> bool {
+                true
+            }
+        }
+
+        async fn run(fail_ack: bool) -> Vec<(String, u64)> {
+            let store: Arc<dyn Store> = Arc::new(CompletionStore { fail_ack });
+            let capture = Arc::new(CompletionCapture::default());
+            let telemetry: Arc<dyn Telemetry> = capture.clone();
+            let mut registry = Registry::new();
+            registry
+                .register::<CompletionTask, _, _>(|_: JobCtx, _: CompletionTask| async { Ok(()) })
+                .unwrap();
+            let claim = Claim {
+                envelope: Envelope {
+                    id: "completed-1".into(),
+                    kind: <CompletionTask as headgate_core::Task>::TYPE.into(),
+                    queue: "billing".into(),
+                    schema_version: 1,
+                    ..Default::default()
+                },
+                lease_id: "L".into(),
+                fence: 1,
+                expires_at_ms: 0,
+                checkpoint: Checkpoint::default(),
+            };
+            let ctx = JobCtx::from_claim(
+                store.clone(),
+                &claim,
+                crate::Extensions::new(),
+                WorkerContext::new("unit-test".into(), vec!["billing".into()], 1),
+                Client::new(store.clone()),
+            );
+            process_one(
+                store,
+                Arc::new(registry),
+                claim,
+                ctx,
+                true,
+                Arc::new(Failures),
+                telemetry,
+                vec![],
+                None,
+                Duration::from_secs(10),
+                None,
+            )
+            .await;
+            capture.0.lock().unwrap().clone()
+        }
+
+        let completed = run(false).await;
+        assert_eq!(completed.len(), 1, "durable completion emits exactly once");
+        assert_eq!(completed[0].0, "completion");
+        assert!(
+            run(true).await.is_empty(),
+            "a failed durable ack must not emit completion"
+        );
     }
 
     #[tokio::test(start_paused = true)]

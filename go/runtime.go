@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -120,14 +121,16 @@ type BatchJob[T Args] struct {
 }
 
 type pendingBatchJob[T Args] struct {
-	job    BatchJob[T]
-	result chan error
+	job       BatchJob[T]
+	result    chan error
+	cancelled *atomic.Bool
 }
 
 type batchHandler[T Args] struct {
 	mu         sync.Mutex
 	generation uint64
 	pending    []pendingBatchJob[T]
+	timer      *time.Timer
 	maxSize    int
 	maxDelay   time.Duration
 	work       func([]BatchJob[T]) []error
@@ -170,15 +173,20 @@ func RegisterBatchFunc[T Args](
 
 func (b *batchHandler[T]) submit(ctx context.Context, job BatchJob[T]) error {
 	result := make(chan error, 1)
+	cancelled := &atomic.Bool{}
 	b.mu.Lock()
 	if len(b.pending) == 0 {
 		b.generation++
 		generation := b.generation
-		time.AfterFunc(b.maxDelay, func() { b.flush(generation) })
+		b.timer = time.AfterFunc(b.maxDelay, func() { b.flush(generation) })
 	}
-	b.pending = append(b.pending, pendingBatchJob[T]{job: job, result: result})
+	b.pending = append(b.pending, pendingBatchJob[T]{job: job, result: result, cancelled: cancelled})
 	if len(b.pending) >= b.maxSize {
 		b.generation++
+		if b.timer != nil {
+			b.timer.Stop()
+			b.timer = nil
+		}
 		pending := b.pending
 		b.pending = nil
 		b.mu.Unlock()
@@ -190,7 +198,29 @@ func (b *batchHandler[T]) submit(ctx context.Context, job BatchJob[T]) error {
 	case err := <-result:
 		return err
 	case <-ctx.Done():
+		cancelled.Store(true)
+		b.cancelPending(result)
 		return ctx.Err()
+	}
+}
+
+func (b *batchHandler[T]) cancelPending(result chan error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for i := range b.pending {
+		if b.pending[i].result != result {
+			continue
+		}
+		copy(b.pending[i:], b.pending[i+1:])
+		b.pending = b.pending[:len(b.pending)-1]
+		if len(b.pending) == 0 {
+			b.generation++
+			if b.timer != nil {
+				b.timer.Stop()
+				b.timer = nil
+			}
+		}
+		return
 	}
 }
 
@@ -201,6 +231,7 @@ func (b *batchHandler[T]) flush(generation uint64) {
 		return
 	}
 	b.generation++
+	b.timer = nil
 	pending := b.pending
 	b.pending = nil
 	b.mu.Unlock()
@@ -208,6 +239,21 @@ func (b *batchHandler[T]) flush(generation uint64) {
 }
 
 func (b *batchHandler[T]) run(pending []pendingBatchJob[T]) {
+	active := pending[:0]
+	for _, item := range pending {
+		if err := item.job.Context.Err(); err != nil || item.cancelled.Load() {
+			if err == nil {
+				err = context.Canceled
+			}
+			item.result <- err
+			continue
+		}
+		active = append(active, item)
+	}
+	if len(active) == 0 {
+		return
+	}
+	pending = active
 	jobs := make([]BatchJob[T], len(pending))
 	for i := range pending {
 		jobs[i] = pending[i].job
@@ -413,6 +459,7 @@ type inflightJob struct {
 	cancel context.CancelFunc
 	steps  *stepState
 	done   chan struct{}
+	lost   atomic.Bool
 }
 
 // Run until Shutdown() (or ctx cancellation). Store outages degrade to backoff-and-
@@ -449,7 +496,10 @@ func (r *Runner) Run(ctx context.Context) error {
 	inflight := map[string]*inflightJob{} // job id -> job
 	var wg sync.WaitGroup
 	pollDelay := r.cfg.EmptyPollBackoff.Floor
-	pollDeadline := time.Now() // poll immediately at start
+	var pollDeadline time.Time
+	pollTimer := time.NewTimer(0)
+	defer pollTimer.Stop()
+	wakeCh := r.wakeups(ctx)
 	seq := 0
 	admitting := true
 	rollingRestart := false
@@ -470,6 +520,8 @@ func (r *Runner) Run(ctx context.Context) error {
 
 loop:
 	for {
+		pollReady := false
+		woke := false
 		select {
 		case <-ctx.Done():
 			break loop
@@ -545,25 +597,35 @@ loop:
 		// relative delay would restart from zero each time — with a heartbeat period
 		// shorter than the backed-off delay the poll would then NEVER complete and
 		// admission starves entirely (found live).
-		case woke := <-r.waitForWork(ctx, time.Until(pollDeadline)):
-			if !admitting {
-				pollDeadline = time.Now().Add(pollDelay) // no zero-delay spin while quiet
-				continue
-			}
-			mu.Lock()
-			free := r.capacity() - len(inflight)
-			mu.Unlock()
-			if free <= 0 {
-				pollDeadline = time.Now().Add(pollDelay)
-				continue
-			}
-			seq++
-			n := r.admitOnce(ctx, seq, free, &mu, inflight, &wg)
-			// backlog metrics one bit per admission: did the gate have anything for us?
-			r.recordPoll(n)
-			pollDelay = pollDelayAfter(n, woke, pollDelay, r.cfg.EmptyPollBackoff)
-			pollDeadline = time.Now().Add(pollDelay)
+		case <-pollTimer.C:
+			pollReady = true
+		case <-wakeCh:
+			pollReady = true
+			woke = true
 		}
+		if !pollReady {
+			continue
+		}
+		if !admitting {
+			pollDeadline = time.Now().Add(pollDelay) // no zero-delay spin while quiet
+			resetTimer(pollTimer, time.Until(pollDeadline))
+			continue
+		}
+		mu.Lock()
+		free := r.capacity() - len(inflight)
+		mu.Unlock()
+		if free <= 0 {
+			pollDeadline = time.Now().Add(pollDelay)
+			resetTimer(pollTimer, time.Until(pollDeadline))
+			continue
+		}
+		seq++
+		n := r.admitOnce(ctx, seq, free, &mu, inflight, &wg)
+		// backlog metrics one bit per admission: did the gate have anything for us?
+		r.recordPoll(n)
+		pollDelay = pollDelayAfter(n, woke, pollDelay, r.cfg.EmptyPollBackoff)
+		pollDeadline = time.Now().Add(pollDelay)
+		resetTimer(pollTimer, time.Until(pollDeadline))
 	}
 
 	r.drain(ctx, &mu, inflight, &wg, rollingRestart)
@@ -629,7 +691,9 @@ func (r *Runner) heartbeat(ctx context.Context, mu *sync.Mutex, inflight map[str
 	mu.Lock()
 	leases := make([]LeaseRef, 0, len(inflight))
 	for _, j := range inflight {
-		leases = append(leases, j.lease)
+		if !j.lost.Load() {
+			leases = append(leases, j.lease)
+		}
 	}
 	mu.Unlock()
 	if len(leases) == 0 {
@@ -645,9 +709,9 @@ func (r *Runner) heartbeat(ctx context.Context, mu *sync.Mutex, inflight map[str
 	for _, id := range lost {
 		if j, ok := inflight[id]; ok {
 			slog.Warn("headgate: lease lost; canceling handler", "job", id)
+			j.lost.Store(true)
 			j.steps.canceled.Store(true)
 			j.cancel()
-			delete(inflight, id)
 		}
 	}
 	n := len(inflight)
@@ -732,15 +796,36 @@ func (r *Runner) drain(ctx context.Context, mu *sync.Mutex, inflight map[string]
 		slog.Warn("headgate: shutdown timeout; releasing job", "job", j.lease.JobID)
 		j.steps.canceled.Store(true)
 		j.cancel()
-		// Cancellation is cooperative in Go: wait briefly, but a handler that ignores
-		// its context must not hang shutdown. Releasing first is safe — its eventual
-		// ack no longer matches the fence and is rejected.
-		select {
-		case <-j.done:
-		case <-time.After(time.Second):
+	}
+	// Cancellation is cooperative. Give every handler the same grace window instead of
+	// serially spending one second per job, then release all remaining leases through a
+	// fresh cleanup context: the runner context is normally already cancelled here.
+	grace := time.NewTimer(time.Second)
+	select {
+	case <-doneCh:
+		if !grace.Stop() {
+			<-grace.C
 		}
-		if err := r.store.Ack(ctx, j.lease, OutcomeRateLimited, "released: worker shutdown", 0); err != nil {
-			slog.Debug("headgate: release ack not applied", "job", j.lease.JobID, "error", err)
+	case <-grace.C:
+	}
+	cleanupTimeout := min(r.cfg.ShutdownTimeout, 5*time.Second)
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+	defer cancelCleanup()
+	released := make(chan struct{}, len(leftover))
+	for _, j := range leftover {
+		j := j
+		go func() {
+			defer func() { released <- struct{}{} }()
+			if err := r.store.Ack(cleanupCtx, j.lease, OutcomeRateLimited, "released: worker shutdown", 0); err != nil {
+				slog.Debug("headgate: release ack not applied", "job", j.lease.JobID, "error", err)
+			}
+		}()
+	}
+	for range leftover {
+		select {
+		case <-released:
+		case <-cleanupCtx.Done():
+			return
 		}
 	}
 }
@@ -959,6 +1044,12 @@ func (r *Runner) processOne(ctx context.Context, claim Claim, steps *stepState) 
 			persisted = r.ack(ctx, lease, OutcomeSuccess, "", 0, logs, actualWeight)
 		}
 		if persisted {
+			if r.cfg.Telemetry != nil {
+				r.cfg.Telemetry.OnEvent(Event{
+					Type: "completed", Kind: claim.Envelope.Kind,
+					Duration: time.Since(startedAt),
+				})
+			}
 			state := "completed"
 			if claim.Envelope.RetentionMs == 0 {
 				state = "deleted"
@@ -1199,26 +1290,52 @@ func (r *Runner) PerformOne(ctx context.Context) (Performed, bool, error) {
 	return Performed{}, false, nil
 }
 
-// waitForWork resolves after at most delay, early (true) on a store push wakeup. The
-// Caps check matters: in Go the method exists on every adapter that compiled it, so the
-// CAPABILITY is what gates use (runtime capability boundary's runtime flavor).
-func (r *Runner) waitForWork(ctx context.Context, delay time.Duration) <-chan bool {
-	ch := make(chan bool, 1)
-	if ns, ok := r.store.(NotifyingStore); ok && r.store.Caps().Has(CapNotifying) {
-		go func() {
-			_, woke, _ := ns.WaitWakeup(ctx, r.queues(), delay)
-			ch <- woke
-		}()
-	} else {
-		go func() {
-			select {
-			case <-time.After(delay):
-			case <-ctx.Done():
-			}
-			ch <- false
-		}()
+// wakeups owns one notifier waiter for the runner lifetime. Poll deadlines use the
+// reusable timer in Run, so heartbeats and empty polls never allocate disposable
+// goroutines or restart a relative deadline.
+func (r *Runner) wakeups(ctx context.Context) <-chan struct{} {
+	ns, ok := r.store.(NotifyingStore)
+	if !ok || !r.store.Caps().Has(CapNotifying) {
+		return nil
 	}
+	ch := make(chan struct{}, 1)
+	go func() {
+		for {
+			_, woke, err := ns.WaitWakeup(ctx, r.queues(), time.Hour)
+			if ctx.Err() != nil {
+				return
+			}
+			if err != nil {
+				timer := time.NewTimer(time.Second)
+				select {
+				case <-timer.C:
+				case <-ctx.Done():
+					if !timer.Stop() {
+						<-timer.C
+					}
+					return
+				}
+				continue
+			}
+			if woke {
+				select {
+				case ch <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
 	return ch
+}
+
+func resetTimer(timer *time.Timer, delay time.Duration) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(max(delay, 0))
 }
 
 func nextBackoff(cur time.Duration, cfg BackoffConfig) time.Duration {

@@ -18,22 +18,33 @@ const (
 
 // JobEvent is an immutable process-local snapshot of a persisted runtime outcome.
 type JobEvent struct {
-	envelope Envelope
-	kind     JobEventKind
-	state    string
-	err      string
-	atMs     int64
+	kind    JobEventKind
+	jobID   string
+	jobKind string
+	queue   string
+	attempt uint32
+	state   string
+	err     string
+	atMs    int64
 }
 
 func newJobEvent(kind JobEventKind, envelope Envelope, state, errMsg string) JobEvent {
 	return JobEvent{
-		envelope: cloneEnqueueBatch([]Envelope{envelope})[0],
-		kind:     kind, state: state, err: errMsg, atMs: time.Now().UnixMilli(),
+		kind: kind, jobID: envelope.ID, jobKind: envelope.Kind, queue: envelope.Queue,
+		attempt: envelope.Attempt, state: state, err: errMsg, atMs: time.Now().UnixMilli(),
 	}
 }
 
-func (e JobEvent) Envelope() Envelope   { return cloneEnqueueBatch([]Envelope{e.envelope})[0] }
+// Envelope returns only lifecycle summary fields. Payload, headers, uniqueness keys,
+// and other enqueue-only data are deliberately absent from process-local fanout.
+func (e JobEvent) Envelope() Envelope {
+	return Envelope{ID: e.jobID, Kind: e.jobKind, Queue: e.queue, Attempt: e.attempt}
+}
 func (e JobEvent) Kind() JobEventKind   { return e.kind }
+func (e JobEvent) JobID() string        { return e.jobID }
+func (e JobEvent) JobKind() string      { return e.jobKind }
+func (e JobEvent) Queue() string        { return e.queue }
+func (e JobEvent) Attempt() uint32      { return e.attempt }
 func (e JobEvent) State() string        { return e.state }
 func (e JobEvent) ErrorMessage() string { return e.err }
 func (e JobEvent) AtMs() int64          { return e.atMs }
@@ -48,6 +59,7 @@ type SubscriptionConfig struct {
 type eventSubscriber struct {
 	kinds   map[JobEventKind]struct{}
 	events  chan JobEvent
+	done    chan struct{}
 	dropped atomic.Uint64
 }
 
@@ -76,7 +88,9 @@ func (bus *EventBus) Subscribe(ctx context.Context, cfg SubscriptionConfig) (*Su
 	for _, kind := range cfg.Kinds {
 		kinds[kind] = struct{}{}
 	}
-	subscriber := &eventSubscriber{kinds: kinds, events: make(chan JobEvent, cfg.ChanSize)}
+	subscriber := &eventSubscriber{
+		kinds: kinds, events: make(chan JobEvent, cfg.ChanSize), done: make(chan struct{}),
+	}
 	bus.mu.Lock()
 	bus.nextID++
 	id := bus.nextID
@@ -85,8 +99,11 @@ func (bus *EventBus) Subscribe(ctx context.Context, cfg SubscriptionConfig) (*Su
 	subscription := &Subscription{bus: bus, id: id, subscriber: subscriber}
 	if ctx != nil && ctx.Done() != nil {
 		go func() {
-			<-ctx.Done()
-			subscription.Close()
+			select {
+			case <-ctx.Done():
+				subscription.Close()
+			case <-subscriber.done:
+			}
 		}()
 	}
 	return subscription, nil
@@ -134,6 +151,7 @@ func (subscription *Subscription) Close() {
 	subscription.closeOnce.Do(func() {
 		subscription.bus.mu.Lock()
 		delete(subscription.bus.subscribers, subscription.id)
+		close(subscription.subscriber.done)
 		close(subscription.subscriber.events)
 		subscription.bus.mu.Unlock()
 	})

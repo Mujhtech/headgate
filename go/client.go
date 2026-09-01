@@ -287,7 +287,7 @@ func (c *Client) EnqueueAndWait(ctx context.Context, envelope Envelope) (Complet
 			if !open {
 				return Completion{}, fmt.Errorf("%w: event stream closed", ErrWaitUnsupported)
 			}
-			if event.envelope.ID != envelope.ID {
+			if event.JobID() != envelope.ID {
 				continue
 			}
 			if done, ok, err := completionFromStore(ctx, inspect, resultInspect, envelope.ID, &event); err != nil || ok {

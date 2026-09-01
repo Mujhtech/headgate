@@ -113,6 +113,9 @@ func TestSubscriptionsFilterBoundDropWithoutBlockingAndDoNotReplayOnReconnect(t 
 		if events[i].Kind() != wantKinds[i] || events[i].State() != wantStates[i] {
 			t.Fatalf("event[%d] = kind %q state %q", i, events[i].Kind(), events[i].State())
 		}
+		if envelope := events[i].Envelope(); len(envelope.Payload) != 0 || len(envelope.Headers) != 0 {
+			t.Fatalf("event[%d] retained payload data: %#v", i, envelope)
+		}
 	}
 	if got := events[2].ErrorMessage(); got != "upstream failed" {
 		t.Fatalf("failure error = %q", got)

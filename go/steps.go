@@ -303,10 +303,23 @@ func (s *stepState) enter(name string, isCursor bool) (*Checkpoint, error) {
 func (s *stepState) complete(name string) Checkpoint {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.completeLocked(name)
+	return s.snapshot()
+}
+
+func (s *stepState) completeCursor(name string) Checkpoint {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.completeLocked(name)
+	s.cursorStep = ""
+	s.cursor = nil
+	return s.snapshot()
+}
+
+func (s *stepState) completeLocked(name string) {
 	s.completed = append(s.completed, name)
 	s.position = len(s.completed)
 	s.inProgress = ""
-	return s.snapshot()
 }
 
 // persist is the fence check: LeaseRejected here means someone else owns the job now —
@@ -374,13 +387,7 @@ func StepCursor[C any](ctx context.Context, name string, fn func(context.Context
 	if err := fn(ctx, cursor); err != nil {
 		return err
 	}
-	done := s.complete(name)
-	s.mu.Lock()
-	s.cursorStep = ""
-	s.cursor = nil
-	done = s.snapshot()
-	s.mu.Unlock()
-	return s.persist(ctx, done)
+	return s.persist(ctx, s.completeCursor(name))
 }
 
 // StepOnce (step replay × transactional effects) is a step whose SIDE EFFECTS and completion marker commit in

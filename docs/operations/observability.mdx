@@ -388,7 +388,7 @@ tools instead.
 | --- | --- | --- | --- |
 | `headgate.jobs.admitted` | Counter | jobs | `headgate.queue` |
 | `headgate.jobs.rejected` | Counter | jobs | `headgate.queue`, `headgate.policy` |
-| `headgate.jobs.completed` | Counter | jobs | `headgate.kind` |
+| `headgate.jobs.completed` | Counter | jobs | `headgate.kind`; increments only after fence-verified durable completion |
 | `headgate.jobs.quarantined` | Counter | jobs | none |
 | `headgate.jobs.evicted` | Counter | jobs | `headgate.queue` |
 | `headgate.job.duration` | Histogram | ms | completed-event form: `headgate.kind`; attempt-span form: `headgate.job.kind`, `headgate.queue`, `headgate.outcome` |

@@ -26,10 +26,6 @@ import (
 	"time"
 )
 
-type isolatedArgs struct{}
-
-func (isolatedArgs) Kind() string { return "isolated:test" }
-
 func TestIsolatedChildHelper(t *testing.T) {
 	if os.Getenv("HG_ISOLATED_HELPER") == "" {
 		return
@@ -317,6 +313,7 @@ type ackStub struct {
 	mu      sync.Mutex
 	outcome []Outcome
 	actual  []string
+	err     error
 }
 
 func (s *ackStub) AckAttempt(_ context.Context, _ LeaseRef, o Outcome, _ string, _ int64, _ []string) error {
@@ -324,7 +321,7 @@ func (s *ackStub) AckAttempt(_ context.Context, _ LeaseRef, o Outcome, _ string,
 	defer s.mu.Unlock()
 	s.outcome = append(s.outcome, o)
 	s.actual = append(s.actual, "-")
-	return nil
+	return s.err
 }
 func (s *ackStub) AckAttemptWithActualWeight(_ context.Context, _ LeaseRef, o Outcome, _ string, _ int64, _ []string, actual *uint32) error {
 	s.mu.Lock()
@@ -335,7 +332,7 @@ func (s *ackStub) AckAttemptWithActualWeight(_ context.Context, _ LeaseRef, o Ou
 	} else {
 		s.actual = append(s.actual, fmt.Sprint(*actual))
 	}
-	return nil
+	return s.err
 }
 
 func (s *ackStub) acked() []Outcome {
@@ -364,6 +361,38 @@ func (c *captureTelemetry) rejections() [][3]any {
 		}
 	}
 	return out
+}
+
+func TestCompletionTelemetryRequiresDurableAck(t *testing.T) {
+	run := func(ackErr error) []Event {
+		store := &ackStub{err: ackErr}
+		capture := &captureTelemetry{}
+		registry := NewRegistry()
+		if err := RegisterFunc[rjArgs](registry, func(context.Context, *Job[rjArgs]) error {
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		runner := NewRunner(store, registry, Config{Telemetry: capture})
+		claim := Claim{
+			Envelope: Envelope{ID: "completed-1", Kind: "rj", Queue: "billing", Payload: []byte("{}")},
+			LeaseID:  "L", Fence: 1,
+		}
+		steps := newStepState(store, claim)
+		runner.processOne(withStepState(context.Background(), steps), claim, steps)
+		return capture.eventsOf("completed")
+	}
+
+	events := run(nil)
+	if len(events) != 1 || events[0].Kind != "rj" {
+		t.Fatalf("durably completed job must emit one completion event: %#v", events)
+	}
+	if events[0].Duration < 0 {
+		t.Fatalf("completion duration must not be negative: %s", events[0].Duration)
+	}
+	if events := run(errors.New("ack unavailable")); len(events) != 0 {
+		t.Fatalf("failed durable ack must not emit completion: %#v", events)
+	}
 }
 
 func TestAPolicyRejectionReachesTheFacadeWithItsClause(t *testing.T) {

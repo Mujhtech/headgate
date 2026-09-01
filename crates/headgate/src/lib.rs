@@ -314,13 +314,48 @@ pub struct BatchJob<T> {
 }
 
 struct PendingBatchJob<T> {
+    id: u64,
     job: BatchJob<T>,
     result: tokio::sync::oneshot::Sender<Result<(), BoxError>>,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 struct BatchQueue<T> {
     generation: u64,
+    next_id: u64,
     pending: Vec<PendingBatchJob<T>>,
+    timer: Option<tokio::task::JoinHandle<()>>,
+}
+
+struct PendingBatchGuard<T: Send + 'static> {
+    id: u64,
+    queue: Arc<tokio::sync::Mutex<BatchQueue<T>>>,
+    armed: bool,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl<T: Send + 'static> Drop for PendingBatchGuard<T> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+        let id = self.id;
+        let queue = self.queue.clone();
+        tokio::spawn(async move {
+            let mut state = queue.lock().await;
+            if let Some(index) = state.pending.iter().position(|item| item.id == id) {
+                state.pending.remove(index);
+                if state.pending.is_empty() {
+                    state.generation = state.generation.wrapping_add(1);
+                    if let Some(timer) = state.timer.take() {
+                        timer.abort();
+                    }
+                }
+            }
+        });
+    }
 }
 
 struct BatchHandler<T, F> {
@@ -337,6 +372,16 @@ where
     Fut: std::future::Future<Output = Vec<Result<(), BoxError>>> + Send + 'static,
 {
     tokio::spawn(async move {
+        let pending: Vec<_> = pending
+            .into_iter()
+            .filter(|item| {
+                !item.cancelled.load(std::sync::atomic::Ordering::Acquire)
+                    && !item.result.is_closed()
+            })
+            .collect();
+        if pending.is_empty() {
+            return;
+        }
         let (jobs, senders): (Vec<_>, Vec<_>) = pending
             .into_iter()
             .map(|item| (item.job, item.result))
@@ -391,13 +436,16 @@ where
         let max_delay = self.max_delay;
         Box::pin(async move {
             let (tx, rx) = tokio::sync::oneshot::channel();
+            let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let mut state = queue.lock().await;
+            state.next_id = state.next_id.wrapping_add(1);
+            let id = state.next_id;
             if state.pending.is_empty() {
                 state.generation = state.generation.wrapping_add(1);
                 let generation = state.generation;
                 let queue = queue.clone();
                 let f = f.clone();
-                tokio::spawn(async move {
+                state.timer = Some(tokio::spawn(async move {
                     tokio::time::sleep(max_delay).await;
                     let pending = {
                         let mut state = queue.lock().await;
@@ -405,30 +453,53 @@ where
                             return;
                         }
                         state.generation = state.generation.wrapping_add(1);
+                        state.timer = None;
                         std::mem::take(&mut state.pending)
                     };
                     dispatch_batch(f, pending);
-                });
+                }));
             }
             state.pending.push(PendingBatchJob {
+                id,
                 job: BatchJob {
-                    ctx,
+                    ctx: ctx.clone(),
                     envelope: env,
                     args,
                 },
                 result: tx,
+                cancelled: cancelled.clone(),
             });
+            let mut guard = PendingBatchGuard {
+                id,
+                queue: queue.clone(),
+                armed: true,
+                cancelled: cancelled.clone(),
+            };
             if state.pending.len() >= max_size {
                 state.generation = state.generation.wrapping_add(1);
+                if let Some(timer) = state.timer.take() {
+                    timer.abort();
+                }
                 let pending = std::mem::take(&mut state.pending);
+                guard.armed = false;
                 drop(state);
                 dispatch_batch(f, pending);
             } else {
                 drop(state);
             }
-            rx.await.unwrap_or_else(|_| {
-                Err("batch dispatcher stopped before producing a result".into())
-            })
+            let (result, completed) = tokio::select! {
+                result = rx => (result.unwrap_or_else(|_| {
+                    Err("batch dispatcher stopped before producing a result".into())
+                }), true),
+                _ = ctx.cancelled() => {
+                    cancelled.store(true, std::sync::atomic::Ordering::Release);
+                    (Err("batch member cancelled before dispatch".into()), false)
+                },
+            };
+            if completed {
+                guard.armed = false;
+            }
+            result
         })
     }
 }
@@ -533,7 +604,9 @@ impl Registry {
             max_delay,
             queue: Arc::new(tokio::sync::Mutex::new(BatchQueue {
                 generation: 0,
+                next_id: 0,
                 pending: Vec::new(),
+                timer: None,
             })),
         }))
     }

@@ -1,6 +1,7 @@
 @import "@fontsource-variable/geist";
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "@xyflow/react/dist/style.css";
 
 :root {
   --background: oklch(0.985 0.002 247);
@@ -107,4 +108,5 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 @media (prefers-reduced-motion: reduce) {
   .lifecycle-line-progress { animation: none; }
+  .react-flow__edge.animated path { animation: none; }
 }

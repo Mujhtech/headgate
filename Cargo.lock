@@ -883,7 +883,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "headgate"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "base64",
@@ -904,7 +904,7 @@ dependencies = [
 
 [[package]]
 name = "headgate-api"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "axum",
  "base64",
@@ -925,7 +925,7 @@ dependencies = [
 
 [[package]]
 name = "headgate-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "criterion",
@@ -935,7 +935,7 @@ dependencies = [
 
 [[package]]
 name = "headgate-crypto"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "aes-gcm",
  "headgate",
@@ -947,7 +947,7 @@ dependencies = [
 
 [[package]]
 name = "headgate-examples"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "headgate",
  "headgate-crypto",
@@ -959,7 +959,7 @@ dependencies = [
 
 [[package]]
 name = "headgate-macros"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -968,7 +968,7 @@ dependencies = [
 
 [[package]]
 name = "headgate-migrate"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "headgate-sql",
  "mysql_async",
@@ -979,7 +979,7 @@ dependencies = [
 
 [[package]]
 name = "headgate-mysql"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "headgate",
@@ -995,7 +995,7 @@ dependencies = [
 
 [[package]]
 name = "headgate-otel"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "headgate-core",
  "opentelemetry",
@@ -1004,7 +1004,7 @@ dependencies = [
 
 [[package]]
 name = "headgate-postgres"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "deadpool-postgres",
@@ -1022,14 +1022,14 @@ dependencies = [
 
 [[package]]
 name = "headgate-proto"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "prost",
 ]
 
 [[package]]
 name = "headgate-redis"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -1044,21 +1044,21 @@ dependencies = [
 
 [[package]]
 name = "headgate-shared"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "headgate-sql"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "sha2 0.10.9",
 ]
 
 [[package]]
 name = "headgate-testkit"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "headgate",
@@ -1072,7 +1072,7 @@ dependencies = [
 
 [[package]]
 name = "headgate-ui"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "axum",
  "http-body-util",
@@ -1084,7 +1084,7 @@ dependencies = [
 
 [[package]]
 name = "headgate-workflow"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "futures-util",
  "headgate",

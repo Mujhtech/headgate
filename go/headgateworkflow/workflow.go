@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	headgate "github.com/mujhtech/headgate/go"
@@ -15,6 +16,9 @@ import (
 const (
 	CoordinatorKind  = "headgate:workflow"
 	defaultRetention = int64((7 * 24 * time.Hour) / time.Millisecond)
+	maxWorkflowNodes = headgate.MaxEnqueueBatchSize - 1
+	maxWorkflowEdges = 10_000
+	workflowWorkers  = 16
 )
 
 type draftNode struct {
@@ -100,7 +104,11 @@ func (w *Workflow) Prepare() ([]headgate.Envelope, error) {
 }
 
 func validateGraph(nodes []draftNode) error {
+	if len(nodes) > maxWorkflowNodes {
+		return fmt.Errorf("headgate workflow: must contain at most %d tasks", maxWorkflowNodes)
+	}
 	names := make(map[string]struct{}, len(nodes))
+	edges := 0
 	for _, node := range nodes {
 		if node.name == "" {
 			return errors.New("headgate workflow: task names must not be empty")
@@ -108,7 +116,14 @@ func validateGraph(nodes []draftNode) error {
 		if _, exists := names[node.name]; exists {
 			return fmt.Errorf("headgate workflow: task name %q is repeated", node.name)
 		}
+		if len(node.name) > 128 {
+			return fmt.Errorf("headgate workflow: task name %q exceeds 128 bytes", node.name)
+		}
+		edges += len(node.deps)
 		names[node.name] = struct{}{}
+	}
+	if edges > maxWorkflowEdges {
+		return fmt.Errorf("headgate workflow: must contain at most %d dependency edges", maxWorkflowEdges)
 	}
 	degree := make(map[string]int, len(nodes))
 	outgoing := make(map[string][]string)
@@ -194,15 +209,61 @@ const (
 )
 
 func tick(ctx context.Context, inspect headgate.InspectStore, workflow CoordinatorArgs) (tickResult, error) {
-	state := make(map[string]*headgate.JobSummary, len(workflow.Nodes))
-	for _, node := range workflow.Nodes {
-		job, err := inspect.GetJob(ctx, node.JobID, false)
-		if err != nil {
-			return tickWaiting, err
-		}
-		state[node.Name] = job
+	if err := validateCoordinator(workflow); err != nil {
+		return tickWaiting, err
 	}
-	changed := false
+	state := make(map[string]*headgate.JobSummary, len(workflow.Nodes))
+	type readResult struct {
+		name string
+		job  *headgate.JobSummary
+		err  error
+	}
+	readCtx, cancelReads := context.WithCancel(ctx)
+	defer cancelReads()
+	work := make(chan nodeSpec)
+	results := make(chan readResult, len(workflow.Nodes))
+	workers := min(workflowWorkers, len(workflow.Nodes))
+	var reads sync.WaitGroup
+	reads.Add(workers)
+	for range workers {
+		go func() {
+			defer reads.Done()
+			for node := range work {
+				job, err := inspect.GetJob(readCtx, node.JobID, false)
+				select {
+				case results <- readResult{name: node.Name, job: job, err: err}:
+				case <-readCtx.Done():
+					return
+				}
+				if err != nil {
+					cancelReads()
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(work)
+		for _, node := range workflow.Nodes {
+			select {
+			case work <- node:
+			case <-readCtx.Done():
+				return
+			}
+		}
+	}()
+	go func() { reads.Wait(); close(results) }()
+	for result := range results {
+		if result.err != nil {
+			return tickWaiting, result.err
+		}
+		state[result.name] = result.job
+	}
+	type mutation struct {
+		jobID  string
+		delete bool
+	}
+	mutations := make([]mutation, 0)
 	for _, node := range workflow.Nodes {
 		job := state[node.Name]
 		if job == nil || job.State != "pending" {
@@ -220,18 +281,53 @@ func tick(ctx context.Context, inspect headgate.InspectStore, workflow Coordinat
 			}
 		}
 		if depFailed {
-			if err := inspect.DeleteJob(ctx, node.JobID); err != nil {
-				return tickWaiting, err
-			}
-			changed = true
+			mutations = append(mutations, mutation{jobID: node.JobID, delete: true})
 		} else if depsComplete {
-			if err := inspect.PromoteJob(ctx, node.JobID); err != nil {
-				return tickWaiting, err
-			}
-			changed = true
+			mutations = append(mutations, mutation{jobID: node.JobID})
 		}
 	}
-	if changed {
+	if len(mutations) > 0 {
+		mutationWork := make(chan mutation)
+		mutationErrors := make(chan error, len(mutations))
+		mutationCtx, cancelMutations := context.WithCancel(ctx)
+		defer cancelMutations()
+		workers = min(workflowWorkers, len(mutations))
+		var writes sync.WaitGroup
+		writes.Add(workers)
+		for range workers {
+			go func() {
+				defer writes.Done()
+				for mutation := range mutationWork {
+					var err error
+					if mutation.delete {
+						err = inspect.DeleteJob(mutationCtx, mutation.jobID)
+					} else {
+						err = inspect.PromoteJob(mutationCtx, mutation.jobID)
+					}
+					if err != nil {
+						mutationErrors <- err
+						cancelMutations()
+						return
+					}
+				}
+			}()
+		}
+		go func() {
+			defer close(mutationWork)
+			for _, mutation := range mutations {
+				select {
+				case mutationWork <- mutation:
+				case <-mutationCtx.Done():
+					return
+				}
+			}
+		}()
+		writes.Wait()
+		select {
+		case err := <-mutationErrors:
+			return tickWaiting, err
+		default:
+		}
 		return tickWaiting, nil
 	}
 	failed := false
@@ -249,6 +345,38 @@ func tick(ctx context.Context, inspect headgate.InspectStore, workflow Coordinat
 		return tickFailed, nil
 	}
 	return tickSucceeded, nil
+}
+
+func validateCoordinator(workflow CoordinatorArgs) error {
+	if workflow.WorkflowID == "" {
+		return errors.New("headgate workflow: coordinator workflow id must not be empty")
+	}
+	if len(workflow.Nodes) == 0 || len(workflow.Nodes) > maxWorkflowNodes {
+		return fmt.Errorf("headgate workflow: coordinator must contain 1-%d tasks", maxWorkflowNodes)
+	}
+	names := make(map[string]struct{}, len(workflow.Nodes))
+	edges := 0
+	for _, node := range workflow.Nodes {
+		if node.Name == "" || node.JobID == "" || len(node.Name) > 128 || len(node.JobID) > headgate.MaxJobIdentifierLen {
+			return errors.New("headgate workflow: coordinator contains an invalid task")
+		}
+		if _, exists := names[node.Name]; exists {
+			return errors.New("headgate workflow: coordinator repeats a task name")
+		}
+		names[node.Name] = struct{}{}
+		edges += len(node.Deps)
+	}
+	if edges > maxWorkflowEdges {
+		return fmt.Errorf("headgate workflow: coordinator must contain at most %d dependency edges", maxWorkflowEdges)
+	}
+	for _, node := range workflow.Nodes {
+		for _, dep := range node.Deps {
+			if _, exists := names[dep]; !exists {
+				return errors.New("headgate workflow: coordinator contains a missing dependency")
+			}
+		}
+	}
+	return nil
 }
 
 func isFailed(state string) bool {

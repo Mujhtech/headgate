@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -82,6 +83,20 @@ func TestPrepareRejectsMissingDependenciesAndCycles(t *testing.T) {
 	cycle.Add("b", task("task:b"), "a")
 	if _, err := cycle.Prepare(); err == nil || !strings.Contains(err.Error(), "cycle") {
 		t.Fatalf("cycle error = %v", err)
+	}
+}
+
+func TestWorkflowAndCoordinatorResourceBounds(t *testing.T) {
+	w := New("too-large")
+	for i := 0; i <= maxWorkflowNodes; i++ {
+		w.Add(fmt.Sprintf("node-%d", i), task("task:node"))
+	}
+	if _, err := w.Prepare(); err == nil || !strings.Contains(err.Error(), "at most") {
+		t.Fatalf("oversized workflow error = %v", err)
+	}
+	forged := CoordinatorArgs{WorkflowID: "forged", Nodes: make([]nodeSpec, maxWorkflowNodes+1)}
+	if err := validateCoordinator(forged); err == nil {
+		t.Fatal("forged oversized coordinator unexpectedly passed")
 	}
 }
 

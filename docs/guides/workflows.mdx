@@ -7,6 +7,11 @@ icon: "git-fork"
 Workflows are an opt-in layer over ordinary jobs. The graph is validated before enqueue,
 then prepared as one atomic batch containing a coordinator and pending children.
 
+Graphs are deliberately bounded: 999 task nodes, 10,000 dependency edges, and 128 bytes
+per task name. Coordinator ticks read and mutate nodes with a fixed concurrency of 16, so
+a large valid graph cannot create an unbounded task or connection fan-out. Forged
+coordinator payloads are revalidated by the worker before any graph operation runs.
+
 ```mermaid
 flowchart LR
   E[extract] --> C[customers]

@@ -6,11 +6,15 @@ use std::{
     time::Duration,
 };
 
+use futures_util::{StreamExt, TryStreamExt, stream};
 use headgate::{CodecError, Control, Envelope, JobCtx, JobError, Registry, Task};
-use headgate_core::Inspect;
+use headgate_core::{Inspect, MAX_ENQUEUE_BATCH_SIZE, MAX_JOB_IDENTIFIER_LEN};
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+const MAX_WORKFLOW_NODES: usize = MAX_ENQUEUE_BATCH_SIZE - 1;
+const MAX_WORKFLOW_EDGES: usize = 10_000;
+const WORKFLOW_CONCURRENCY: usize = 16;
 
 #[derive(Debug)]
 pub struct WorkflowError(String);
@@ -136,6 +140,11 @@ impl Workflow {
 }
 
 fn validate_graph(nodes: &[DraftNode]) -> Result<(), WorkflowError> {
+    if nodes.len() > MAX_WORKFLOW_NODES {
+        return Err(WorkflowError(format!(
+            "workflow must contain at most {MAX_WORKFLOW_NODES} tasks"
+        )));
+    }
     let names: HashSet<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
     if names.len() != nodes.len() || names.contains("") {
         return Err(WorkflowError(
@@ -144,7 +153,15 @@ fn validate_graph(nodes: &[DraftNode]) -> Result<(), WorkflowError> {
     }
     let mut indegree: HashMap<&str, usize> = nodes.iter().map(|n| (n.name.as_str(), 0)).collect();
     let mut outgoing: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut edges = 0usize;
     for node in nodes {
+        if node.name.len() > 128 {
+            return Err(WorkflowError(format!(
+                "workflow task name `{}` exceeds 128 bytes",
+                node.name
+            )));
+        }
+        edges = edges.saturating_add(node.deps.len());
         let mut unique = HashSet::new();
         for dep in &node.deps {
             if !names.contains(dep.as_str()) {
@@ -162,6 +179,11 @@ fn validate_graph(nodes: &[DraftNode]) -> Result<(), WorkflowError> {
             *indegree.get_mut(node.name.as_str()).unwrap() += 1;
             outgoing.entry(dep).or_default().push(&node.name);
         }
+    }
+    if edges > MAX_WORKFLOW_EDGES {
+        return Err(WorkflowError(format!(
+            "workflow must contain at most {MAX_WORKFLOW_EDGES} dependency edges"
+        )));
     }
     let mut ready: VecDeque<&str> = indegree
         .iter()
@@ -239,14 +261,21 @@ enum Tick {
 }
 
 async fn tick(inspect: &dyn Inspect, workflow: &CoordinatorTask) -> Result<Tick, JobError> {
-    let mut state = HashMap::with_capacity(workflow.nodes.len());
-    for node in &workflow.nodes {
-        state.insert(
-            node.name.as_str(),
-            inspect.get_job(&node.job_id, false).await?,
-        );
-    }
-    let mut changed = false;
+    validate_coordinator(workflow).map_err(|error| -> JobError { Box::new(error) })?;
+    let reads: Vec<(String, String)> = workflow
+        .nodes
+        .iter()
+        .map(|node| (node.name.clone(), node.job_id.clone()))
+        .collect();
+    let entries: Vec<(String, Option<headgate_core::JobSummary>)> = stream::iter(reads)
+        .map(|(name, job_id)| async move {
+            inspect.get_job(&job_id, false).await.map(|job| (name, job))
+        })
+        .buffer_unordered(WORKFLOW_CONCURRENCY)
+        .try_collect()
+        .await?;
+    let state: HashMap<String, Option<headgate_core::JobSummary>> = entries.into_iter().collect();
+    let mut mutations = Vec::new();
     for node in &workflow.nodes {
         let Some(job) = state.get(node.name.as_str()).and_then(Option::as_ref) else {
             continue;
@@ -265,8 +294,7 @@ async fn tick(inspect: &dyn Inspect, workflow: &CoordinatorTask) -> Result<Tick,
                 },
             );
         if dep_failed {
-            inspect.delete_job(&node.job_id).await?;
-            changed = true;
+            mutations.push((node.job_id.clone(), true));
             continue;
         }
         let deps_complete = node.deps.iter().all(|dep| {
@@ -276,11 +304,21 @@ async fn tick(inspect: &dyn Inspect, workflow: &CoordinatorTask) -> Result<Tick,
                 .is_some_and(|j| j.state == "completed")
         });
         if deps_complete {
-            inspect.promote_job(&node.job_id).await?;
-            changed = true;
+            mutations.push((node.job_id.clone(), false));
         }
     }
-    if changed {
+    if !mutations.is_empty() {
+        stream::iter(mutations)
+            .map(|(job_id, delete)| async move {
+                if delete {
+                    inspect.delete_job(&job_id).await
+                } else {
+                    inspect.promote_job(&job_id).await
+                }
+            })
+            .buffer_unordered(WORKFLOW_CONCURRENCY)
+            .try_collect::<Vec<()>>()
+            .await?;
         return Ok(Tick::Waiting);
     }
     let mut failed = false;
@@ -300,6 +338,50 @@ async fn tick(inspect: &dyn Inspect, workflow: &CoordinatorTask) -> Result<Tick,
     } else {
         Tick::Succeeded
     })
+}
+
+fn validate_coordinator(workflow: &CoordinatorTask) -> Result<(), WorkflowError> {
+    if workflow.workflow_id.is_empty() {
+        return Err(WorkflowError(
+            "workflow coordinator id must not be empty".into(),
+        ));
+    }
+    if workflow.nodes.is_empty() || workflow.nodes.len() > MAX_WORKFLOW_NODES {
+        return Err(WorkflowError(format!(
+            "workflow coordinator must contain 1-{MAX_WORKFLOW_NODES} tasks"
+        )));
+    }
+    let mut names = HashSet::with_capacity(workflow.nodes.len());
+    let mut edges = 0usize;
+    for node in &workflow.nodes {
+        if node.name.is_empty()
+            || node.name.len() > 128
+            || node.job_id.is_empty()
+            || node.job_id.len() > MAX_JOB_IDENTIFIER_LEN
+            || !names.insert(node.name.as_str())
+        {
+            return Err(WorkflowError(
+                "workflow coordinator contains an invalid task".into(),
+            ));
+        }
+        edges = edges.saturating_add(node.deps.len());
+    }
+    if edges > MAX_WORKFLOW_EDGES {
+        return Err(WorkflowError(format!(
+            "workflow coordinator must contain at most {MAX_WORKFLOW_EDGES} dependency edges"
+        )));
+    }
+    if workflow
+        .nodes
+        .iter()
+        .flat_map(|node| &node.deps)
+        .any(|dep| !names.contains(dep.as_str()))
+    {
+        return Err(WorkflowError(
+            "workflow coordinator contains a missing dependency".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -345,5 +427,36 @@ mod tests {
             .prepare()
             .unwrap_err();
         assert!(cycle.to_string().contains("cycle"));
+    }
+
+    #[test]
+    fn workflow_and_coordinator_resource_bounds_are_enforced() {
+        let mut workflow = Workflow::new("too-large");
+        for index in 0..=MAX_WORKFLOW_NODES {
+            workflow = workflow.add(
+                format!("node-{index}"),
+                env("task:node"),
+                Vec::<String>::new(),
+            );
+        }
+        assert!(
+            workflow
+                .prepare()
+                .unwrap_err()
+                .to_string()
+                .contains("at most")
+        );
+
+        let forged = CoordinatorTask {
+            workflow_id: "forged".into(),
+            nodes: (0..=MAX_WORKFLOW_NODES)
+                .map(|index| NodeSpec {
+                    name: format!("node-{index}"),
+                    job_id: format!("job-{index}"),
+                    deps: Vec::new(),
+                })
+                .collect(),
+        };
+        assert!(validate_coordinator(&forged).is_err());
     }
 }

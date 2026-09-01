@@ -2,9 +2,9 @@ module github.com/mujhtech/headgate/go/headgatecrypto
 
 go 1.24.0
 
-require github.com/mujhtech/headgate/go v0.1.5
+require github.com/mujhtech/headgate/go v0.1.6
 
-require github.com/mujhtech/headgate/go/headgatetest v0.1.5 // indirect
+require github.com/mujhtech/headgate/go/headgatetest v0.1.6 // indirect
 
 replace github.com/mujhtech/headgate/go => ..
 

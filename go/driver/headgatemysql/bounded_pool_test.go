@@ -38,7 +38,7 @@ func TestConnectionBudgetKeepsRenewalAcksAndDutiesLiveBehindHeldTransactions(t *
 	}
 	store.db.SetMaxOpenConns(int(poolBudget))
 	store.db.SetMaxIdleConns(int(poolBudget))
-	defer store.db.Close()
+	defer func() { _ = store.db.Close() }()
 	ctx := context.Background()
 	queue := fmt.Sprintf("cb-go-my-%d", os.Getpid())
 	workerID := fmt.Sprintf("cb-go-my-w-%d", os.Getpid())

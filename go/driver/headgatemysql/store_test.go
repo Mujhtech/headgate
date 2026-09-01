@@ -193,7 +193,7 @@ func TestEnqueueClassifiesAnUnreachableMysqlWithoutMaskingInputErrors(t *testing
 	if err != nil {
 		t.Fatalf("construct lazy database handle: %v", err)
 	}
-	defer store.db.Close()
+	defer func() { _ = store.db.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 

@@ -44,7 +44,7 @@ func TestLiveMySQLMigrationLifecycleAndDriftRejection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close()
+	defer func() { _ = admin.Close() }()
 	database := fmt.Sprintf("hg_migrate_go_%d", os.Getpid())
 	var exists int
 	if err := admin.QueryRowContext(ctx, `
@@ -71,7 +71,7 @@ SELECT count(*) FROM information_schema.schemata WHERE schema_name = ?`, databas
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(2)
 	if err := db.PingContext(ctx); err != nil {
 		t.Fatal(err)
@@ -167,7 +167,7 @@ func TestLiveMySQLConfiguredLockNamespaceAvoidsAnApplicationLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close()
+	defer func() { _ = admin.Close() }()
 	database := fmt.Sprintf("hg_lock_go_%d", os.Getpid())
 	var exists int
 	if err := admin.QueryRowContext(ctx, `
@@ -190,7 +190,7 @@ SELECT count(*) FROM information_schema.schemata WHERE schema_name = ?`, databas
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer applicationConn.Close()
+	defer func() { _ = applicationConn.Close() }()
 	releaseAll := func() {
 		var released int
 		if err := applicationConn.QueryRowContext(ctx, "SELECT RELEASE_ALL_LOCKS()").Scan(&released); err != nil {
@@ -225,7 +225,7 @@ SELECT count(*) FROM information_schema.schemata WHERE schema_name = ?`, databas
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(2)
 	if err := db.PingContext(ctx); err != nil {
 		t.Fatal(err)

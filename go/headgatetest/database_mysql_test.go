@@ -50,7 +50,11 @@ func TestMySQLTestDatabasesMigrateIsolateParallelTestsAndCleanup(t *testing.T) {
 		_ = leftDB.Close()
 		t.Fatal(err)
 	}
-	defer rightDB.Close()
+	defer func() {
+		if err := rightDB.Close(); err != nil {
+			t.Errorf("close right database: %v", err)
+		}
+	}()
 	var leftInstalled, rightInstalled int
 	const installedSQL = `
 		SELECT count(*) FROM information_schema.tables

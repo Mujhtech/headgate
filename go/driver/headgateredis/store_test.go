@@ -106,7 +106,7 @@ func TestEnqueueClassifiesAnUnreachableRedisWithoutMaskingInputErrors(t *testing
 	if err != nil {
 		t.Fatalf("construct lazy client: %v", err)
 	}
-	defer store.rdb.Close()
+	defer func() { _ = store.rdb.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 

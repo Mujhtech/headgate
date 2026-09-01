@@ -21,7 +21,7 @@ func TestLivePostgresMigrationLifecycleAndDriftRejection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close(ctx)
+	defer func() { _ = admin.Close(ctx) }()
 	schema := fmt.Sprintf("hg_migrate_go_%d", os.Getpid())
 	var exists int
 	if err := admin.QueryRow(ctx, `
@@ -44,7 +44,7 @@ SELECT count(*) FROM information_schema.schemata WHERE schema_name = $1`, schema
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 	if _, err := conn.Exec(ctx, "SET search_path TO "+schema); err != nil {
 		t.Fatal(err)
 	}

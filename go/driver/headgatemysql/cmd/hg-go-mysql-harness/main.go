@@ -78,10 +78,11 @@ func run() error {
 				payload = []byte(p)
 			}
 			fp := m["fp"]
-			if fp == "auto" {
+			switch fp {
+			case "auto":
 				// content fingerprinting client-side derivation — the cross-language parity check.
 				fp = headgate.Fingerprint(kind, payload)
-			} else if fp == "" {
+			case "":
 				fp = "fp"
 			}
 			e := headgate.Envelope{

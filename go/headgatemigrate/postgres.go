@@ -58,7 +58,7 @@ func postgresNamespace(
 	}
 	if !exists {
 		return postgressql.Namespace{}, fmt.Errorf(
-			"Postgres schema %q does not exist; create it before migrating", name,
+			"postgres schema %q does not exist; create it before migrating", name,
 		)
 	}
 	return namespace, nil

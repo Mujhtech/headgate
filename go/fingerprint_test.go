@@ -33,7 +33,7 @@ func TestEffectiveUniqueKeyPreservesExplicitEmptyKey(t *testing.T) {
 		t.Fatalf("nil unique key must disable uniqueness, got %x", got)
 	}
 	got := EffectiveUniqueKey(Envelope{Kind: "k", UniqueKey: []byte{}})
-	if got == nil || len(got) == 0 {
+	if len(got) == 0 {
 		t.Fatalf("explicit empty unique key must retain a scoped key, got %x", got)
 	}
 	global := EffectiveUniqueKey(Envelope{Kind: "k", UniqueKey: []byte{}, UniqueExcludeKind: true})

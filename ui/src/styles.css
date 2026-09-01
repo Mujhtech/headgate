@@ -126,6 +126,15 @@ select:focus-visible {
   background: transparent;
 }
 
+.console-scrollbar {
+  scrollbar-color: color-mix(in oklab, var(--foreground) 30%, transparent)
+    transparent;
+}
+
+.console-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 @keyframes lifecycle-fill {
   from {
     transform: scaleY(0);

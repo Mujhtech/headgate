@@ -294,7 +294,7 @@ export function ConsoleLayout() {
       </a>
       <SidebarProvider>
         <AppSidebar />
-        <SidebarInset>
+        <SidebarInset className="console-scrollbar">
           <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-3 border-b bg-background/95 px-4 backdrop-blur">
             <SidebarTrigger aria-label="Toggle navigation" />
             <p className="min-w-0 flex-1 truncate font-medium text-sm">

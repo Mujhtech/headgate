@@ -7,12 +7,12 @@
 //! mutation-diff discipline).
 
 use headgate_core::{
-    AdmissionExplain, BlockedBy, BulkRequest, Checkpoint, CheckpointInspect,
-    ConcurrencyLimitConfig, HistoryBucket, Inspect, JobFilter, JobOutput, JobPage, JobProgress,
-    JobResult, JobSummary, MissedPolicy, OperationStatus, OutputInspect, PartitionState,
-    ProgressInspect, QuarantineEntry, QueueStats, QuietGroupMetrics, RateClassConfig,
-    RateClassState, ResultInspect, SCHEDULE_EVENT_LIMIT, SaturationStrategy, Schedule,
-    ScheduleEvent, ScheduleEventOutcome, StateCounts, StoreError, WorkerMeta, noisy_partition_keys,
+    AdmissionExplain, BulkRequest, Checkpoint, CheckpointInspect, ConcurrencyLimitConfig,
+    HistoryBucket, Inspect, JobFilter, JobOutput, JobPage, JobProgress, JobResult, JobSummary,
+    MissedPolicy, OperationStatus, OutputInspect, PartitionState, ProgressInspect, QuarantineEntry,
+    QueueStats, QuietGroupMetrics, RateClassConfig, RateClassState, ResultInspect,
+    SCHEDULE_EVENT_LIMIT, SaturationStrategy, Schedule, ScheduleEvent, ScheduleEventOutcome,
+    StateCounts, StoreError, WorkerMeta, noisy_partition_keys,
 };
 use mysql_async::prelude::*;
 use mysql_async::{Params, Row, TxOpts, Value};
@@ -20,11 +20,13 @@ use mysql_async::{Params, Row, TxOpts, Value};
 use crate::{MysqlStore, NOW_MS, decode_headers, map_err};
 
 /// The most rows any counting query may touch. Past this, counts are approximate.
-const SAMPLE_LIMIT: i64 = 50_000;
+use headgate_shared::inspection::{
+    MAX_PAGE, MEMORY_SAMPLE_LIMIT, POSITION_LIMIT,
+    QUIET_PARTITION_LIMIT as SHARED_QUIET_PARTITION_LIMIT, SAMPLE_LIMIT,
+};
+
+const QUIET_PARTITION_LIMIT: usize = SHARED_QUIET_PARTITION_LIMIT as usize;
 /// Queue-position lookups cap here; "position >= 1000" is answer enough.
-const POSITION_LIMIT: i64 = 1_000;
-const QUIET_PARTITION_LIMIT: usize = 1_000;
-const MAX_PAGE: u32 = 200;
 
 const JOB_COLS: &str = "j.ulid, j.kind, j.queue, CAST(j.state AS CHAR) AS state_text, \
      j.schema_version, j.priority, j.attempt, j.crash_attempt, j.max_attempts, \
@@ -234,7 +236,7 @@ impl Inspect for MysqlStore {
                            WHERE bucket_ms >= {NOW_MS} - 3600000
                      UNION SELECT DISTINCT queue FROM
                            (SELECT queue FROM headgate_job LIMIT ?) s
-                     ORDER BY 1"
+                     ORDER BY 1 LIMIT 10000"
                 ),
                 (SAMPLE_LIMIT,),
             )
@@ -312,11 +314,7 @@ impl Inspect for MysqlStore {
             let unfinished_jobs = entered.saturating_sub(exited);
             let backlog = unfinished_jobs.min(i64::MAX as u64) as i64;
             // backlog metrics time-to-drain: null when arrival >= drain — the alert condition.
-            let ttd = if drain > arrival && drain > 0.0 {
-                Some(((backlog as f64) / (drain - arrival) * 1000.0) as i64)
-            } else {
-                None
-            };
+            let ttd = headgate_core::time_to_drain_ms(backlog, arrival, drain);
             let cutoff = now_ms / 60000 * 60000 - 60000;
             let mut part_rows: Vec<(String, i64, i64, i64, Option<i64>)> = c
                 .exec(
@@ -407,12 +405,12 @@ impl Inspect for MysqlStore {
             let quiet_groups = QuietGroupMetrics {
                 arrival_rate: quiet_arrival,
                 drain_rate: quiet_drain,
-                time_to_drain_ms: if quiet_drain > quiet_arrival && quiet_drain > 0.0 {
-                    Some((quiet_backlog as f64 / (quiet_drain - quiet_arrival) * 1000.0) as i64)
-                } else {
-                    None
-                },
-                oldest_available_ms: quiet_oldest_at.map(|at| (now_ms - at).max(0)),
+                time_to_drain_ms: headgate_core::time_to_drain_ms(
+                    quiet_backlog,
+                    quiet_arrival,
+                    quiet_drain,
+                ),
+                oldest_available_ms: quiet_oldest_at.map(|at| headgate_core::age_ms(now_ms, at)),
                 noisy_partitions: noisy.len() as u32,
                 approximate: part_approx || quiet_backlog >= SAMPLE_LIMIT,
             };
@@ -427,7 +425,7 @@ impl Inspect for MysqlStore {
                 arrival_rate: arrival,
                 drain_rate: drain,
                 time_to_drain_ms: ttd,
-                oldest_available_ms: oldest_at.map(|at| (now_ms - at).max(0)),
+                oldest_available_ms: oldest_at.map(|at| headgate_core::age_ms(now_ms, at)),
                 quiet_groups,
                 paused: queue_cfg.map(|(paused, _)| paused).unwrap_or(false),
                 memory_bytes,
@@ -528,14 +526,7 @@ impl Inspect for MysqlStore {
     }
 
     async fn upsert_rate_class(&self, cfg: &RateClassConfig) -> Result<(), StoreError> {
-        if cfg.window_ms < 1 {
-            return Err(StoreError::Invalid("window_ms must be >= 1".into()));
-        }
-        if cfg.limit < 0 || cfg.burst < 1 {
-            return Err(StoreError::Invalid(
-                "limit must be >= 0 and burst >= 1".into(),
-            ));
-        }
+        headgate_core::validate_rate_class_config(cfg)?;
         // Invariant 16 kill switch: paused = limit 0 AND tokens 0, refill adds nothing.
         let (limit, tokens_insert) = if cfg.paused {
             (0i64, 0i64)
@@ -606,14 +597,7 @@ impl Inspect for MysqlStore {
         &self,
         cfg: &ConcurrencyLimitConfig,
     ) -> Result<(), StoreError> {
-        if cfg.name.is_empty() || cfg.queue.is_empty() {
-            return Err(StoreError::Invalid(
-                "name and queue must not be empty".into(),
-            ));
-        }
-        if cfg.max_concurrent == 0 {
-            return Err(StoreError::Invalid("max_concurrent must be >= 1".into()));
-        }
+        headgate_core::validate_concurrency_limit(cfg)?;
         let mut c = self.raw_conn().await?;
         c.exec_drop(
             "INSERT INTO headgate_concurrency_limit
@@ -654,7 +638,7 @@ impl Inspect for MysqlStore {
                        (SELECT partition_key FROM
                           (SELECT DISTINCT partition_key FROM headgate_job
                            WHERE queue = ? AND state = 'available' LIMIT 1000) t)
-                 ORDER BY 1",
+                 ORDER BY 1 LIMIT 10000",
                 (queue, SAMPLE_LIMIT, queue, queue, queue),
             )
             .await
@@ -1166,11 +1150,7 @@ impl Inspect for MysqlStore {
         before_event_id: Option<u64>,
         limit: u32,
     ) -> Result<Vec<ScheduleEvent>, StoreError> {
-        if limit == 0 || limit > SCHEDULE_EVENT_LIMIT {
-            return Err(StoreError::Invalid(
-                "schedule event limit must be between 1 and 100".into(),
-            ));
-        }
+        headgate_core::validate_schedule_event_limit(limit)?;
         let mut c = self.raw_conn().await?;
         let rows: Vec<Row> = c
             .exec(
@@ -1306,7 +1286,7 @@ impl Inspect for MysqlStore {
         command: Option<&str>,
     ) -> Result<(), StoreError> {
         if let Some(cmd) = command {
-            if !matches!(cmd, "quiet" | "resume" | "restart" | "terminate" | "resign") {
+            if !headgate_core::valid_worker_command(cmd) {
                 return Err(StoreError::Invalid(
                     "command must be quiet, resume, restart, terminate, or resign".into(),
                 ));
@@ -1343,19 +1323,14 @@ impl Inspect for MysqlStore {
     }
 
     async fn create_operation(&self, req: &BulkRequest) -> Result<(), StoreError> {
-        if req.queue.is_none()
-            && req.state.is_none()
-            && req.kind.is_none()
-            && req.partition_key.is_none()
-            && req.older_than_ms.is_none()
-        {
+        if !req.has_selector() {
             // control API contract no accidental delete-everything.
             return Err(StoreError::Invalid("empty selector is rejected".into()));
         }
         let allowed = action_states(&req.action)
             .ok_or_else(|| StoreError::Invalid(format!("unknown action `{}`", req.action)))?;
         let mut c = self.raw_conn().await?;
-        let (where_sql, params) = selector_where(req, allowed);
+        let (where_sql, params) = selector_where(req, &allowed);
         let mut est_params = params.clone();
         est_params.push(Value::from(SAMPLE_LIMIT));
         let estimated: i64 = c
@@ -1567,7 +1542,7 @@ impl Inspect for MysqlStore {
     }
 
     async fn sample_queue_memory(&self, limit: u32) -> Result<u32, StoreError> {
-        let limit = limit.clamp(1, 1_000);
+        let limit = limit.clamp(1, MEMORY_SAMPLE_LIMIT);
         let mut c = self.raw_conn().await?;
         let queues: Vec<String> = c
             .exec(
@@ -1677,18 +1652,11 @@ impl CheckpointInspect for MysqlStore {
 }
 
 /// Which states each bulk action may touch — the transition table's rows, nothing more.
-fn action_states(action: &str) -> Option<&'static str> {
-    match action {
-        "retry" => Some("('archived')"),
-        "cancel" => Some("('scheduled', 'available', 'running')"),
-        "delete" => Some(
-            "('scheduled', 'available', 'retryable', 'completed', 'archived', 'cancelled', 'quarantined', 'undecodable')",
-        ),
-        _ => None,
-    }
+fn action_states(action: &str) -> Option<String> {
+    headgate_core::bulk_action_states(action).map(|states| format!("('{}')", states.join("', '")))
 }
 
-fn selector_where(req: &BulkRequest, allowed_states: &'static str) -> (String, Vec<Value>) {
+fn selector_where(req: &BulkRequest, allowed_states: &str) -> (String, Vec<Value>) {
     let mut clauses = vec![format!("j.state IN {allowed_states}")];
     let mut params: Vec<Value> = Vec::new();
     if let Some(q) = &req.queue {
@@ -1752,7 +1720,7 @@ impl MysqlStore {
     ) -> Result<u64, StoreError> {
         let allowed = action_states(&req.action)
             .ok_or_else(|| StoreError::Invalid(format!("unknown action `{}`", req.action)))?;
-        let (where_sql, params) = selector_where(req, allowed);
+        let (where_sql, params) = selector_where(req, &allowed);
         // MySQL cannot reference the updated table in its own subquery; the JOIN-on-
         // derived-picked-ids form sidesteps ER_UPDATE_TABLE_USED.
         let pick =
@@ -1841,156 +1809,32 @@ impl MysqlStore {
 /// The gate's own evaluation order (admission policy), replayed read-only — identical to the
 /// Postgres assembly, because the two SQL gates share their clause order.
 fn assemble_explain(row: &Row) -> AdmissionExplain {
-    let s = |n: &str| -> String {
-        row.get::<Option<String>, _>(n)
+    headgate_core::evaluate_admission(&headgate_shared::AdmissionFacts {
+        state: row.get("state").unwrap_or_default(),
+        now_ms: row.get("now_ms").unwrap_or_default(),
+        scheduled_at_ms: row.get("scheduled_at_ms").unwrap_or_default(),
+        queue_paused: row.get("paused").unwrap_or_default(),
+        quarantined: row.get("quarantined").unwrap_or_default(),
+        fingerprint: row.get("fingerprint").unwrap_or_default(),
+        rate_class: row.get("rate_class").unwrap_or_default(),
+        weight: row.get("weight").unwrap_or_default(),
+        tokens_available: row.get::<Option<i64>, _>("avail").flatten(),
+        tokens_ahead: row.get("cost_ahead_in_class").unwrap_or_default(),
+        limit_per_window: row
+            .get::<Option<i64>, _>("limit_per_window")
             .flatten()
-            .unwrap_or_default()
-    };
-    let i = |n: &str| -> i64 { row.get::<Option<i64>, _>(n).flatten().unwrap_or(0) };
-    let b = |n: &str| -> bool { row.get::<Option<bool>, _>(n).flatten().unwrap_or(false) };
-    let state = s("state");
-    let now_ms = i("now_ms");
-    let mut detail: Vec<(String, String)> = vec![("state".into(), state.clone())];
-
-    match state.as_str() {
-        "running" => {
-            return AdmissionExplain {
-                state,
-                admissible: true,
-                blocked_by: None,
-                detail,
-                estimated_admission_ms: Some(0),
-            };
-        }
-        "scheduled" | "retryable" => {
-            let at = i("scheduled_at_ms");
-            detail.push(("scheduled_at_ms".into(), at.to_string()));
-            return AdmissionExplain {
-                state,
-                admissible: false,
-                blocked_by: Some(BlockedBy::Schedule),
-                detail,
-                estimated_admission_ms: Some((at - now_ms).max(0)),
-            };
-        }
-        "quarantined" => {
-            return AdmissionExplain {
-                state,
-                admissible: false,
-                blocked_by: Some(BlockedBy::Quarantine),
-                detail,
-                estimated_admission_ms: None, // will not clear on its own
-            };
-        }
-        "available" => {}
-        _terminal => {
-            return AdmissionExplain {
-                state,
-                admissible: false,
-                blocked_by: None,
-                detail,
-                estimated_admission_ms: None,
-            };
-        }
-    }
-
-    if b("paused") {
-        return AdmissionExplain {
-            state,
-            admissible: false,
-            blocked_by: Some(BlockedBy::QueuePaused),
-            detail,
-            estimated_admission_ms: None,
-        };
-    }
-    let scheduled_at = i("scheduled_at_ms");
-    if scheduled_at > now_ms {
-        detail.push(("scheduled_at_ms".into(), scheduled_at.to_string()));
-        return AdmissionExplain {
-            state,
-            admissible: false,
-            blocked_by: Some(BlockedBy::Schedule),
-            detail,
-            estimated_admission_ms: Some(scheduled_at - now_ms),
-        };
-    }
-    if b("quarantined") {
-        detail.push(("fingerprint".into(), s("fingerprint")));
-        return AdmissionExplain {
-            state,
-            admissible: false,
-            blocked_by: Some(BlockedBy::Quarantine),
-            detail,
-            estimated_admission_ms: None,
-        };
-    }
-    let rate_class = s("rate_class");
-    if !rate_class.is_empty() {
-        let avail: Option<i64> = row.get::<Option<i64>, _>("avail").flatten();
-        let ahead = i("cost_ahead_in_class");
-        let weight = i("weight").max(1);
-        let required = ahead + weight;
-        detail.push(("rate_class".into(), rate_class));
-        detail.push(("weight".into(), weight.to_string()));
-        detail.push(("tokens_ahead_in_class".into(), ahead.to_string()));
-        match avail {
-            // an unconfigured class is UNLIMITED, not blocking — eligible.sql's
-            // `b.name IS NULL OR ...` fail-open arm. Still reported, because "you named a
-            // rate class that does not exist" is worth seeing even when nothing stalls.
-            None => {
-                detail.push((
-                    "tokens_available".into(),
-                    "unlimited (no such rate class)".into(),
-                ));
-            }
-            Some(avail) => {
-                detail.push(("tokens_available".into(), avail.to_string()));
-                if avail < required {
-                    let limit = i("limit_per_window");
-                    let window = i("window_ms");
-                    let est = if limit > 0 {
-                        Some(((required - avail).max(1)) * window / limit)
-                    } else {
-                        None // paused class: will not clear on its own
-                    };
-                    return AdmissionExplain {
-                        state,
-                        admissible: false,
-                        blocked_by: Some(BlockedBy::RateClass),
-                        detail,
-                        estimated_admission_ms: est,
-                    };
-                }
-            }
-        }
-    }
-    if let Some(max) = row.get::<Option<i64>, _>("max_concurrent").flatten() {
-        let inflight = i("inflight");
-        let strategy = s("on_saturated");
-        detail.push(("max_concurrent".into(), max.to_string()));
-        detail.push(("inflight".into(), inflight.to_string()));
-        detail.push(("on_saturated".into(), strategy.clone()));
-        if inflight >= max && strategy != SaturationStrategy::CancelRunning.as_str() {
-            return AdmissionExplain {
-                state,
-                admissible: false,
-                blocked_by: Some(BlockedBy::ConcurrencyLimit),
-                detail,
-                estimated_admission_ms: None, // clears when something finishes
-            };
-        }
-    }
-    // Fairness never blocks outright (invariant 11); position says when.
-    detail.push((
-        "position_in_partition".into(),
-        i("ahead_in_partition").to_string(),
-    ));
-    detail.push(("partition_deficit".into(), i("deficit").to_string()));
-    AdmissionExplain {
-        state,
-        admissible: true,
-        blocked_by: None,
-        detail,
-        estimated_admission_ms: Some(0),
-    }
+            .unwrap_or(0),
+        window_ms: row
+            .get::<Option<i64>, _>("window_ms")
+            .flatten()
+            .unwrap_or(0),
+        max_concurrent: row.get::<Option<i64>, _>("max_concurrent").flatten(),
+        inflight: row.get("inflight").unwrap_or_default(),
+        saturation: row
+            .get::<Option<String>, _>("on_saturated")
+            .flatten()
+            .unwrap_or_default(),
+        position: row.get("ahead_in_partition").unwrap_or_default(),
+        deficit: row.get("deficit").unwrap_or_default(),
+    })
 }

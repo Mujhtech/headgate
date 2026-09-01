@@ -18,6 +18,7 @@ readonly go_module_dirs=(
   go/headgateworkflow
 )
 readonly rust_crates=(
+  headgate-shared
   headgate-core
   headgate-macros
   headgate-proto

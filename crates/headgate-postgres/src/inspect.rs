@@ -5,23 +5,22 @@
 //! for seconds in production, and monitoring caused that outage.
 
 use headgate_core::{
-    AdmissionExplain, BlockedBy, BulkRequest, Checkpoint, CheckpointInspect,
-    ConcurrencyLimitConfig, HistoryBucket, Inspect, JobFilter, JobOutput, JobPage, JobProgress,
-    JobResult, JobSummary, MissedPolicy, OperationStatus, OutputInspect, PartitionState,
-    ProgressInspect, QuarantineEntry, QueueStats, QuietGroupMetrics, RateClassConfig,
-    RateClassState, ResultInspect, SCHEDULE_EVENT_LIMIT, SaturationStrategy, Schedule,
-    ScheduleEvent, ScheduleEventOutcome, StateCounts, StoreError, WorkerMeta, noisy_partition_keys,
+    AdmissionExplain, BulkRequest, Checkpoint, CheckpointInspect, ConcurrencyLimitConfig,
+    HistoryBucket, Inspect, JobFilter, JobOutput, JobPage, JobProgress, JobResult, JobSummary,
+    MissedPolicy, OperationStatus, OutputInspect, PartitionState, ProgressInspect, QuarantineEntry,
+    QueueStats, QuietGroupMetrics, RateClassConfig, RateClassState, ResultInspect,
+    SCHEDULE_EVENT_LIMIT, SaturationStrategy, Schedule, ScheduleEvent, ScheduleEventOutcome,
+    StateCounts, StoreError, WorkerMeta, noisy_partition_keys,
 };
 use tokio_postgres::types::ToSql;
 
 use crate::{NOW_MS, PgStore, decode_headers, map_pg_err};
 
 /// The most rows any counting query may touch. Past this, counts are approximate.
-const SAMPLE_LIMIT: i64 = 50_000;
+use headgate_shared::inspection::{
+    MAX_PAGE, MEMORY_SAMPLE_LIMIT, POSITION_LIMIT, QUIET_PARTITION_LIMIT, SAMPLE_LIMIT,
+};
 /// Queue-position lookups cap here; "position >= 1000" is answer enough.
-const POSITION_LIMIT: i64 = 1_000;
-const QUIET_PARTITION_LIMIT: i64 = 1_000;
-pub(crate) const MAX_PAGE: u32 = 200;
 
 fn job_from_row(row: &tokio_postgres::Row, include_payload: bool) -> JobSummary {
     JobSummary {
@@ -236,7 +235,7 @@ impl Inspect for PgStore {
             LEFT JOIN headgate_enqueue_counter ext
               ON ext.queue = n.queue AND ext.counter_kind = 'exited'
             LEFT JOIN headgate_queue_sample samp ON samp.queue = n.queue
-            ORDER BY n.queue
+            ORDER BY n.queue LIMIT 10000
             "#
         );
         let rows = c.query(&sql, &[&SAMPLE_LIMIT]).await.map_err(map_pg_err)?;
@@ -248,7 +247,7 @@ impl Inspect for PgStore {
             let now_ms: i64 = row.get("now_ms");
             let oldest_available_ms = row
                 .get::<_, Option<i64>>("oldest_available_at_ms")
-                .map(|at| (now_ms - at).max(0));
+                .map(|at| headgate_core::age_ms(now_ms, at));
             let states: Vec<(String, i64)> =
                 serde_json::from_str::<serde_json::Value>(row.get("states"))
                     .ok()
@@ -266,11 +265,7 @@ impl Inspect for PgStore {
             let unfinished_jobs = entered.saturating_sub(exited).max(0) as u64;
             let backlog = unfinished_jobs.min(i64::MAX as u64) as i64;
             // backlog metrics time-to-drain: null when arrival >= drain — the alert condition.
-            let ttd = if drain > arrival && drain > 0.0 {
-                Some(((backlog as f64) / (drain - arrival) * 1000.0) as i64)
-            } else {
-                None
-            };
+            let ttd = headgate_core::time_to_drain_ms(backlog, arrival, drain);
             // backlog metrics quiet-group metrics. The partition list and backlog sample are both
             // hard bounded; each oldest lookup is a one-row probe on the per-partition
             // partial index. A noisy tenant's depth therefore cannot become admin work.
@@ -358,16 +353,13 @@ impl Inspect for PgStore {
             };
             let (quiet_arrival, quiet_drain) =
                 (quiet_arrived as f64 / 60.0, quiet_completed as f64 / 60.0);
-            let quiet_ttd = if quiet_drain > quiet_arrival && quiet_drain > 0.0 {
-                Some((quiet_backlog as f64 / (quiet_drain - quiet_arrival) * 1000.0) as i64)
-            } else {
-                None
-            };
+            let quiet_ttd =
+                headgate_core::time_to_drain_ms(quiet_backlog, quiet_arrival, quiet_drain);
             let quiet_groups = QuietGroupMetrics {
                 arrival_rate: quiet_arrival,
                 drain_rate: quiet_drain,
                 time_to_drain_ms: quiet_ttd,
-                oldest_available_ms: quiet_oldest_at.map(|at| (now_ms - at).max(0)),
+                oldest_available_ms: quiet_oldest_at.map(|at| headgate_core::age_ms(now_ms, at)),
                 noisy_partitions: noisy.len() as u32,
                 approximate: part_approx || quiet_backlog >= SAMPLE_LIMIT,
             };
@@ -488,16 +480,7 @@ impl Inspect for PgStore {
     }
 
     async fn upsert_rate_class(&self, cfg: &RateClassConfig) -> Result<(), StoreError> {
-        if cfg.window_ms < 1 {
-            // boundary validation a window that rounds to zero is an error naming the minimum — and it
-            // would divide by zero in the refill.
-            return Err(StoreError::Invalid("window_ms must be >= 1".into()));
-        }
-        if cfg.limit < 0 || cfg.burst < 1 {
-            return Err(StoreError::Invalid(
-                "limit must be >= 0 and burst >= 1".into(),
-            ));
-        }
+        headgate_core::validate_rate_class_config(cfg)?;
         let c = self.client().await?;
         // Invariant 16, and the `paused` kill switch: paused = limit 0 AND tokens 0, so
         // refill adds nothing and rank_class <= 0 never admits. Unpausing restores the
@@ -564,16 +547,7 @@ impl Inspect for PgStore {
         &self,
         cfg: &ConcurrencyLimitConfig,
     ) -> Result<(), StoreError> {
-        if cfg.name.is_empty() || cfg.queue.is_empty() {
-            return Err(StoreError::Invalid(
-                "name and queue must not be empty".into(),
-            ));
-        }
-        if cfg.max_concurrent == 0 {
-            return Err(StoreError::Invalid("max_concurrent must be >= 1".into()));
-        }
-        let max_concurrent = i64::try_from(cfg.max_concurrent)
-            .map_err(|_| StoreError::Invalid("max_concurrent is too large".into()))?;
+        let max_concurrent = headgate_core::validate_concurrency_limit(cfg)?;
         let c = self.client().await?;
         c.execute(
             "INSERT INTO headgate_concurrency_limit
@@ -613,7 +587,7 @@ impl Inspect for PgStore {
                  FULL OUTER JOIN headgate_partition_deficit d
                    ON d.queue = $1 AND d.partition_key = w.partition_key
                  WHERE d.queue IS NULL OR d.queue = $1
-                 ORDER BY 1",
+                 ORDER BY 1 LIMIT 10000",
                 &[&queue, &SAMPLE_LIMIT],
             )
             .await
@@ -1110,11 +1084,7 @@ impl Inspect for PgStore {
         before_event_id: Option<u64>,
         limit: u32,
     ) -> Result<Vec<ScheduleEvent>, StoreError> {
-        if limit == 0 || limit > SCHEDULE_EVENT_LIMIT {
-            return Err(StoreError::Invalid(
-                "schedule event limit must be between 1 and 100".into(),
-            ));
-        }
+        headgate_core::validate_schedule_event_limit(limit)?;
         let c = self.client().await?;
         let rows = c
             .query(
@@ -1202,7 +1172,7 @@ impl Inspect for PgStore {
         command: Option<&str>,
     ) -> Result<(), StoreError> {
         if let Some(cmd) = command {
-            if !matches!(cmd, "quiet" | "resume" | "restart" | "terminate" | "resign") {
+            if !headgate_core::valid_worker_command(cmd) {
                 return Err(StoreError::Invalid(
                     "command must be quiet, resume, restart, terminate, or resign".into(),
                 ));
@@ -1271,12 +1241,7 @@ impl Inspect for PgStore {
     }
 
     async fn create_operation(&self, req: &BulkRequest) -> Result<(), StoreError> {
-        if req.queue.is_none()
-            && req.state.is_none()
-            && req.kind.is_none()
-            && req.partition_key.is_none()
-            && req.older_than_ms.is_none()
-        {
+        if !req.has_selector() {
             // control API contract no accidental delete-everything.
             return Err(StoreError::Invalid("empty selector is rejected".into()));
         }
@@ -1284,7 +1249,7 @@ impl Inspect for PgStore {
             .ok_or_else(|| StoreError::Invalid(format!("unknown action `{}`", req.action)))?;
         let c = self.client().await?;
         // Bounded estimate of the affected set — for dry runs it IS the answer.
-        let (where_sql, params) = selector_where(req, allowed, 2);
+        let (where_sql, params) = selector_where(req, &allowed, 2);
         let est_sql = format!(
             "SELECT count(*)::bigint FROM (SELECT 1 FROM headgate_job j WHERE {where_sql} LIMIT $1) t"
         );
@@ -1499,7 +1464,7 @@ impl Inspect for PgStore {
     }
 
     async fn sample_queue_memory(&self, limit: u32) -> Result<u32, StoreError> {
-        let limit = limit.clamp(1, 1_000) as i64;
+        let limit = limit.clamp(1, MEMORY_SAMPLE_LIMIT) as i64;
         let c = self.client().await?;
         let rows = c.query(
             &format!(
@@ -1628,21 +1593,14 @@ fn schedule_from_row(r: &tokio_postgres::Row) -> Schedule {
 }
 
 /// Which states each bulk action may touch — the transition table's rows, nothing more.
-fn action_states(action: &str) -> Option<&'static str> {
-    match action {
-        "retry" => Some("('archived')"),
-        "cancel" => Some("('scheduled', 'available', 'running')"),
-        "delete" => Some(
-            "('scheduled', 'available', 'retryable', 'completed', 'archived', 'cancelled', 'quarantined', 'undecodable')",
-        ),
-        _ => None,
-    }
+fn action_states(action: &str) -> Option<String> {
+    headgate_core::bulk_action_states(action).map(|states| format!("('{}')", states.join("', '")))
 }
 
 /// Build the selector WHERE clause. Owned boxed params so callers can prepend their own.
 fn selector_where(
     req: &BulkRequest,
-    allowed_states: &'static str,
+    allowed_states: &str,
     first_param: usize,
 ) -> (String, Vec<Box<dyn ToSql + Sync + Send>>) {
     let mut clauses = vec![format!("j.state IN {allowed_states}")];
@@ -1708,7 +1666,7 @@ impl PgStore {
     ) -> Result<u64, StoreError> {
         let allowed = action_states(&req.action)
             .ok_or_else(|| StoreError::Invalid(format!("unknown action `{}`", req.action)))?;
-        let (where_sql, params) = selector_where(req, allowed, 2);
+        let (where_sql, params) = selector_where(req, &allowed, 2);
         let pick = format!(
             "SELECT j.id FROM headgate_job j WHERE {where_sql} ORDER BY j.id LIMIT $1 FOR UPDATE SKIP LOCKED"
         );
@@ -1773,156 +1731,25 @@ impl PgStore {
 
 /// The gate's own evaluation order (admission policy), replayed read-only for one job.
 fn assemble_explain(row: &tokio_postgres::Row) -> AdmissionExplain {
-    let state: String = row.get("state");
-    let now_ms: i64 = row.get("now_ms");
-    let mut detail: Vec<(String, String)> = vec![("state".into(), state.clone())];
-
-    match state.as_str() {
-        "running" => {
-            return AdmissionExplain {
-                state,
-                admissible: true,
-                blocked_by: None,
-                detail,
-                estimated_admission_ms: Some(0),
-            };
-        }
-        "scheduled" | "retryable" => {
-            let at: i64 = row.get("scheduled_at_ms");
-            detail.push(("scheduled_at_ms".into(), at.to_string()));
-            return AdmissionExplain {
-                state,
-                admissible: false,
-                blocked_by: Some(BlockedBy::Schedule),
-                detail,
-                estimated_admission_ms: Some((at - now_ms).max(0)),
-            };
-        }
-        "quarantined" => {
-            return AdmissionExplain {
-                state,
-                admissible: false,
-                blocked_by: Some(BlockedBy::Quarantine),
-                detail,
-                estimated_admission_ms: None, // will not clear on its own
-            };
-        }
-        "available" => {}
-        _terminal => {
-            return AdmissionExplain {
-                state,
-                admissible: false,
-                blocked_by: None,
-                detail,
-                estimated_admission_ms: None,
-            };
-        }
-    }
-
-    // Available: walk the gate's clauses in the gate's order.
-    if row.get::<_, bool>("paused") {
-        return AdmissionExplain {
-            state,
-            admissible: false,
-            blocked_by: Some(BlockedBy::QueuePaused),
-            detail,
-            estimated_admission_ms: None,
-        };
-    }
-    let scheduled_at: i64 = row.get("scheduled_at_ms");
-    if scheduled_at > now_ms {
-        detail.push(("scheduled_at_ms".into(), scheduled_at.to_string()));
-        return AdmissionExplain {
-            state,
-            admissible: false,
-            blocked_by: Some(BlockedBy::Schedule),
-            detail,
-            estimated_admission_ms: Some(scheduled_at - now_ms),
-        };
-    }
-    if row.get::<_, bool>("quarantined") {
-        detail.push(("fingerprint".into(), row.get::<_, String>("fingerprint")));
-        return AdmissionExplain {
-            state,
-            admissible: false,
-            blocked_by: Some(BlockedBy::Quarantine),
-            detail,
-            estimated_admission_ms: None,
-        };
-    }
-    let rate_class: String = row.get("rate_class");
-    if !rate_class.is_empty() {
-        let avail: Option<i64> = row.get("avail");
-        let ahead: i64 = row.get("cost_ahead_in_class");
-        let weight: i64 = row.get("weight");
-        let required = ahead + weight;
-        detail.push(("rate_class".into(), rate_class));
-        detail.push(("weight".into(), weight.to_string()));
-        detail.push(("tokens_ahead_in_class".into(), ahead.to_string()));
-        match avail {
-            // an unconfigured class is UNLIMITED, not blocking — the gate's
-            // `b.name IS NULL OR ...` fail-open arm. Still reported, because "you named a
-            // rate class that does not exist" is worth seeing even when nothing stalls.
-            None => {
-                detail.push((
-                    "tokens_available".into(),
-                    "unlimited (no such rate class)".into(),
-                ));
-            }
-            Some(avail) => {
-                detail.push(("tokens_available".into(), avail.to_string()));
-                if avail < required {
-                    let limit: i64 = row.get("limit_per_window");
-                    let window: i64 = row.get("window_ms");
-                    let est = if limit > 0 {
-                        Some(((required - avail).max(1)) * window / limit)
-                    } else {
-                        None // paused class: will not clear on its own
-                    };
-                    return AdmissionExplain {
-                        state,
-                        admissible: false,
-                        blocked_by: Some(BlockedBy::RateClass),
-                        detail,
-                        estimated_admission_ms: est,
-                    };
-                }
-            }
-        }
-    }
-    if let Some(max) = row.get::<_, Option<i64>>("max_concurrent") {
-        let inflight: i64 = row.get("inflight");
-        let strategy: String = row
+    headgate_core::evaluate_admission(&headgate_shared::AdmissionFacts {
+        state: row.get("state"),
+        now_ms: row.get("now_ms"),
+        scheduled_at_ms: row.get("scheduled_at_ms"),
+        queue_paused: row.get("paused"),
+        quarantined: row.get("quarantined"),
+        fingerprint: row.get("fingerprint"),
+        rate_class: row.get("rate_class"),
+        weight: row.get("weight"),
+        tokens_available: row.get("avail"),
+        tokens_ahead: row.get("cost_ahead_in_class"),
+        limit_per_window: row.get::<_, Option<i64>>("limit_per_window").unwrap_or(0),
+        window_ms: row.get::<_, Option<i64>>("window_ms").unwrap_or(0),
+        max_concurrent: row.get("max_concurrent"),
+        inflight: row.get("inflight"),
+        saturation: row
             .get::<_, Option<String>>("on_saturated")
-            .unwrap_or_else(|| "queue".into());
-        detail.push(("max_concurrent".into(), max.to_string()));
-        detail.push(("inflight".into(), inflight.to_string()));
-        detail.push(("on_saturated".into(), strategy.clone()));
-        if inflight >= max && strategy != SaturationStrategy::CancelRunning.as_str() {
-            return AdmissionExplain {
-                state,
-                admissible: false,
-                blocked_by: Some(BlockedBy::ConcurrencyLimit),
-                detail,
-                estimated_admission_ms: None, // clears when something finishes
-            };
-        }
-    }
-    // Fairness never blocks outright — it is work-conserving (invariant 11) — so a job
-    // that passes everything above is admissible; position in its partition says when.
-    detail.push((
-        "position_in_partition".into(),
-        row.get::<_, i64>("ahead_in_partition").to_string(),
-    ));
-    detail.push((
-        "partition_deficit".into(),
-        row.get::<_, i64>("deficit").to_string(),
-    ));
-    AdmissionExplain {
-        state,
-        admissible: true,
-        blocked_by: None,
-        detail,
-        estimated_admission_ms: Some(0),
-    }
+            .unwrap_or_default(),
+        position: row.get("ahead_in_partition"),
+        deficit: row.get("deficit"),
+    })
 }

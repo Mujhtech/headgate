@@ -16,4 +16,12 @@ license.workspace = true
 # sha2 is pure computation used for portable content fingerprints.
 [dependencies]
 async-trait = { workspace = true }
+headgate-shared = { workspace = true }
 sha2 = { workspace = true }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "runtime_hot_paths"
+harness = false

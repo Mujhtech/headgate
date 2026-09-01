@@ -25,6 +25,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 	headgate "github.com/mujhtech/headgate/go"
+	"github.com/mujhtech/headgate/go/headgateshared"
 )
 
 import _ "embed"
@@ -181,68 +182,24 @@ func uniqueHolderSQL(n int) string {
 		 LIMIT 1 FOR UPDATE`
 }
 
-// ---------- checkpoint <-> JSON, same field names as every other adapter ----------
-
 func encodeCheckpoint(cp headgate.Checkpoint) string {
-	m := map[string]any{}
-	if len(cp.CompletedSteps) > 0 {
-		m["completed"] = cp.CompletedSteps
-	}
-	if cp.InProgressStep != "" {
-		m["in_progress"] = cp.InProgressStep
-	}
-	if cp.CursorStep != "" {
-		m["cursor_step"] = cp.CursorStep
-	}
-	if cp.SchemaVersion != 0 {
-		m["version"] = cp.SchemaVersion
-	}
-	if cp.StepSetHash != "" {
-		m["hash"] = cp.StepSetHash
-	}
-	if len(cp.CrashesByStep) > 0 {
-		m["crashes"] = cp.CrashesByStep
-	}
-	b, _ := json.Marshal(m)
-	return string(b)
+	return string(headgateshared.EncodeCheckpoint(cp))
 }
 
 func decodeCheckpoint(raw sql.NullString, cursor []byte) headgate.Checkpoint {
-	cp := headgate.Checkpoint{Cursor: cursor}
 	if !raw.Valid || raw.String == "" {
-		return cp
+		return headgateshared.DecodeCheckpoint(nil, cursor)
 	}
-	var m struct {
-		Completed  []string          `json:"completed"`
-		InProgress string            `json:"in_progress"`
-		CursorStep string            `json:"cursor_step"`
-		Version    uint32            `json:"version"`
-		Hash       string            `json:"hash"`
-		Crashes    map[string]uint32 `json:"crashes"`
-	}
-	if json.Unmarshal([]byte(raw.String), &m) != nil {
-		return cp
-	}
-	cp.CompletedSteps = m.Completed
-	if n := len(m.Completed); n > 0 {
-		cp.LastCompletedStep = m.Completed[n-1]
-	}
-	cp.InProgressStep = m.InProgress
-	cp.CursorStep = m.CursorStep
-	cp.SchemaVersion = m.Version
-	cp.StepSetHash = m.Hash
-	cp.CrashesByStep = m.Crashes
-	return cp
+	return headgateshared.DecodeCheckpoint([]byte(raw.String), cursor)
 }
 
 // ---------- Store ----------
 
 func (s *MysqlStore) Admit(ctx context.Context, req headgate.AdmitRequest) ([]headgate.AdmissionUnit, error) {
-	slices.Sort(req.Queues)
-	req.Queues = slices.Compact(req.Queues)
-	leaseMs := req.Lease.Milliseconds()
-	if leaseMs <= 0 {
-		return nil, errors.New("headgate: lease must be >= 1ms")
+	var err error
+	req, leaseMs, err := headgate.NormalizeAdmitRequest(req)
+	if err != nil {
+		return nil, err
 	}
 	if len(req.Queues) == 0 {
 		return nil, nil
@@ -286,12 +243,12 @@ func (s *MysqlStore) admitTx(ctx context.Context, tx *sql.Tx, req headgate.Admit
 	for rows.Next() {
 		var b bucket
 		if err := rows.Scan(&b.name, &b.avail); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		buckets = append(buckets, b)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -322,11 +279,11 @@ func (s *MysqlStore) admitTx(ctx context.Context, tx *sql.Tx, req headgate.Admit
 		var weight uint32
 		var dispatch uint64
 		if err := rows.Scan(&queue, &weight, &dispatch); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -349,7 +306,7 @@ func (s *MysqlStore) admitTx(ctx context.Context, tx *sql.Tx, req headgate.Admit
 		var queue, strategy string
 		var max uint64
 		if err := rows.Scan(&queue, &max, &strategy); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		if max > uint64(^uint64(0)>>1) {
@@ -358,7 +315,7 @@ func (s *MysqlStore) admitTx(ctx context.Context, tx *sql.Tx, req headgate.Admit
 			limits[queue] = concurrencyLimit{max: int64(max), strategy: strategy}
 		}
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -386,12 +343,12 @@ func (s *MysqlStore) admitTx(ctx context.Context, tx *sql.Tx, req headgate.Admit
 	for rows.Next() {
 		var p part
 		if err := rows.Scan(&p.queue, &p.partition); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		activeParts = append(activeParts, p)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -427,12 +384,12 @@ func (s *MysqlStore) admitTx(ctx context.Context, tx *sql.Tx, req headgate.Admit
 			var p part
 			var n int64
 			if err := rows.Scan(&p.queue, &p.partition, &n); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return nil, err
 			}
 			inflightBefore[p] = n
 		}
-		rows.Close()
+		_ = rows.Close()
 		if err := rows.Err(); err != nil {
 			return nil, err
 		}
@@ -484,7 +441,7 @@ func (s *MysqlStore) admitTx(ctx context.Context, tx *sql.Tx, req headgate.Admit
 			var tag, queue, partition string
 			var id int64
 			if err := rows.Scan(&tag, &id, &queue, &partition); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return nil, err
 			}
 			switch tag {
@@ -498,7 +455,7 @@ func (s *MysqlStore) admitTx(ctx context.Context, tx *sql.Tx, req headgate.Admit
 				})
 			}
 		}
-		rows.Close()
+		_ = rows.Close()
 		if err := rows.Err(); err != nil {
 			return nil, err
 		}
@@ -536,12 +493,12 @@ func (s *MysqlStore) admitTx(ctx context.Context, tx *sql.Tx, req headgate.Admit
 		for rows.Next() {
 			var id int64
 			if err := rows.Scan(&id); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return nil, err
 			}
 			locked = append(locked, id)
 		}
-		rows.Close()
+		_ = rows.Close()
 		if err := rows.Err(); err != nil {
 			return nil, err
 		}
@@ -594,12 +551,12 @@ func (s *MysqlStore) admitTx(ctx context.Context, tx *sql.Tx, req headgate.Admit
 					for rows.Next() {
 						var id int64
 						if err := rows.Scan(&id); err != nil {
-							rows.Close()
+							_ = rows.Close()
 							return nil, err
 						}
 						victims = append(victims, id)
 					}
-					rows.Close()
+					_ = rows.Close()
 					if err := rows.Err(); err != nil {
 						return nil, err
 					}
@@ -628,7 +585,7 @@ func (s *MysqlStore) admitTx(ctx context.Context, tx *sql.Tx, req headgate.Admit
 				for rows.Next() {
 					var id int64
 					if err := rows.Scan(&id); err != nil {
-						rows.Close()
+						_ = rows.Close()
 						return nil, err
 					}
 					if selected < allowed {
@@ -636,7 +593,7 @@ func (s *MysqlStore) admitTx(ctx context.Context, tx *sql.Tx, req headgate.Admit
 					}
 					selected++
 				}
-				rows.Close()
+				_ = rows.Close()
 				if err := rows.Err(); err != nil {
 					return nil, err
 				}
@@ -748,7 +705,7 @@ func (s *MysqlStore) admitTx(ctx context.Context, tx *sql.Tx, req headgate.Admit
 						&e.StickyWorker,
 						&fence, &leaseID, &expiresMs,
 						&e.UniqueStates, &e.UniqueWindowMs); err != nil {
-						rows.Close()
+						_ = rows.Close()
 						return nil, err
 					}
 					// telemetry and trace context the opaque headers ride the claim so the runtime can
@@ -766,7 +723,7 @@ func (s *MysqlStore) admitTx(ctx context.Context, tx *sql.Tx, req headgate.Admit
 						Checkpoint: decodeCheckpoint(cpJSON, cursor),
 					}}})
 				}
-				rows.Close()
+				_ = rows.Close()
 				if err := rows.Err(); err != nil {
 					return nil, err
 				}
@@ -850,6 +807,9 @@ func (s *MysqlStore) AckAttempt(ctx context.Context, lease headgate.LeaseRef, ou
 }
 
 func (s *MysqlStore) AckAttemptWithActualWeight(ctx context.Context, lease headgate.LeaseRef, outcome headgate.Outcome, errMsg string, delayMs int64, logs []string, actualWeight *uint32) error {
+	if err := headgate.ValidateAckRequest(outcome, delayMs); err != nil {
+		return err
+	}
 	fence := int64(lease.Fence)
 	var msg any
 	if errMsg != "" {
@@ -858,9 +818,7 @@ func (s *MysqlStore) AckAttemptWithActualWeight(ctx context.Context, lease headg
 	// attempt-log contract: the logs land INSIDE the attempt's entry, exactly as everywhere else.
 	var logsObj any
 	if len(logs) > 0 {
-		if b, e := json.Marshal(logs); e == nil {
-			logsObj = `{"logs": ` + string(b) + `}`
-		}
+		logsObj = `{"logs": ` + headgateshared.EncodeStringList(logs) + `}`
 	}
 	entry := func(outcomeName, attemptExpr string) string {
 		return `JSON_ARRAY_APPEND(
@@ -1173,23 +1131,15 @@ func ackSuccessTx(ctx context.Context, tx *sql.Tx, lease headgate.LeaseRef, fenc
 }
 
 func (s *MysqlStore) AckSuccessWithResult(ctx context.Context, lease headgate.LeaseRef, logs []string, actualWeight *uint32, result headgate.JobResult) error {
-	if result.SchemaVersion == 0 {
-		return &headgate.InvalidError{Msg: "result schema_version must be greater than zero"}
-	}
-	if result.SchemaVersion > headgate.MaxOpaqueSchemaVersion {
-		return &headgate.InvalidError{Msg: "result schema_version exceeds the portable signed-integer limit"}
-	}
-	if len(result.Bytes) > 32*1024*1024 {
-		return &headgate.InvalidError{Msg: "result bytes exceed the 32 MiB limit"}
+	if err := headgate.ValidateOpaqueValue("result", result); err != nil {
+		return err
 	}
 	resultBytes := make([]byte, len(result.Bytes))
 	copy(resultBytes, result.Bytes)
 	result.Bytes = resultBytes
 	var logsObj any
 	if len(logs) > 0 {
-		if b, err := json.Marshal(logs); err == nil {
-			logsObj = `{"logs": ` + string(b) + `}`
-		}
+		logsObj = `{"logs": ` + headgateshared.EncodeStringList(logs) + `}`
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1216,14 +1166,8 @@ func (s *MysqlStore) WriteJobOutput(
 	lease headgate.LeaseRef,
 	output headgate.JobResult,
 ) (*headgate.JobOutput, error) {
-	if output.SchemaVersion == 0 {
-		return nil, &headgate.InvalidError{Msg: "output schema_version must be greater than zero"}
-	}
-	if output.SchemaVersion > headgate.MaxOpaqueSchemaVersion {
-		return nil, &headgate.InvalidError{Msg: "output schema_version exceeds the portable signed-integer limit"}
-	}
-	if len(output.Bytes) > 32*1024*1024 {
-		return nil, &headgate.InvalidError{Msg: "output bytes exceed the 32 MiB limit"}
+	if err := headgate.ValidateOpaqueValue("output", output); err != nil {
+		return nil, err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1418,12 +1362,12 @@ func (s *MysqlStore) enqueueOn(ctx context.Context, c execer, batch []headgate.E
 		for rows.Next() {
 			var id, kind, fp, queue string
 			if err := rows.Scan(&id, &kind, &fp, &queue); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return err
 			}
 			present[id] = [3]string{kind, fp, queue}
 		}
-		rows.Close()
+		_ = rows.Close()
 		if err := rows.Err(); err != nil {
 			return err
 		}
@@ -1468,11 +1412,7 @@ func (s *MysqlStore) enqueueOn(ctx context.Context, c execer, batch []headgate.E
 	// replays were removed above and therefore consume no slot.
 	demand := map[string]int64{}
 	for _, e := range batch {
-		queue := e.Queue
-		if queue == "" {
-			queue = "default"
-		}
-		demand[queue]++
+		demand[headgate.EnqueueQueue(e)]++
 	}
 	demandQueues := make([]string, 0, len(demand))
 	for queue := range demand {
@@ -1515,19 +1455,19 @@ func (s *MysqlStore) enqueueOn(ctx context.Context, c execer, batch []headgate.E
 		var limit sql.NullInt64
 		var entered, exited int64
 		if err := rows.Scan(&queue, &limit, &entered, &exited); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return err
 		}
 		if limit.Valid {
 			current := max(int64(0), entered-exited)
 			incoming := demand[queue]
 			if current+incoming > limit.Int64 {
-				rows.Close()
+				_ = rows.Close()
 				return &headgate.BackpressureError{Queue: queue, Limit: uint64(limit.Int64), Current: uint64(current), Incoming: uint64(incoming)}
 			}
 		}
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return err
 	}
@@ -1548,18 +1488,9 @@ func (s *MysqlStore) enqueueOn(ctx context.Context, c execer, batch []headgate.E
 	var args []any
 	var candidates []any
 	for _, e := range batch {
-		sv := e.SchemaVersion
-		if sv == 0 {
-			sv = 1
-		}
-		queue := e.Queue
-		if queue == "" {
-			queue = "default"
-		}
-		ma := e.MaxAttempts
-		if ma == 0 {
-			ma = 25
-		}
+		sv := headgate.EffectiveSchemaVersion(e.SchemaVersion)
+		queue := headgate.EnqueueQueue(e)
+		ma := headgate.EffectiveMaxAttempts(e.MaxAttempts)
 		var expires any
 		if e.UniqueKey != nil && e.UniqueWindowMs > 0 {
 			expires = now + e.UniqueWindowMs
@@ -1593,10 +1524,7 @@ func (s *MysqlStore) enqueueOn(ctx context.Context, c execer, batch []headgate.E
 	// harmless stale route can be pruned, while an available job without one can starve.
 	routes := make([]string, 0, len(batch))
 	for _, e := range batch {
-		queue := e.Queue
-		if queue == "" {
-			queue = "default"
-		}
+		queue := headgate.EnqueueQueue(e)
 		routes = append(routes, queue+"\x00"+e.PartitionKey)
 	}
 	slices.Sort(routes)
@@ -1812,12 +1740,12 @@ func (s *MysqlStore) reclaimTx(ctx context.Context, tx *sql.Tx, limit int64) ([]
 	for rows.Next() {
 		var v victim
 		if err := rows.Scan(&v.id, &v.ulid, &v.fp, &v.ca, &v.kind, &v.cpJSON); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		victims = append(victims, v)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -1931,12 +1859,12 @@ func (s *MysqlStore) PromoteDue(ctx context.Context, limit int64) (int64, error)
 		for rows.Next() {
 			var id int64
 			if err := rows.Scan(&id); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return 0, err
 			}
 			ids = append(ids, id)
 		}
-		rows.Close()
+		_ = rows.Close()
 		if err := rows.Err(); err != nil {
 			return 0, err
 		}
@@ -2012,12 +1940,12 @@ func (s *MysqlStore) reconcileInflight(ctx context.Context, limit int64) (int64,
 	for rows.Next() {
 		var r row
 		if err := rows.Scan(&r.queue, &r.partition, &r.oldN); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return 0, err
 		}
 		due = append(due, r)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
@@ -2076,13 +2004,13 @@ func (s *MysqlStore) pruneActivePartitions(ctx context.Context, limit int64) (in
 	for rows.Next() {
 		var q, p string
 		if err := rows.Scan(&q, &p); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return 0, err
 		}
 		args = append(args, q, p)
 		pairs = append(pairs, "(?, ?)")
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
@@ -2112,7 +2040,7 @@ func (s *MysqlStore) EvictRetained(ctx context.Context, limit int64) (int64, err
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	rows, err := tx.QueryContext(ctx,
 		`SELECT id FROM headgate_job
 		 WHERE state IN ('completed', 'archived', 'cancelled', 'undecodable')
@@ -2126,12 +2054,12 @@ func (s *MysqlStore) EvictRetained(ctx context.Context, limit int64) (int64, err
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return 0, err
 		}
 		ids = append(ids, id)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}

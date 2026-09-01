@@ -16,6 +16,7 @@ use headgate_core::{
     JobResult, LeaseRef, Outcome, OutputStore, ProgressStore, ProgressUpdate, Reclaimed,
     ResultStore, Store, StoreError, Transactional, TxHandle,
 };
+use headgate_shared::codec;
 use tokio_postgres::error::SqlState;
 use tokio_postgres::types::{ToSql, Type};
 use tokio_postgres::{GenericClient, NoTls, Row, Statement};
@@ -185,25 +186,53 @@ struct Listener {
     config: tokio_postgres::Config,
     channel: String,
     tx: tokio::sync::broadcast::Sender<String>,
-    started: std::sync::atomic::AtomicBool,
+    stop: tokio::sync::watch::Sender<bool>,
+    task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Listener {
     fn ensure_started(&self) {
-        if self.started.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        let mut task = self.task.lock().unwrap();
+        if task.is_some() {
             return;
         }
         let config = self.config.clone();
         let channel = self.channel.clone();
         let tx = self.tx.clone();
-        tokio::spawn(async move {
+        let mut stop = self.stop.subscribe();
+        *task = Some(tokio::spawn(async move {
             loop {
-                if let Err(e) = listen_once(&config, &channel, &tx).await {
-                    tracing_noop(&e); // no tracing dep here; the reconnect IS the handling
+                tokio::select! {
+                    result = listen_once(&config, &channel, &tx) => {
+                        if let Err(e) = result {
+                            tracing_noop(&e);
+                        }
+                    }
+                    _ = stop.changed() => return,
                 }
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                    _ = stop.changed() => return,
+                }
             }
-        });
+        }));
+    }
+
+    async fn close(&self) {
+        let _ = self.stop.send(true);
+        let task = { self.task.lock().unwrap().take() };
+        if let Some(task) = task {
+            let _ = task.await;
+        }
+    }
+}
+
+impl Drop for Listener {
+    fn drop(&mut self) {
+        let _ = self.stop.send(true);
+        if let Some(task) = self.task.get_mut().unwrap().take() {
+            task.abort();
+        }
     }
 }
 
@@ -571,13 +600,23 @@ impl PgStore {
     /// for the dedicated LISTEN connection.
     pub fn with_listen(mut self, config: tokio_postgres::Config) -> Self {
         let (tx, _) = tokio::sync::broadcast::channel(64);
+        let (stop, _) = tokio::sync::watch::channel(false);
         self.listen = Some(Listener {
             config,
             channel: self.namespace.wakeup_channel().to_owned(),
             tx,
-            started: std::sync::atomic::AtomicBool::new(false),
+            stop,
+            task: std::sync::Mutex::new(None),
         });
         self
+    }
+
+    /// Stop and join the dedicated LISTEN task. Dropping the store also aborts it, but
+    /// explicit shutdown lets embedders release the connection deterministically.
+    pub async fn close_notifications(&self) {
+        if let Some(listener) = &self.listen {
+            listener.close().await;
+        }
     }
 
     /// Convenience constructor from a libpq conninfo string / URL.
@@ -988,27 +1027,15 @@ impl PgStore {
         for e in batch {
             ulids.push(e.id.as_str());
             kinds.push(e.kind.as_str());
-            versions.push(if e.schema_version == 0 {
-                1
-            } else {
-                e.schema_version as i32
-            });
+            versions.push(headgate_core::effective_schema_version(e.schema_version) as i32);
             payloads.push(e.payload.as_slice());
-            queues.push(if e.queue.is_empty() {
-                "default"
-            } else {
-                e.queue.as_str()
-            });
+            queues.push(headgate_core::enqueue_queue(e));
             partitions.push(e.partition_key.as_str());
             rate_classes.push(e.rate_class.as_str());
             weights.push(headgate_core::effective_weight(e.weight) as i32);
             fingerprints.push(e.fingerprint.as_str());
             priorities.push(e.priority);
-            max_attempts.push(if e.max_attempts == 0 {
-                25
-            } else {
-                e.max_attempts as i32
-            });
+            max_attempts.push(headgate_core::effective_max_attempts(e.max_attempts) as i32);
             scheduled.push(e.scheduled_at_ms);
             timeouts.push(e.timeout_ms);
             deadlines.push(e.deadline_ms);
@@ -1400,6 +1427,7 @@ impl PgStore {
         actual_weight: Option<u32>,
         result: Option<&JobResult>,
     ) -> Result<(), StoreError> {
+        headgate_core::validate_ack_request(outcome, delay_ms)?;
         let c = NamespacedGeneric::new(c, &self.namespace);
         let fence = lease.fence as i64;
         if let Some(actual) = actual_weight {
@@ -1446,7 +1474,7 @@ impl PgStore {
         let logs_json: Option<String> = if logs.is_empty() {
             None
         } else {
-            serde_json::to_string(logs).ok()
+            Some(headgate_shared::codec::encode_string_list(logs))
         };
         // The identity clause, shared by every arm. Parameters: $1 ulid, $2 lease, $3 fence.
         const IDENT: &str =
@@ -1738,94 +1766,24 @@ pub(crate) fn map_pg_err(e: tokio_postgres::Error) -> StoreError {
 /// step replay checkpoint <-> jsonb. Adapter-side encoding; the cursor bytes live in their own
 /// bytea column so nothing is base64'd through JSON.
 fn encode_checkpoint(cp: &Checkpoint) -> serde_json::Value {
-    let mut m = serde_json::Map::new();
-    if !cp.completed_steps.is_empty() {
-        m.insert("completed".into(), cp.completed_steps.clone().into());
-    }
-    if let Some(s) = &cp.in_progress_step {
-        m.insert("in_progress".into(), s.clone().into());
-    }
-    if let Some(s) = &cp.cursor_step {
-        m.insert("cursor_step".into(), s.clone().into());
-    }
-    if cp.schema_version != 0 {
-        m.insert("version".into(), cp.schema_version.into());
-    }
-    if !cp.step_set_hash.is_empty() {
-        m.insert("hash".into(), cp.step_set_hash.clone().into());
-    }
-    if !cp.crashes_by_step.is_empty() {
-        let crashes: serde_json::Map<String, serde_json::Value> = cp
-            .crashes_by_step
-            .iter()
-            .map(|(k, v)| (k.clone(), (*v).into()))
-            .collect();
-        m.insert("crashes".into(), crashes.into());
-    }
-    m.into()
+    codec::encode_checkpoint_value(cp)
 }
 
 fn decode_checkpoint(v: Option<serde_json::Value>, cursor: Option<Vec<u8>>) -> Checkpoint {
-    let mut cp = Checkpoint {
-        cursor,
-        ..Default::default()
-    };
-    let Some(serde_json::Value::Object(m)) = v else {
-        return cp;
-    };
-    if let Some(serde_json::Value::Array(a)) = m.get("completed") {
-        cp.completed_steps = a
-            .iter()
-            .filter_map(|s| s.as_str().map(String::from))
-            .collect();
-        cp.last_completed_step = cp.completed_steps.last().cloned();
-    }
-    cp.in_progress_step = m
-        .get("in_progress")
-        .and_then(|s| s.as_str())
-        .map(String::from);
-    cp.cursor_step = m
-        .get("cursor_step")
-        .and_then(|s| s.as_str())
-        .map(String::from);
-    cp.schema_version = m.get("version").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-    cp.step_set_hash = m
-        .get("hash")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    if let Some(serde_json::Value::Object(cr)) = m.get("crashes") {
-        cp.crashes_by_step = cr
-            .iter()
-            .map(|(k, v)| (k.clone(), v.as_u64().unwrap_or(0) as u32))
-            .collect();
-    }
-    cp
+    codec::decode_checkpoint_value(v, cursor)
 }
 
 /// telemetry and trace context envelope headers <-> jsonb. `{}` for the empty case so the column's NOT NULL
 /// DEFAULT is what a header-less enqueue writes, exactly as before this existed.
 fn encode_headers(h: &std::collections::BTreeMap<String, String>) -> serde_json::Value {
-    serde_json::Value::Object(
-        h.iter()
-            .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-            .collect(),
-    )
+    codec::encode_headers_value(h)
 }
 
 /// Non-string values are DROPPED rather than stringified: the envelope's header map is
 /// string->string, and silently coercing `{"a":1}` into `"1"` would make a round trip
 /// lossy in a way nothing else here is.
 fn decode_headers(v: Option<serde_json::Value>) -> std::collections::BTreeMap<String, String> {
-    let Some(serde_json::Value::Object(m)) = v else {
-        return Default::default();
-    };
-    m.into_iter()
-        .filter_map(|(k, v)| match v {
-            serde_json::Value::String(s) => Some((k, s)),
-            _ => None,
-        })
-        .collect()
+    codec::decode_headers_value(v)
 }
 
 fn claim_from_row(row: &tokio_postgres::Row) -> Claim {
@@ -1882,14 +1840,7 @@ fn admission_units(rows: &[tokio_postgres::Row]) -> Vec<AdmissionUnit> {
 #[async_trait::async_trait]
 impl Store for PgStore {
     async fn admit(&self, req: AdmitRequest) -> Result<Vec<AdmissionUnit>, StoreError> {
-        let mut req = req;
-        req.queues.sort();
-        req.queues.dedup();
-        let lease_ms = req.lease.as_millis() as i64;
-        if lease_ms <= 0 {
-            // boundary validation a duration that rounds to zero is an error, named at the boundary.
-            return Err(StoreError::Invalid("lease must be >= 1ms".into()));
-        }
+        let (req, lease_ms) = headgate_core::normalize_admit_request(req)?;
         let c = self.client().await?;
         // adaptive admission direct policy-free path. Its policy/shape probe and claim share one
         // statement snapshot. A true sentinel means it made no write and the complete
@@ -2369,21 +2320,7 @@ impl ResultStore for PgStore {
         actual_weight: Option<u32>,
         result: &JobResult,
     ) -> Result<(), StoreError> {
-        if result.schema_version == 0 {
-            return Err(StoreError::Invalid(
-                "result schema_version must be greater than zero".into(),
-            ));
-        }
-        if result.schema_version > headgate_core::MAX_OPAQUE_SCHEMA_VERSION {
-            return Err(StoreError::Invalid(
-                "result schema_version exceeds the portable signed-integer limit".into(),
-            ));
-        }
-        if result.bytes.len() > 32 * 1024 * 1024 {
-            return Err(StoreError::Invalid(
-                "result bytes exceed the 32 MiB limit".into(),
-            ));
-        }
+        headgate_core::validate_opaque_value("result", result)?;
         if actual_weight.is_none() {
             let c = self.client().await?;
             return self
@@ -2423,21 +2360,7 @@ impl OutputStore for PgStore {
         lease: &LeaseRef,
         output: &JobResult,
     ) -> Result<JobOutput, StoreError> {
-        if output.schema_version == 0 {
-            return Err(StoreError::Invalid(
-                "output schema_version must be greater than zero".into(),
-            ));
-        }
-        if output.schema_version > headgate_core::MAX_OPAQUE_SCHEMA_VERSION {
-            return Err(StoreError::Invalid(
-                "output schema_version exceeds the portable signed-integer limit".into(),
-            ));
-        }
-        if output.bytes.len() > 32 * 1024 * 1024 {
-            return Err(StoreError::Invalid(
-                "output bytes exceed the 32 MiB limit".into(),
-            ));
-        }
+        headgate_core::validate_opaque_value("output", output)?;
         let c = self.client().await?;
         let row = c
             .query_opt(
@@ -2616,7 +2539,7 @@ mod sql_shape_tests {
     #[test]
     fn queue_memory_is_explicit_bounded_and_cached() {
         let source = include_str!("inspect.rs");
-        assert!(source.contains("limit.clamp(1, 1_000)"));
+        assert!(source.contains("limit.clamp(1, MEMORY_SAMPLE_LIMIT)"));
         assert!(source.contains("LIMIT 200"));
         assert!(source.contains("headgate_queue_sample"));
     }

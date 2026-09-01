@@ -19,6 +19,7 @@ use headgate_core::{
     JobResult, LeaseRef, Outcome, OutputStore, ProgressStore, ProgressUpdate, Reclaimed,
     ResultStore, Store, StoreError,
 };
+use headgate_shared::codec;
 use redis::Script;
 use redis::aio::{ConnectionLike, ConnectionManager, MultiplexedConnection};
 
@@ -101,23 +102,49 @@ struct Wake {
     client: redis::Client,
     channel: String,
     tx: tokio::sync::broadcast::Sender<String>,
-    started: std::sync::atomic::AtomicBool,
+    stop: tokio::sync::watch::Sender<bool>,
+    task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Wake {
     fn ensure_started(&self) {
-        if self.started.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        let mut task = self.task.lock().unwrap();
+        if task.is_some() {
             return;
         }
         let client = self.client.clone();
         let channel = self.channel.clone();
         let tx = self.tx.clone();
-        tokio::spawn(async move {
+        let mut stop = self.stop.subscribe();
+        *task = Some(tokio::spawn(async move {
             loop {
-                let _ = subscribe_once(&client, &channel, &tx).await;
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::select! {
+                    _ = subscribe_once(&client, &channel, &tx) => {}
+                    _ = stop.changed() => return,
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                    _ = stop.changed() => return,
+                }
             }
-        });
+        }));
+    }
+
+    async fn close(&self) {
+        let _ = self.stop.send(true);
+        let task = { self.task.lock().unwrap().take() };
+        if let Some(task) = task {
+            let _ = task.await;
+        }
+    }
+}
+
+impl Drop for Wake {
+    fn drop(&mut self) {
+        let _ = self.stop.send(true);
+        if let Some(task) = self.task.get_mut().unwrap().take() {
+            task.abort();
+        }
     }
 }
 
@@ -200,13 +227,22 @@ impl RedisStore {
     /// dedicated pub/sub connection is opened from.
     pub fn with_wake(mut self, client: redis::Client) -> Self {
         let (tx, _) = tokio::sync::broadcast::channel(64);
+        let (stop, _) = tokio::sync::watch::channel(false);
         self.wake = Some(Wake {
             client,
             channel: format!("{}:wake", self.prefix),
             tx,
-            started: std::sync::atomic::AtomicBool::new(false),
+            stop,
+            task: std::sync::Mutex::new(None),
         });
         self
+    }
+
+    /// Stop and join the dedicated pub/sub task. Dropping the store also aborts it.
+    pub async fn close_notifications(&self) {
+        if let Some(wake) = &self.wake {
+            wake.close().await;
+        }
     }
 
     /// Convenience constructor from a URL — push wakeup enabled (the URL gives us the
@@ -317,70 +353,11 @@ pub(crate) fn map_redis_err(e: redis::RedisError) -> StoreError {
 // ---------- checkpoint <-> JSON, same field names as the Postgres jsonb ----------
 
 fn encode_checkpoint(cp: &Checkpoint) -> String {
-    let mut m = serde_json::Map::new();
-    if !cp.completed_steps.is_empty() {
-        m.insert("completed".into(), cp.completed_steps.clone().into());
-    }
-    if let Some(s) = &cp.in_progress_step {
-        m.insert("in_progress".into(), s.clone().into());
-    }
-    if let Some(s) = &cp.cursor_step {
-        m.insert("cursor_step".into(), s.clone().into());
-    }
-    if cp.schema_version != 0 {
-        m.insert("version".into(), cp.schema_version.into());
-    }
-    if !cp.step_set_hash.is_empty() {
-        m.insert("hash".into(), cp.step_set_hash.clone().into());
-    }
-    if !cp.crashes_by_step.is_empty() {
-        let crashes: serde_json::Map<String, serde_json::Value> = cp
-            .crashes_by_step
-            .iter()
-            .map(|(k, v)| (k.clone(), (*v).into()))
-            .collect();
-        m.insert("crashes".into(), crashes.into());
-    }
-    serde_json::Value::Object(m).to_string()
+    codec::encode_checkpoint_json(cp)
 }
 
 fn decode_checkpoint(json: Option<&[u8]>, cursor: Option<Vec<u8>>) -> Checkpoint {
-    let mut cp = Checkpoint {
-        cursor,
-        ..Default::default()
-    };
-    let Some(bytes) = json else { return cp };
-    let Ok(serde_json::Value::Object(m)) = serde_json::from_slice(bytes) else {
-        return cp;
-    };
-    if let Some(serde_json::Value::Array(a)) = m.get("completed") {
-        cp.completed_steps = a
-            .iter()
-            .filter_map(|s| s.as_str().map(String::from))
-            .collect();
-        cp.last_completed_step = cp.completed_steps.last().cloned();
-    }
-    cp.in_progress_step = m
-        .get("in_progress")
-        .and_then(|s| s.as_str())
-        .map(String::from);
-    cp.cursor_step = m
-        .get("cursor_step")
-        .and_then(|s| s.as_str())
-        .map(String::from);
-    cp.schema_version = m.get("version").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-    cp.step_set_hash = m
-        .get("hash")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    if let Some(serde_json::Value::Object(cr)) = m.get("crashes") {
-        cp.crashes_by_step = cr
-            .iter()
-            .map(|(k, v)| (k.clone(), v.as_u64().unwrap_or(0) as u32))
-            .collect();
-    }
-    cp
+    codec::decode_checkpoint_bytes(json, cursor)
 }
 
 pub(crate) type JobHash = std::collections::HashMap<String, Vec<u8>>;
@@ -398,31 +375,11 @@ pub(crate) fn hn(h: &JobHash, k: &str) -> i64 {
 /// telemetry and trace context envelope headers <-> JSON, same shape and same drop-non-strings rule as the
 /// SQL adapters. `{}` renders as an empty string so enqueue.lua writes no field at all.
 pub(crate) fn encode_headers(h: &std::collections::BTreeMap<String, String>) -> String {
-    if h.is_empty() {
-        return String::new();
-    }
-    serde_json::Value::Object(
-        h.iter()
-            .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-            .collect(),
-    )
-    .to_string()
+    codec::encode_headers_json(h, true)
 }
 
 pub(crate) fn decode_headers(bytes: Option<&[u8]>) -> std::collections::BTreeMap<String, String> {
-    let Some(bytes) = bytes else {
-        return Default::default();
-    };
-    let Ok(serde_json::Value::Object(m)) = serde_json::from_slice::<serde_json::Value>(bytes)
-    else {
-        return Default::default();
-    };
-    m.into_iter()
-        .filter_map(|(k, v)| match v {
-            serde_json::Value::String(s) => Some((k, s)),
-            _ => None,
-        })
-        .collect()
+    codec::decode_headers_bytes(bytes)
 }
 
 fn claim_from_hash(id: &str, h: &JobHash) -> Claim {
@@ -541,7 +498,7 @@ impl RedisStore {
             .arg(if logs.is_empty() {
                 String::new()
             } else {
-                serde_json::to_string(logs).unwrap_or_default()
+                headgate_shared::codec::encode_string_list(logs)
             })
             .arg(actual_weight.map(|n| n.to_string()).unwrap_or_default())
             .arg(result.schema_version)
@@ -561,13 +518,7 @@ impl RedisStore {
 #[async_trait::async_trait]
 impl Store for RedisStore {
     async fn admit(&self, req: AdmitRequest) -> Result<Vec<AdmissionUnit>, StoreError> {
-        let mut req = req;
-        req.queues.sort();
-        req.queues.dedup();
-        let lease_ms = req.lease.as_millis() as i64;
-        if lease_ms <= 0 {
-            return Err(StoreError::Invalid("lease must be >= 1ms".into()));
-        }
+        let (req, lease_ms) = headgate_core::normalize_admit_request(req)?;
         let mut conn = self.conn.clone();
         let ids: Vec<String> = self
             .admit
@@ -607,23 +558,8 @@ impl Store for RedisStore {
         logs: &[String],
         actual_weight: Option<u32>,
     ) -> Result<(), StoreError> {
-        let name = match outcome {
-            Outcome::Success => "success",
-            Outcome::Retry => "retry",
-            Outcome::Skip => "skip",
-            Outcome::Revoke => "revoke",
-            Outcome::Snooze => "snooze",
-            Outcome::Undecodable => "undecodable",
-            Outcome::RateLimited => "rate_limited",
-            Outcome::LeaseLost => {
-                return Err(StoreError::Invalid(
-                    "lease_lost is applied by the reclaimer, not acked".into(),
-                ));
-            }
-        };
-        if outcome == Outcome::Snooze && delay_ms.unwrap_or(0) <= 0 {
-            return Err(StoreError::Invalid("snooze requires delay_ms > 0".into()));
-        }
+        headgate_core::validate_ack_request(outcome, delay_ms)?;
+        let name = outcome.as_str();
         let mut conn = self.conn.clone();
         let res: Vec<Vec<u8>> = self
             .ack
@@ -639,7 +575,7 @@ impl Store for RedisStore {
             .arg(if logs.is_empty() {
                 String::new()
             } else {
-                serde_json::to_string(logs).unwrap_or_default()
+                headgate_shared::codec::encode_string_list(logs)
             })
             .arg(actual_weight.map(|n| n.to_string()).unwrap_or_default())
             .invoke_async(&mut conn)
@@ -693,26 +629,14 @@ impl Store for RedisStore {
         for e in batch {
             inv.arg(&e.id)
                 .arg(&e.kind)
-                .arg(if e.schema_version == 0 {
-                    1
-                } else {
-                    e.schema_version
-                })
+                .arg(headgate_core::effective_schema_version(e.schema_version))
                 .arg(e.payload.as_slice())
-                .arg(if e.queue.is_empty() {
-                    "default"
-                } else {
-                    &e.queue
-                })
+                .arg(headgate_core::enqueue_queue(e))
                 .arg(&e.partition_key)
                 .arg(&e.rate_class)
                 .arg(&e.fingerprint)
                 .arg(e.priority)
-                .arg(if e.max_attempts == 0 {
-                    25
-                } else {
-                    e.max_attempts
-                })
+                .arg(headgate_core::effective_max_attempts(e.max_attempts))
                 .arg(e.scheduled_at_ms)
                 .arg(e.timeout_ms)
                 .arg(e.deadline_ms)
@@ -747,10 +671,9 @@ impl Store for RedisStore {
             inv.arg(if e.pending { 1 } else { 0 });
         }
         for e in batch {
-            inv.arg(
-                serde_json::to_string(&headgate_core::canonical_tags(&e.tags))
-                    .unwrap_or_else(|_| "[]".into()),
-            );
+            inv.arg(headgate_shared::codec::encode_string_list(
+                &headgate_core::canonical_tags(&e.tags),
+            ));
         }
         for e in batch {
             inv.arg(&e.sticky_worker);
@@ -912,21 +835,7 @@ impl ResultStore for RedisStore {
         actual_weight: Option<u32>,
         result: &JobResult,
     ) -> Result<(), StoreError> {
-        if result.schema_version == 0 {
-            return Err(StoreError::Invalid(
-                "result schema_version must be greater than zero".into(),
-            ));
-        }
-        if result.schema_version > headgate_core::MAX_OPAQUE_SCHEMA_VERSION {
-            return Err(StoreError::Invalid(
-                "result schema_version exceeds the portable signed-integer limit".into(),
-            ));
-        }
-        if result.bytes.len() > 32 * 1024 * 1024 {
-            return Err(StoreError::Invalid(
-                "result bytes exceed the 32 MiB limit".into(),
-            ));
-        }
+        headgate_core::validate_opaque_value("result", result)?;
         self.ack_success_result(lease, logs, actual_weight, result)
             .await
     }
@@ -939,21 +848,7 @@ impl OutputStore for RedisStore {
         lease: &LeaseRef,
         output: &JobResult,
     ) -> Result<JobOutput, StoreError> {
-        if output.schema_version == 0 {
-            return Err(StoreError::Invalid(
-                "output schema_version must be greater than zero".into(),
-            ));
-        }
-        if output.schema_version > headgate_core::MAX_OPAQUE_SCHEMA_VERSION {
-            return Err(StoreError::Invalid(
-                "output schema_version exceeds the portable signed-integer limit".into(),
-            ));
-        }
-        if output.bytes.len() > 32 * 1024 * 1024 {
-            return Err(StoreError::Invalid(
-                "output bytes exceed the 32 MiB limit".into(),
-            ));
-        }
+        headgate_core::validate_opaque_value("output", output)?;
         let mut conn = self.conn.clone();
         let res: Vec<Vec<u8>> = self
             .output

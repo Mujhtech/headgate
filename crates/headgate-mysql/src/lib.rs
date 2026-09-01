@@ -23,6 +23,7 @@ use headgate_core::{
     JobResult, LeaseRef, Outcome, OutputStore, ProgressStore, ProgressUpdate, Reclaimed,
     ResultStore, Store, StoreError, Transactional, TxHandle,
 };
+use headgate_shared::codec;
 use mysql_async::prelude::*;
 use mysql_async::{Conn, IsolationLevel, Opts, Params, Pool, Row, TxOpts, Value};
 
@@ -397,97 +398,22 @@ fn is_dup_key(e: &mysql_async::Error) -> bool {
 // ---------- checkpoint <-> JSON, same field names as every other adapter ----------
 
 fn encode_checkpoint(cp: &Checkpoint) -> String {
-    let mut m = serde_json::Map::new();
-    if !cp.completed_steps.is_empty() {
-        m.insert("completed".into(), cp.completed_steps.clone().into());
-    }
-    if let Some(s) = &cp.in_progress_step {
-        m.insert("in_progress".into(), s.clone().into());
-    }
-    if let Some(s) = &cp.cursor_step {
-        m.insert("cursor_step".into(), s.clone().into());
-    }
-    if cp.schema_version != 0 {
-        m.insert("version".into(), cp.schema_version.into());
-    }
-    if !cp.step_set_hash.is_empty() {
-        m.insert("hash".into(), cp.step_set_hash.clone().into());
-    }
-    if !cp.crashes_by_step.is_empty() {
-        let crashes: serde_json::Map<String, serde_json::Value> = cp
-            .crashes_by_step
-            .iter()
-            .map(|(k, v)| (k.clone(), (*v).into()))
-            .collect();
-        m.insert("crashes".into(), crashes.into());
-    }
-    serde_json::Value::Object(m).to_string()
+    codec::encode_checkpoint_json(cp)
 }
 
 fn decode_checkpoint(json: Option<&str>, cursor: Option<Vec<u8>>) -> Checkpoint {
-    let mut cp = Checkpoint {
-        cursor,
-        ..Default::default()
-    };
-    let Some(text) = json else { return cp };
-    let Ok(serde_json::Value::Object(m)) = serde_json::from_str(text) else {
-        return cp;
-    };
-    if let Some(serde_json::Value::Array(a)) = m.get("completed") {
-        cp.completed_steps = a
-            .iter()
-            .filter_map(|s| s.as_str().map(String::from))
-            .collect();
-        cp.last_completed_step = cp.completed_steps.last().cloned();
-    }
-    cp.in_progress_step = m
-        .get("in_progress")
-        .and_then(|s| s.as_str())
-        .map(String::from);
-    cp.cursor_step = m
-        .get("cursor_step")
-        .and_then(|s| s.as_str())
-        .map(String::from);
-    cp.schema_version = m.get("version").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-    cp.step_set_hash = m
-        .get("hash")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    if let Some(serde_json::Value::Object(cr)) = m.get("crashes") {
-        cp.crashes_by_step = cr
-            .iter()
-            .map(|(k, v)| (k.clone(), v.as_u64().unwrap_or(0) as u32))
-            .collect();
-    }
-    cp
+    codec::decode_checkpoint_str(json, cursor)
 }
 
 /// telemetry and trace context envelope headers <-> JSON. Same shape and same drop-non-strings rule as every
 /// other adapter — a round trip that stringified `{"a":1}` would be lossy in a way
 /// nothing else in the envelope is.
 fn encode_headers(h: &std::collections::BTreeMap<String, String>) -> String {
-    serde_json::Value::Object(
-        h.iter()
-            .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-            .collect(),
-    )
-    .to_string()
+    codec::encode_headers_json(h, false)
 }
 
 fn decode_headers(text: Option<&str>) -> std::collections::BTreeMap<String, String> {
-    let Some(text) = text else {
-        return Default::default();
-    };
-    let Ok(serde_json::Value::Object(m)) = serde_json::from_str::<serde_json::Value>(text) else {
-        return Default::default();
-    };
-    m.into_iter()
-        .filter_map(|(k, v)| match v {
-            serde_json::Value::String(s) => Some((k, s)),
-            _ => None,
-        })
-        .collect()
+    codec::decode_headers_str(text)
 }
 
 fn claim_from_row(row: &Row) -> Claim {
@@ -571,13 +497,7 @@ fn unique_holder_sql(n: usize) -> String {
 #[async_trait::async_trait]
 impl Store for MysqlStore {
     async fn admit(&self, req: AdmitRequest) -> Result<Vec<AdmissionUnit>, StoreError> {
-        let mut req = req;
-        req.queues.sort();
-        req.queues.dedup();
-        let lease_ms = req.lease.as_millis() as i64;
-        if lease_ms <= 0 {
-            return Err(StoreError::Invalid("lease must be >= 1ms".into()));
-        }
+        let (req, lease_ms) = headgate_core::normalize_admit_request(req)?;
         if req.queues.is_empty() {
             return Ok(Vec::new());
         }
@@ -613,12 +533,13 @@ impl Store for MysqlStore {
         logs: &[String],
         actual_weight: Option<u32>,
     ) -> Result<(), StoreError> {
+        headgate_core::validate_ack_request(outcome, delay_ms)?;
         let mut conn = self.conn().await?;
         let fence = lease.fence as i64;
         let logs_json: Option<String> = if logs.is_empty() {
             None
         } else {
-            serde_json::to_string(logs).ok()
+            Some(headgate_shared::codec::encode_string_list(logs))
         };
         // attempt-log contract: the logs land INSIDE the attempt's entry, exactly as everywhere else.
         let entry = |outcome_name: &str, attempt_expr: &str, with_err: bool| {
@@ -1829,21 +1750,7 @@ impl ResultStore for MysqlStore {
         actual_weight: Option<u32>,
         result: &JobResult,
     ) -> Result<(), StoreError> {
-        if result.schema_version == 0 {
-            return Err(StoreError::Invalid(
-                "result schema_version must be greater than zero".into(),
-            ));
-        }
-        if result.schema_version > headgate_core::MAX_OPAQUE_SCHEMA_VERSION {
-            return Err(StoreError::Invalid(
-                "result schema_version exceeds the portable signed-integer limit".into(),
-            ));
-        }
-        if result.bytes.len() > 32 * 1024 * 1024 {
-            return Err(StoreError::Invalid(
-                "result bytes exceed the 32 MiB limit".into(),
-            ));
-        }
+        headgate_core::validate_opaque_value("result", result)?;
         let mut conn = self.conn().await?;
         let mut tx = conn
             .start_transaction(TxOpts::default())
@@ -1856,7 +1763,7 @@ impl ResultStore for MysqlStore {
         let logs_json = if logs.is_empty() {
             None
         } else {
-            serde_json::to_string(logs).ok()
+            Some(headgate_shared::codec::encode_string_list(logs))
         };
         let logs_obj = logs_json.map(|l| format!("{{\"logs\": {l}}}"));
         let n = ack_success_tx(&mut tx, lease, fence, logs_obj.as_deref(), Some(result)).await?;
@@ -1877,21 +1784,7 @@ impl OutputStore for MysqlStore {
         lease: &LeaseRef,
         output: &JobResult,
     ) -> Result<JobOutput, StoreError> {
-        if output.schema_version == 0 {
-            return Err(StoreError::Invalid(
-                "output schema_version must be greater than zero".into(),
-            ));
-        }
-        if output.schema_version > headgate_core::MAX_OPAQUE_SCHEMA_VERSION {
-            return Err(StoreError::Invalid(
-                "output schema_version exceeds the portable signed-integer limit".into(),
-            ));
-        }
-        if output.bytes.len() > 32 * 1024 * 1024 {
-            return Err(StoreError::Invalid(
-                "output bytes exceed the 32 MiB limit".into(),
-            ));
-        }
+        headgate_core::validate_opaque_value("output", output)?;
         let mut conn = self.conn().await?;
         let mut tx = conn
             .start_transaction(TxOpts::default())
@@ -2282,27 +2175,19 @@ impl MysqlStore {
         for e in batch {
             params.push(Value::from(&e.id));
             params.push(Value::from(&e.kind));
-            params.push(Value::from(if e.schema_version == 0 {
-                1
-            } else {
-                e.schema_version
-            }));
+            params.push(Value::from(headgate_core::effective_schema_version(
+                e.schema_version,
+            )));
             params.push(Value::from(&e.payload));
-            params.push(Value::from(if e.queue.is_empty() {
-                "default"
-            } else {
-                &e.queue
-            }));
+            params.push(Value::from(headgate_core::enqueue_queue(e)));
             params.push(Value::from(&e.partition_key));
             params.push(Value::from(&e.rate_class));
             params.push(Value::from(headgate_core::effective_weight(e.weight)));
             params.push(Value::from(&e.fingerprint));
             params.push(Value::from(e.priority));
-            params.push(Value::from(if e.max_attempts == 0 {
-                25
-            } else {
-                e.max_attempts
-            }));
+            params.push(Value::from(headgate_core::effective_max_attempts(
+                e.max_attempts,
+            )));
             let scheduled_at = if e.unique_debounce_ms > 0 {
                 now + e.unique_debounce_ms
             } else if e.scheduled_at_ms == 0 {

@@ -138,12 +138,7 @@ func run() error {
 			}
 		}
 	case "ack":
-		outcome, ok := map[string]headgate.Outcome{
-			"success": headgate.OutcomeSuccess, "retry": headgate.OutcomeRetry,
-			"skip": headgate.OutcomeSkip, "revoke": headgate.OutcomeRevoke,
-			"snooze": headgate.OutcomeSnooze, "undecodable": headgate.OutcomeUndecodable,
-			"rate_limited": headgate.OutcomeRateLimited,
-		}[m["outcome"]]
+		outcome, ok := headgate.ParseOutcome(m["outcome"])
 		if !ok {
 			return fmt.Errorf("unknown outcome %q", m["outcome"])
 		}

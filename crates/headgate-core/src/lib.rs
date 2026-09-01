@@ -5,6 +5,8 @@
 #![allow(dead_code)]
 use std::time::Duration;
 
+pub use headgate_shared::{Checkpoint, MissedPolicy, Outcome, Resume};
+
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 // ---------- tasks ----------
@@ -96,21 +98,6 @@ pub struct TaskOptions {
 
 /// lifecycle state machine Exhaustive on purpose: adding a variant without handling it is a compile error,
 /// which is how a commented-out transition becomes impossible rather than silent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Outcome {
-    Success,
-    Retry,
-    Skip,
-    Revoke,
-    Snooze,
-    /// crash quarantine the worker died. Counted apart from `Retry` — quarantine depends on it.
-    LeaseLost,
-    Undecodable,
-    /// surveyed policy behavior NOT a failure. Re-queues without consuming an attempt, the way BullMQ's
-    /// RateLimitError and Sidekiq's OverLimit do. asynq makes users fake this.
-    RateLimited,
-}
-
 /// Versioned opaque bytes recorded atomically with successful completion.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JobResult {
@@ -119,7 +106,25 @@ pub struct JobResult {
 }
 
 /// Largest opaque result/output schema version portable across every backend.
-pub const MAX_OPAQUE_SCHEMA_VERSION: u32 = i32::MAX as u32;
+pub const MAX_OPAQUE_SCHEMA_VERSION: u32 = headgate_shared::MAX_OPAQUE_SCHEMA_VERSION;
+pub const MAX_OPAQUE_BYTES: usize = 32 * 1024 * 1024;
+
+pub fn validate_opaque_value(subject: &str, value: &JobResult) -> Result<(), StoreError> {
+    use headgate_shared::OpaqueSchemaValidation;
+
+    match headgate_shared::validate_opaque_schema(value.schema_version) {
+        OpaqueSchemaValidation::Zero => Err(StoreError::Invalid(format!(
+            "{subject} schema_version must be greater than zero"
+        ))),
+        OpaqueSchemaValidation::TooLarge => Err(StoreError::Invalid(format!(
+            "{subject} schema_version exceeds the portable signed-integer limit"
+        ))),
+        OpaqueSchemaValidation::Valid if value.bytes.len() > MAX_OPAQUE_BYTES => Err(
+            StoreError::Invalid(format!("{subject} bytes exceed the 32 MiB limit")),
+        ),
+        OpaqueSchemaValidation::Valid => Ok(()),
+    }
+}
 
 /// The latest versioned opaque output persisted while a fenced attempt was running.
 /// `fence` identifies the attempt that wrote it; `updated_at_ms` is stamped by the
@@ -176,7 +181,7 @@ pub fn validate_progress(update: &ProgressUpdate) -> Result<(), StoreError> {
         ));
     }
     if let Some(message) = &update.message {
-        if message.as_bytes().len() > MAX_PROGRESS_MESSAGE_BYTES {
+        if message.len() > MAX_PROGRESS_MESSAGE_BYTES {
             return Err(StoreError::Invalid(
                 "progress message exceeds the 512-byte limit".into(),
             ));
@@ -383,7 +388,15 @@ pub struct Envelope {
 /// reject an explicitly supplied zero because a zero-cost job should be reported as
 /// actual usage, not used to bypass admission.
 pub const fn effective_weight(weight: u32) -> u32 {
-    if weight == 0 { 1 } else { weight }
+    headgate_shared::effective_weight(weight)
+}
+
+pub const fn effective_schema_version(version: u32) -> u32 {
+    headgate_shared::effective_schema_version(version)
+}
+
+pub const fn effective_max_attempts(max_attempts: u32) -> u32 {
+    headgate_shared::effective_max_attempts(max_attempts)
 }
 
 /// Versioned, collision-free uniqueness namespace. Including the kind is the safe
@@ -526,6 +539,25 @@ pub struct AdmitRequest {
     pub capacity: u32,
     pub lease: Duration,
     pub quantum: i64,
+}
+
+pub fn normalize_admit_request(mut req: AdmitRequest) -> Result<(AdmitRequest, i64), StoreError> {
+    req.queues = headgate_shared::normalize_queues(req.queues);
+    let lease_ms = headgate_shared::duration_millis(req.lease)
+        .ok_or_else(|| StoreError::Invalid("lease must be >= 1ms".into()))?;
+    Ok((req, lease_ms))
+}
+
+pub fn validate_ack_request(outcome: Outcome, delay_ms: Option<i64>) -> Result<(), StoreError> {
+    match headgate_shared::validate_ack(outcome, delay_ms) {
+        headgate_shared::AckValidation::LeaseLost => Err(StoreError::Invalid(
+            "lease_lost is applied by the reclaimer, not acked".into(),
+        )),
+        headgate_shared::AckValidation::SnoozeDelayRequired => {
+            Err(StoreError::Invalid("snooze requires delay_ms > 0".into()))
+        }
+        headgate_shared::AckValidation::Valid => Ok(()),
+    }
 }
 
 pub struct Claim {
@@ -1044,6 +1076,8 @@ pub struct QuietGroupMetrics {
     pub approximate: bool,
 }
 
+pub use headgate_shared::inspection::{age_ms, time_to_drain_ms};
+
 /// Classify noisy neighbours from observed in-flight skew (tenant fairness/backlog metrics).
 ///
 /// A partition is noisy when it holds at least two jobs and more than twice the mean
@@ -1081,6 +1115,18 @@ pub struct RateClassConfig {
     pub burst: i64,
     /// Invariant 16: the kill switch. Admit nothing in this class until unpaused.
     pub paused: bool,
+}
+
+pub fn validate_rate_class_config(cfg: &RateClassConfig) -> Result<(), StoreError> {
+    if cfg.window_ms < 1 {
+        return Err(StoreError::Invalid("window_ms must be >= 1".into()));
+    }
+    if cfg.limit < 0 || cfg.burst < 1 {
+        return Err(StoreError::Invalid(
+            "limit must be >= 0 and burst >= 1".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// surveyed policy behavior the action the atomic gate takes when a partition has reached its configured
@@ -1127,6 +1173,29 @@ pub struct ConcurrencyLimitConfig {
     pub queue: String,
     pub max_concurrent: u64,
     pub on_saturated: SaturationStrategy,
+}
+
+pub fn validate_concurrency_limit(cfg: &ConcurrencyLimitConfig) -> Result<i64, StoreError> {
+    if cfg.name.is_empty() || cfg.queue.is_empty() {
+        return Err(StoreError::Invalid(
+            "name and queue must not be empty".into(),
+        ));
+    }
+    if cfg.max_concurrent == 0 {
+        return Err(StoreError::Invalid("max_concurrent must be >= 1".into()));
+    }
+    i64::try_from(cfg.max_concurrent)
+        .map_err(|_| StoreError::Invalid("max_concurrent is too large".into()))
+}
+
+pub fn validate_schedule_event_limit(limit: u32) -> Result<(), StoreError> {
+    if limit == 0 || limit > SCHEDULE_EVENT_LIMIT {
+        Err(StoreError::Invalid(
+            "schedule event limit must be between 1 and 100".into(),
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 pub struct RateClassState {
@@ -1188,6 +1257,25 @@ pub struct AdmissionExplain {
     pub estimated_admission_ms: Option<i64>,
 }
 
+pub fn evaluate_admission(facts: &headgate_shared::AdmissionFacts) -> AdmissionExplain {
+    let evaluation = headgate_shared::evaluate_admission(facts);
+    AdmissionExplain {
+        state: facts.state.clone(),
+        admissible: evaluation.admissible,
+        blocked_by: evaluation.blocked_by.map(|blocked| match blocked {
+            "rate_class" => BlockedBy::RateClass,
+            "concurrency_limit" => BlockedBy::ConcurrencyLimit,
+            "fairness" => BlockedBy::Fairness,
+            "quarantine" => BlockedBy::Quarantine,
+            "schedule" => BlockedBy::Schedule,
+            "queue_paused" => BlockedBy::QueuePaused,
+            _ => unreachable!("shared evaluator returned an unknown admission block"),
+        }),
+        detail: evaluation.detail,
+        estimated_admission_ms: evaluation.estimated_admission_ms,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct HistoryBucket {
     pub at_ms: i64,
@@ -1197,35 +1285,6 @@ pub struct HistoryBucket {
 
 /// surveyed policy behavior what happens to periodic runs missed during downtime. Nobody in the surveyed
 /// field backfills; River can skip a tick entirely across a leader election.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MissedPolicy {
-    /// Default, and what every other queue does: a stale backlog is dropped; the most
-    /// recent tick fires only if it is less than one period old.
-    Skip,
-    /// One catch-up run covers the backlog, no matter how old.
-    RunOnce,
-    /// Fire the most recent `backfill_limit` missed ticks, each as its own job.
-    Backfill,
-}
-
-impl MissedPolicy {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            MissedPolicy::Skip => "skip",
-            MissedPolicy::RunOnce => "run_once",
-            MissedPolicy::Backfill => "backfill",
-        }
-    }
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "skip" => Some(Self::Skip),
-            "run_once" => Some(Self::RunOnce),
-            "backfill" => Some(Self::Backfill),
-            _ => None,
-        }
-    }
-}
-
 /// A periodic entry. Durable in the store (surveyed policy behavior), never in a leader's memory. The
 /// store treats `spec` as opaque; tick computation lives caller-side so every backend
 /// stays spec-agnostic.
@@ -1363,6 +1422,28 @@ pub struct BulkRequest {
     pub partition_key: Option<String>,
     pub older_than_ms: Option<i64>,
     pub dry_run: bool,
+}
+
+impl BulkRequest {
+    pub fn has_selector(&self) -> bool {
+        self.queue.is_some()
+            || self.state.is_some()
+            || self.kind.is_some()
+            || self.partition_key.is_some()
+            || self.older_than_ms.is_some()
+    }
+}
+
+pub fn bulk_action_states(action: &str) -> Option<&'static [&'static str]> {
+    headgate_shared::bulk_action_states(action)
+}
+
+pub fn valid_worker_command(command: &str) -> bool {
+    headgate_shared::valid_worker_command(command)
+}
+
+pub fn format_generated_id(now_ms: u64, process_id: u32, sequence: u64) -> String {
+    headgate_shared::format_generated_id(now_ms, process_id, sequence)
 }
 
 #[derive(Clone, Debug)]
@@ -1572,56 +1653,6 @@ pub trait CheckpointInspect: Send + Sync + 'static {
 
 // ---------- step replay step replay ----------
 
-/// Progress within a single job. Persisted with the lease renewal that is already
-/// happening, so a mid-step crash does not lose it — River's default writes this only
-/// after the worker returns, which is the one case it is needed.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Checkpoint {
-    pub last_completed_step: Option<String>,
-    /// The completed steps IN ORDER. Replay compares positionally: the step at index i
-    /// of the new attempt must match `completed_steps[i]`, or the step set changed under
-    /// the checkpoint and the job goes to `undecodable` — never a silent restart.
-    pub completed_steps: Vec<String>,
-    /// crash quarantine the step that was running when the checkpoint was last written. Written
-    /// BEFORE the step's side effects; the reclaimer attributes a crash to it.
-    pub in_progress_step: Option<String>,
-    pub cursor_step: Option<String>,
-    pub cursor: Option<Vec<u8>>,
-    /// payload versioning × step replay — the step set this checkpoint was written against.
-    pub schema_version: u32,
-    pub step_set_hash: String,
-    /// crash quarantine crash counts per step. "Always dies at `transcode`" beats "dies".
-    pub crashes_by_step: Vec<(String, u32)>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Resume {
-    /// Step set unchanged — skip completed steps and continue.
-    Continue,
-    /// Step set changed but the version maps — resume at the mapped step.
-    Remapped,
-    /// No mapping. Terminal. Silently restarting would re-run completed side effects
-    /// with no signal that a deploy caused it.
-    Undecodable,
-}
-
-impl Checkpoint {
-    /// Decide how (or whether) a job may resume. The conservative branch is the default:
-    /// an unrecognized step set never silently restarts from step one.
-    pub fn resumability(&self, current_version: u32, current_step_set_hash: &str) -> Resume {
-        if self.step_set_hash.is_empty() {
-            return Resume::Continue; // no steps were used
-        }
-        if self.step_set_hash == current_step_set_hash {
-            Resume::Continue
-        } else if self.schema_version != current_version {
-            Resume::Remapped // an upcast exists; the task's step mapping decides where
-        } else {
-            Resume::Undecodable
-        }
-    }
-}
-
 // ---------- other ports (payload codecs) ----------
 
 pub trait Telemetry: Send + Sync + 'static {
@@ -1807,11 +1838,7 @@ pub fn validate_kind(kind: &str) -> Result<(), String> {
 /// `default` on write, so the idempotent enqueue identity id comparison must normalize the same way or a
 /// replay that omitted the queue would read as a conflict against its own row.
 pub fn enqueue_queue(e: &Envelope) -> &str {
-    if e.queue.is_empty() {
-        "default"
-    } else {
-        &e.queue
-    }
+    headgate_shared::effective_queue(&e.queue)
 }
 
 /// idempotent enqueue identity does the row that already owns this id hold the SAME job?
@@ -1827,18 +1854,96 @@ pub fn same_job_content(e: &Envelope, kind: &str, fingerprint: &str, queue: &str
     e.kind == kind && e.fingerprint == fingerprint && enqueue_queue(e) == queue
 }
 
+pub const MAX_ENQUEUE_BATCH_SIZE: usize = 1_000;
+pub const MAX_JOB_PAYLOAD_BYTES: usize = 1 << 20;
+pub const MAX_JOB_HEADERS_BYTES: usize = 64 << 10;
+pub const MAX_JOB_HEADER_COUNT: usize = 128;
+pub const MAX_JOB_IDENTIFIER_LEN: usize = 255;
+pub const MAX_UNIQUE_KEY_BYTES: usize = 1 << 10;
+pub const MAX_ENQUEUE_BYTES: usize = 16 << 20;
+
 /// The boundary validation every backend's `enqueue` runs before it writes anything —
 /// ONE function so the rule cannot drift between four adapters, and the layer is the
 /// store because the API and the harnesses call `Store::enqueue` directly, never through
 /// the runtime. Batch-level: a repeated id WITHIN one batch is an `IdConflict` on every
 /// backend rather than a constraint error from whichever row the database reached first.
 pub fn validate_enqueue(batch: &[Envelope]) -> Result<(), StoreError> {
+    if batch.len() > MAX_ENQUEUE_BATCH_SIZE {
+        return Err(StoreError::Invalid(
+            "enqueue batch must contain at most 1000 jobs".into(),
+        ));
+    }
     let mut seen = std::collections::HashSet::with_capacity(batch.len());
+    let mut total_bytes = 0usize;
     for e in batch {
         if e.id.is_empty() {
             return Err(StoreError::Invalid("envelope id must not be empty".into()));
         }
         validate_kind(&e.kind).map_err(StoreError::Invalid)?;
+        for (name, value) in [
+            ("envelope id", e.id.as_str()),
+            ("queue", e.queue.as_str()),
+            ("partition_key", e.partition_key.as_str()),
+            ("rate_class", e.rate_class.as_str()),
+            ("fingerprint", e.fingerprint.as_str()),
+            ("periodic_schedule_id", e.periodic_schedule_id.as_str()),
+        ] {
+            if value.len() > MAX_JOB_IDENTIFIER_LEN {
+                return Err(StoreError::Invalid(format!(
+                    "{name} must be at most 255 bytes"
+                )));
+            }
+        }
+        if e.payload.len() > MAX_JOB_PAYLOAD_BYTES {
+            return Err(StoreError::Invalid(
+                "payload must be at most 1048576 bytes".into(),
+            ));
+        }
+        if e.unique_key.as_ref().map_or(0, Vec::len) > MAX_UNIQUE_KEY_BYTES {
+            return Err(StoreError::Invalid(
+                "unique_key must be at most 1024 bytes".into(),
+            ));
+        }
+        if e.headers.len() > MAX_JOB_HEADER_COUNT {
+            return Err(StoreError::Invalid(
+                "headers must contain at most 128 values".into(),
+            ));
+        }
+        let header_bytes = e
+            .headers
+            .iter()
+            .map(|(key, value)| key.len() + value.len())
+            .sum::<usize>();
+        if header_bytes > MAX_JOB_HEADERS_BYTES {
+            return Err(StoreError::Invalid(
+                "headers must total at most 65536 bytes".into(),
+            ));
+        }
+        total_bytes = total_bytes.saturating_add(
+            e.payload.len()
+                + header_bytes
+                + e.id.len()
+                + e.kind.len()
+                + e.queue.len()
+                + e.partition_key.len()
+                + e.rate_class.len()
+                + e.fingerprint.len()
+                + e.unique_key.as_ref().map_or(0, Vec::len),
+        );
+        if total_bytes > MAX_ENQUEUE_BYTES {
+            return Err(StoreError::Invalid(
+                "enqueue batch data must total at most 16777216 bytes".into(),
+            ));
+        }
+        if e.timeout_ms < 0 {
+            return Err(StoreError::Invalid("timeout_ms must be >= 0".into()));
+        }
+        if e.deadline_ms < 0 {
+            return Err(StoreError::Invalid("deadline_ms must be >= 0".into()));
+        }
+        if e.retention_ms < 0 {
+            return Err(StoreError::Invalid("retention_ms must be >= 0".into()));
+        }
         if e.unique_window_ms < 0 {
             return Err(StoreError::Invalid("unique_window_ms must be >= 0".into()));
         }
@@ -1848,7 +1953,7 @@ pub fn validate_enqueue(batch: &[Envelope]) -> Result<(), StoreError> {
             ));
         }
         if e.unique_debounce_ms > 0
-            && (e.unique_key.as_ref().map_or(true, Vec::is_empty) || e.unique_window_ms > 0)
+            && (e.unique_key.as_ref().is_none_or(Vec::is_empty) || e.unique_window_ms > 0)
         {
             return Err(StoreError::Invalid(
                 "unique_debounce_ms requires lifecycle unique_key".into(),
@@ -1859,7 +1964,7 @@ pub fn validate_enqueue(batch: &[Envelope]) -> Result<(), StoreError> {
                 "unique_replace contains unknown fields".into(),
             ));
         }
-        if e.unique_replace != 0 && e.unique_key.as_ref().map_or(true, Vec::is_empty) {
+        if e.unique_replace != 0 && e.unique_key.as_ref().is_none_or(Vec::is_empty) {
             return Err(StoreError::Invalid(
                 "unique_replace requires unique_key".into(),
             ));
@@ -1881,6 +1986,15 @@ pub fn validate_enqueue(batch: &[Envelope]) -> Result<(), StoreError> {
                     "tags must not contain duplicates".into(),
                 ));
             }
+            total_bytes = total_bytes.saturating_add(tag.len());
+        }
+        total_bytes = total_bytes
+            .saturating_add(e.sticky_worker.len())
+            .saturating_add(e.periodic_schedule_id.len());
+        if total_bytes > MAX_ENQUEUE_BYTES {
+            return Err(StoreError::Invalid(
+                "enqueue batch data must total at most 16777216 bytes".into(),
+            ));
         }
         if e.pending && e.scheduled_at_ms != 0 {
             return Err(StoreError::Invalid(
@@ -2155,7 +2269,7 @@ mod tests {
             kind: "w".into(),
             ..Default::default()
         };
-        assert!(validate_enqueue(&[ok.clone()]).is_ok());
+        assert!(validate_enqueue(std::slice::from_ref(&ok)).is_ok());
         assert!(
             validate_enqueue(&[Envelope {
                 sticky_worker: "w".repeat(255),
@@ -2224,13 +2338,56 @@ mod tests {
             unique_replace: UNIQUE_REPLACE_PRIORITY,
             ..ok.clone()
         };
-        assert!(validate_enqueue(&[replace.clone()]).is_ok());
+        assert!(validate_enqueue(std::slice::from_ref(&replace)).is_ok());
         let second = Envelope {
             id: "b".into(),
             ..ok
         };
         assert!(matches!(
             validate_enqueue(&[replace, second]),
+            Err(StoreError::Invalid(_))
+        ));
+
+        for invalid in [
+            Envelope {
+                id: "payload".into(),
+                kind: "w".into(),
+                payload: vec![0; MAX_JOB_PAYLOAD_BYTES + 1],
+                ..Default::default()
+            },
+            Envelope {
+                id: "timeout".into(),
+                kind: "w".into(),
+                timeout_ms: -1,
+                ..Default::default()
+            },
+            Envelope {
+                id: "deadline".into(),
+                kind: "w".into(),
+                deadline_ms: -1,
+                ..Default::default()
+            },
+            Envelope {
+                id: "retention".into(),
+                kind: "w".into(),
+                retention_ms: -1,
+                ..Default::default()
+            },
+        ] {
+            assert!(matches!(
+                validate_enqueue(&[invalid]),
+                Err(StoreError::Invalid(_))
+            ));
+        }
+        let oversized = (0..=MAX_ENQUEUE_BATCH_SIZE)
+            .map(|index| Envelope {
+                id: format!("job-{index}"),
+                kind: "w".into(),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            validate_enqueue(&oversized),
             Err(StoreError::Invalid(_))
         ));
     }

@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	headgate "github.com/mujhtech/headgate/go"
+	"github.com/mujhtech/headgate/go/headgateshared"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -28,12 +29,13 @@ var (
 )
 
 // Queue-position/sampled lookups cap here; "position >= 1000" is answer enough.
-const positionLimit = 1_000
-const quietPartitionLimit = 1_000
-const maxPage = 200
+const positionLimit = headgateshared.InspectionPositionLimit
+const quietPartitionLimit = headgateshared.InspectionQuietPartitionLimit
+const maxPage = headgateshared.InspectionMaxPage
 
 // Offset pagination walks zsets; past this depth the cursor is refused (bounded).
 const listDeepLimit = 10_000
+const controlScanLimit = 10_000
 
 // Post-filtered listings hydrate at most this many candidates per call.
 const filterScan = 2_000
@@ -64,8 +66,28 @@ func (s *RedisStore) storeNowMs(ctx context.Context) (int64, error) {
 	return t.UnixMilli(), nil
 }
 
+func (s *RedisStore) scanSet(ctx context.Context, key string) ([]string, error) {
+	members := make([]string, 0, min(256, controlScanLimit))
+	var cursor uint64
+	for {
+		batch, next, err := s.rdb.SScan(ctx, key, cursor, "", 256).Result()
+		if err != nil {
+			return nil, err
+		}
+		remaining := controlScanLimit - len(members)
+		if len(batch) > remaining {
+			batch = batch[:remaining]
+		}
+		members = append(members, batch...)
+		if next == 0 || len(members) == controlScanLimit {
+			return members, nil
+		}
+		cursor = next
+	}
+}
+
 func (s *RedisStore) queueNames(ctx context.Context) ([]string, error) {
-	qs, err := s.rdb.SMembers(ctx, s.key("queues")).Result()
+	qs, err := s.scanSet(ctx, s.key("queues"))
 	if err != nil {
 		return nil, err
 	}
@@ -510,7 +532,7 @@ func (s *RedisStore) QueueStats(ctx context.Context) ([]headgate.QueueStatsView,
 	if err != nil {
 		return nil, err
 	}
-	pausedSet, err := s.rdb.SMembers(ctx, s.key("paused")).Result()
+	pausedSet, err := s.scanSet(ctx, s.key("paused"))
 	if err != nil {
 		return nil, err
 	}
@@ -640,19 +662,15 @@ func (s *RedisStore) QueueStats(ctx context.Context) ([]headgate.QueueStatsView,
 			ArrivalRate: float64(quietArrived) / 60.0, DrainRate: float64(quietCompleted) / 60.0,
 			NoisyPartitions: uint32(len(noisy)), Approximate: partCount > quietPartitionLimit,
 		}
-		if v.QuietGroups.DrainRate > v.QuietGroups.ArrivalRate && v.QuietGroups.DrainRate > 0 {
-			ttd := int64(float64(quietBacklog) / (v.QuietGroups.DrainRate - v.QuietGroups.ArrivalRate) * 1000.0)
-			v.QuietGroups.TimeToDrainMs = &ttd
-		}
+		v.QuietGroups.TimeToDrainMs = headgate.TimeToDrainMillis(
+			quietBacklog, v.QuietGroups.ArrivalRate, v.QuietGroups.DrainRate,
+		)
 		if quietOldestAt != nil {
-			age := max(now-*quietOldestAt, 0)
+			age := headgate.AgeMillis(now, *quietOldestAt)
 			v.QuietGroups.OldestAvailableMs = &age
 		}
 		// backlog metrics time-to-drain: nil when arrival >= drain — the alert condition.
-		if drain > arrival && drain > 0 {
-			ttd := int64(float64(backlog) / (drain - arrival) * 1000.0)
-			v.TimeToDrainMs = &ttd
-		}
+		v.TimeToDrainMs = headgate.TimeToDrainMillis(backlog, arrival, drain)
 		out = append(out, v)
 	}
 	return out, nil
@@ -714,7 +732,7 @@ func (s *RedisStore) RateClasses(ctx context.Context) ([]headgate.RateClassState
 	if err != nil {
 		return nil, err
 	}
-	names, err := s.rdb.SMembers(ctx, s.key("rate_classes")).Result()
+	names, err := s.scanSet(ctx, s.key("rate_classes"))
 	if err != nil {
 		return nil, err
 	}
@@ -799,11 +817,8 @@ func min64(a, b int64) int64 {
 }
 
 func (s *RedisStore) UpsertRateClass(ctx context.Context, cfg headgate.RateClassConfig) error {
-	if cfg.WindowMs < 1 {
-		return &headgate.InvalidError{Msg: "window_ms must be >= 1"}
-	}
-	if cfg.Limit < 0 || cfg.Burst < 1 {
-		return &headgate.InvalidError{Msg: "limit must be >= 0 and burst >= 1"}
+	if err := headgate.ValidateRateClassConfig(cfg); err != nil {
+		return err
 	}
 	paused := "0"
 	if cfg.Paused {
@@ -843,14 +858,8 @@ func (s *RedisStore) ConcurrencyLimits(ctx context.Context) ([]headgate.Concurre
 }
 
 func (s *RedisStore) UpsertConcurrencyLimit(ctx context.Context, cfg headgate.ConcurrencyLimit) error {
-	if cfg.Name == "" || cfg.Queue == "" {
-		return &headgate.InvalidError{Msg: "name and queue must not be empty"}
-	}
-	if cfg.MaxConcurrent == 0 {
-		return &headgate.InvalidError{Msg: "max_concurrent must be >= 1"}
-	}
-	if !cfg.OnSaturated.Valid() {
-		return &headgate.InvalidError{Msg: fmt.Sprintf("unknown saturation strategy `%s`", cfg.OnSaturated)}
+	if err := headgate.ValidateConcurrencyLimit(cfg); err != nil {
+		return err
 	}
 	encoded, err := json.Marshal(redisConcurrencyLimit{
 		Queue: cfg.Queue, MaxConcurrent: cfg.MaxConcurrent, OnSaturated: cfg.OnSaturated,
@@ -867,7 +876,7 @@ func (s *RedisStore) Partitions(ctx context.Context, queue string) ([]headgate.P
 	if err != nil {
 		return nil, err
 	}
-	active, err := s.rdb.SMembers(ctx, s.key("parts", queue)).Result()
+	active, err := s.scanSet(ctx, s.key("parts", queue))
 	if err != nil {
 		return nil, err
 	}
@@ -905,7 +914,7 @@ func (s *RedisStore) Partitions(ctx context.Context, queue string) ([]headgate.P
 }
 
 func (s *RedisStore) QuarantineList(ctx context.Context) ([]headgate.QuarantineEntry, error) {
-	fps, err := s.rdb.SMembers(ctx, s.key("quarantine")).Result()
+	fps, err := s.scanSet(ctx, s.key("quarantine"))
 	if err != nil {
 		return nil, err
 	}
@@ -1028,87 +1037,26 @@ func (s *RedisStore) ExplainAdmission(ctx context.Context, id string) (*headgate
 // assembleExplain replays THIS gate's evaluation order (admit.lua), read-only. An
 // unconfigured rate class is unlimited and therefore never blocking.
 func assembleExplain(kv map[string]string) *headgate.AdmissionExplain {
-	num := func(k string) int64 { n, _ := strconv.ParseInt(kv[k], 10, 64); return n }
-	state := kv["state"]
-	now := num("now")
-	ex := &headgate.AdmissionExplain{State: state, Detail: map[string]string{"state": state}}
-	zero := int64(0)
-	switch state {
-	case "running":
-		ex.Admissible = true
-		ex.EstimatedAdmissionMs = &zero
-		return ex
-	case "scheduled", "retryable":
-		at := num("scheduled_at_ms")
-		ex.Detail["scheduled_at_ms"] = kv["scheduled_at_ms"]
-		ex.BlockedBy = "schedule"
-		eta := at - now
-		if eta < 0 {
-			eta = 0
+	num := func(key string) int64 {
+		value, _ := strconv.ParseInt(kv[key], 10, 64)
+		return value
+	}
+	optional := func(configured string, value int64) *int64 {
+		if kv[configured] != "1" {
+			return nil
 		}
-		ex.EstimatedAdmissionMs = &eta
-		return ex
-	case "quarantined":
-		ex.BlockedBy = "quarantine"
-		return ex // will not clear on its own
-	case "available":
-	default:
-		return ex // terminal: not admissible, nothing blocks
+		return &value
 	}
-	if kv["paused"] == "1" {
-		ex.BlockedBy = "queue_paused"
-		return ex
-	}
-	if at := num("scheduled_at_ms"); at > now {
-		ex.Detail["scheduled_at_ms"] = kv["scheduled_at_ms"]
-		ex.BlockedBy = "schedule"
-		eta := at - now
-		ex.EstimatedAdmissionMs = &eta
-		return ex
-	}
-	if kv["quarantined"] == "1" {
-		ex.Detail["fingerprint"] = kv["fingerprint"]
-		ex.BlockedBy = "quarantine"
-		return ex
-	}
-	if rc := kv["rate_class"]; rc != "" && kv["rate_configured"] == "1" {
-		avail := num("tokens_available")
-		cost := num("weight")
-		if cost < 1 {
-			cost = 1
-		}
-		ex.Detail["rate_class"] = rc
-		ex.Detail["tokens_available"] = kv["tokens_available"]
-		ex.Detail["weight"] = strconv.FormatInt(cost, 10)
-		if avail < cost {
-			ex.BlockedBy = "rate_class"
-			if limit := num("rate_limit"); limit > 0 {
-				need := cost - avail
-				if need < 1 {
-					need = 1
-				}
-				eta := need * num("rate_window") / limit
-				ex.EstimatedAdmissionMs = &eta
-			} // paused class: nil — will not clear on its own
-			return ex
-		}
-	}
-	// Fairness never blocks outright (invariant 11); position says when.
-	ex.Detail["position_in_partition"] = kv["position_in_partition"]
-	ex.Detail["partition_deficit"] = kv["partition_deficit"]
-	if kv["concurrency_configured"] == "1" {
-		maxConcurrent, inflight := num("max_concurrent"), num("inflight")
-		ex.Detail["max_concurrent"] = kv["max_concurrent"]
-		ex.Detail["inflight"] = kv["inflight"]
-		ex.Detail["on_saturated"] = kv["on_saturated"]
-		if inflight >= maxConcurrent && kv["on_saturated"] != "cancel_running" {
-			ex.BlockedBy = "concurrency_limit"
-			return ex
-		}
-	}
-	ex.Admissible = true
-	ex.EstimatedAdmissionMs = &zero
-	return ex
+	return headgate.EvaluateAdmission(headgateshared.AdmissionFacts{
+		State: kv["state"], NowMs: num("now"), ScheduledAtMs: num("scheduled_at_ms"),
+		QueuePaused: kv["paused"] == "1", Quarantined: kv["quarantined"] == "1",
+		Fingerprint: kv["fingerprint"], RateClass: kv["rate_class"], Weight: num("weight"),
+		TokensAvailable: optional("rate_configured", num("tokens_available")),
+		LimitPerWindow:  num("rate_limit"), WindowMs: num("rate_window"),
+		MaxConcurrent: optional("concurrency_configured", num("max_concurrent")),
+		Inflight:      num("inflight"), Saturation: kv["on_saturated"],
+		Position: num("position_in_partition"), Deficit: num("partition_deficit"),
+	})
 }
 
 func (s *RedisStore) History(ctx context.Context, queue string, sinceMs, bucketMs int64) ([]headgate.HistoryBucket, error) {
@@ -1204,14 +1152,7 @@ func (s *RedisStore) UpsertSchedule(ctx context.Context, e headgate.ScheduleEntr
 }
 
 func missedName(p headgate.MissedPolicy) string {
-	switch p {
-	case headgate.MissedRunOnce:
-		return "run_once"
-	case headgate.MissedBackfill:
-		return "backfill"
-	default:
-		return "skip"
-	}
+	return p.String()
 }
 
 func (s *RedisStore) DeleteSchedule(ctx context.Context, id string) error {
@@ -1349,8 +1290,8 @@ return excess`
 }
 
 func (s *RedisStore) ListScheduleEvents(ctx context.Context, scheduleID string, beforeEventID uint64, limit uint32) ([]headgate.ScheduleEvent, error) {
-	if limit == 0 || limit > headgate.ScheduleEventLimit {
-		return nil, headgate.Invalidf("schedule event limit must be between 1 and 100")
+	if err := headgate.ValidateScheduleEventLimit(limit); err != nil {
+		return nil, err
 	}
 	max := "+inf"
 	if beforeEventID != 0 {
@@ -1405,7 +1346,7 @@ func (s *RedisStore) ListWorkers(ctx context.Context, staleAfterMs int64) ([]hea
 	if err != nil {
 		return nil, err
 	}
-	ids, err := s.rdb.SMembers(ctx, s.key("workers")).Result()
+	ids, err := s.scanSet(ctx, s.key("workers"))
 	if err != nil {
 		return nil, err
 	}
@@ -1450,7 +1391,7 @@ func (s *RedisStore) ListWorkers(ctx context.Context, staleAfterMs int64) ([]hea
 }
 
 func (s *RedisStore) SignalWorker(ctx context.Context, workerID, command string) error {
-	if command != "" && command != "quiet" && command != "resume" && command != "restart" && command != "terminate" && command != "resign" {
+	if !headgate.ValidWorkerCommand(command) {
 		return &headgate.InvalidError{Msg: "command must be quiet, resume, restart, terminate, or resign"}
 	}
 	n, err := workerLua.Run(ctx, s.rdb, []string{s.prefix},
@@ -1518,17 +1459,7 @@ func (s *RedisStore) DistinctKinds(ctx context.Context, limit int64) ([]string, 
 
 // opStates is the same action -> allowed-states table every backend uses.
 func opStates(action string) ([]string, bool) {
-	switch action {
-	case "retry":
-		return []string{"archived"}, true
-	case "cancel":
-		return []string{"scheduled", "available", "running"}, true
-	case "delete":
-		return []string{"scheduled", "available", "retryable", "completed", "archived",
-			"cancelled", "quarantined", "undecodable"}, true
-	default:
-		return nil, false
-	}
+	return headgate.BulkActionStates(action)
 }
 
 func selectorStates(req headgate.BulkOp, allowed []string) []string {
@@ -1542,8 +1473,7 @@ func selectorStates(req headgate.BulkOp, allowed []string) []string {
 }
 
 func (s *RedisStore) CreateOperation(ctx context.Context, req headgate.BulkOp) error {
-	if req.Queue == "" && req.State == "" && req.Kind == "" && req.PartitionKey == "" &&
-		req.OlderThanMs == nil {
+	if !req.HasSelector() {
 		// control API contract no accidental delete-everything.
 		return &headgate.InvalidError{Msg: "empty selector is rejected"}
 	}
@@ -1778,8 +1708,8 @@ func (s *RedisStore) SampleQueueMemory(ctx context.Context, limit uint32) (uint3
 	if limit < 1 {
 		limit = 1
 	}
-	if limit > 1000 {
-		limit = 1000
+	if limit > headgateshared.InspectionMemorySampleLimit {
+		limit = headgateshared.InspectionMemorySampleLimit
 	}
 	qs, err := s.queueNames(ctx)
 	if err != nil {

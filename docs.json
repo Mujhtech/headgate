@@ -111,6 +111,7 @@
               "docs/operations/connection-budget",
               "docs/operations/multi-instance",
               "docs/operations/queue-and-runtime-management",
+              "docs/operations/archive-partitioning",
               "docs/operations/console"
             ]
           }

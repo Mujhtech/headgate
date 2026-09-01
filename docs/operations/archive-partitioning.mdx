@@ -1,0 +1,236 @@
+---
+title: "Archive partitioning"
+description: "Why Headgate uses a partitioned cold archive, what the monthly tables cost, and how to operate the retention horizon."
+---
+
+Headgate partitions cold terminal audit records, not the active jobs table. The distinction
+protects job correctness while allowing large archives to be removed without a delete that
+scales with queue depth.
+
+<Note>
+  This page describes the archive layout shipped in v0.1.4. The expiry-based rolling design
+  discussed under [Alternatives](#expiry-based-rolling-partitions) is not implemented.
+</Note>
+
+## Why the active table is not partitioned
+
+`headgate_job` is the hot admission table. Enqueue, claim, lease renewal, acknowledgement,
+progress, results, uniqueness and fenced writes all use it.
+
+PostgreSQL and MySQL require a partition key to participate in a partitioned table's unique
+keys. Partitioning `headgate_job` by time or queue would therefore force Headgate to weaken
+global job-ID and idempotency guarantees or add the partition key to every identity lookup.
+Neither trade-off is acceptable for the admission path.
+
+Headgate instead keeps the hot table unpartitioned and globally unique. After a terminal job's
+ordinary retention expires, an optional archive policy can move its audit body into a separate
+cold table.
+
+```text
+headgate_job (hot and globally unique)
+        │
+        │ terminal retention expires
+        ▼
+headgate_job_archive (cold monthly partitions)
+        │
+        │ every record in a closed month has expired
+        ▼
+truncate the monthly partition
+```
+
+The movement and hot-row deletion occur in one bounded transaction. The archived copy is an
+audit record, not a second runnable job. Removing the hot row also makes the original job ID
+reusable under Headgate's logical eviction contract.
+
+## Why there are many archive tables
+
+Migration 11 creates:
+
+- `headgate_archive_policy`, which stores optional archive retention per queue;
+- `headgate_job_archive`, the logical parent partitioned by store-time `evicted_at_ms`;
+- 84 monthly partitions covering January 2025 through December 2031;
+- `headgate_job_archive_before_2025` and `headgate_job_archive_after_2031`, which prevent an
+  archive write outside the prepared range from failing.
+
+In PostgreSQL, every child partition is a physical table, so database tools show 87 archive
+relations: one parent, 84 monthly children and two edge children. MySQL exposes the same
+logical layout as partitions of one table.
+
+The months were created upfront to keep insertion predictable:
+
+- workers never need permission to execute DDL;
+- no worker races another worker to create a partition;
+- PostgreSQL and MySQL install the same deterministic horizon through migrations;
+- an archive insert always has a destination, even outside the monthly range.
+
+This is an operational choice, not a claim that every deployment needs 84 monthly partitions.
+Most of them will be empty in a small installation.
+
+## Configure archive retention
+
+Archive retention is opt-in per queue. Without a policy, the ordinary retention sweep deletes
+the expired hot row and does not create a cold copy.
+
+Rust:
+
+```rust
+use std::time::Duration;
+
+store
+    .set_archive_policy("billing", Duration::from_secs(90 * 24 * 60 * 60))
+    .await?;
+
+store.clear_archive_policy("billing").await?;
+```
+
+Go:
+
+```go
+err := store.SetArchivePolicy(ctx, "billing", 90*24*time.Hour)
+if err != nil {
+    return err
+}
+
+err = store.ClearArchivePolicy(ctx, "billing")
+```
+
+The archive records the payload, error history, attempts, fingerprint, terminal state and the
+archive retention duration in force when the hot row is evicted. Changing the policy later
+does not silently shorten records already archived.
+
+PostgreSQL and MySQL support this capability. Redis supports terminal job retention but does
+not claim SQL table partitioning.
+
+## Prune a closed month
+
+Rust exposes `prune_archive_month("YYYYMM")`; Go exposes
+`PruneArchiveMonth(ctx, "YYYYMM")`. The identifier grammar is closed, so caller input cannot
+be interpolated as an arbitrary table or partition name.
+
+Pruning refuses the request unless:
+
+1. the requested month has ended according to the store clock; and
+2. every row in that partition satisfies
+   `evicted_at_ms + archive_retention_ms <= store_now`.
+
+Only then does Headgate issue `TRUNCATE TABLE <child>` on PostgreSQL or
+`ALTER TABLE ... TRUNCATE PARTITION` on MySQL. A closed month cannot receive a normal
+store-time eviction, so a worker cannot race a new row into it after the retention check.
+
+Run pruning through a singleton store duty and alert on a refusal. Do not replace it with an
+unbounded `DELETE`; that would recreate the table bloat and queue-depth-dependent maintenance
+this layout exists to avoid.
+
+## Current trade-offs
+
+| Property | Current eviction-month design |
+| --- | --- |
+| Admission correctness | The hot table remains unpartitioned; global identity and fencing are unchanged. |
+| Archive insertion | Predictable, with no runtime DDL before the prepared horizon ends. |
+| Pruning | Whole-month truncation avoids row-by-row deletion and reduces vacuum pressure. |
+| Schema size | PostgreSQL exposes 87 archive relations immediately, most initially empty. |
+| Migration review | Migration 11 is long and creates many database objects. |
+| Mixed retention | One long-retention record can prevent its entire eviction-month partition from being truncated. |
+| Retention precision | Removal can be delayed well beyond shorter records' expiry while another row in the month remains live. |
+| Audit queries | Queries constrained by eviction time can prune partitions efficiently; unconstrained queries can touch many children. |
+| Horizon maintenance | Monthly pruning works through 2031; later months require an additive migration. |
+| Cross-database work | PostgreSQL and MySQL require different truncate and partition-management operations. |
+
+The mixed-retention cost is the most important limitation. Consider an August partition:
+
+```text
+headgate_job_archive_202608
+├── record A: expires in September 2026
+├── record B: expires in November 2026
+└── record C: expires in August 2027
+```
+
+The partition cannot be truncated until record C expires. Records A and B remain longer than
+their individual archive policies require. The policies are minimum retention guarantees;
+partition pruning does not promise deletion at the exact expiry millisecond.
+
+## When to enable the cold archive
+
+Enable it when terminal jobs must remain available as audit evidence after they leave the hot
+queue and the retained volume is large enough that bounded monthly removal matters.
+
+Leave it disabled when:
+
+- ordinary terminal retention already satisfies the audit requirement;
+- the installation has low terminal volume;
+- another system exports immutable audit events;
+- retaining job payloads would create an unnecessary privacy or compliance burden.
+
+The archive stores payload and error metadata. Apply the same access controls, encryption and
+backup policy used for other sensitive application data.
+
+## Operate the 2031 horizon
+
+The prepared monthly range ends after December 2031. Rows evicted from January 2032 onward
+remain safe because PostgreSQL routes them to `headgate_job_archive_after_2031` and MySQL uses
+the equivalent edge partition. However, that catch-all cannot be passed to the monthly prune
+API until a later migration splits it into bounded months.
+
+Before 2032:
+
+1. ship an additive migration that creates another monthly horizon;
+2. split or move any rows already present in the catch-all partition;
+3. run the PostgreSQL and MySQL archive conformance tests;
+4. keep the old migration bytes unchanged—published migrations are immutable.
+
+You can check whether PostgreSQL's catch-all contains data without scanning it completely:
+
+```sql
+SELECT EXISTS (
+  SELECT 1
+  FROM public.headgate_job_archive_after_2031
+  LIMIT 1
+) AS catch_all_in_use;
+```
+
+`public` is the default installation schema. For a schema-isolated installation, replace it
+with the explicitly quoted schema passed to the migrator, for example
+`"billing-jobs".headgate_job_archive_after_2031`. Do not depend on the connection's
+`search_path`; Headgate itself qualifies every internal relation for the same reason.
+
+For MySQL, inspect `information_schema.PARTITIONS` for the archive table and alert when the
+edge partition begins receiving rows.
+
+## Expiry-based rolling partitions
+
+A possible future layout would partition the cold archive by `expires_at_ms` and provision a
+smaller rolling horizon. Records due for deletion in the same month would then share a
+partition.
+
+| Property | Current: eviction month, pre-created | Alternative: expiry month, rolling |
+| --- | --- | --- |
+| Visible partitions | 84 monthly children plus two edges | Only the active retention horizon |
+| Runtime DDL | None before 2032 | A maintenance process must create future partitions |
+| Worker permissions | No schema-changing permission | DDL must remain in a separately privileged maintenance process |
+| Mixed retention | A long-lived row can hold an old month | Long-lived rows go to their later expiry month |
+| Safe pruning test | Inspect every row's captured retention | The closed expiry range establishes that the whole month is due |
+| Long retention | Naturally stays in the eviction month | May require a partition years beyond the normal rolling horizon |
+| Primary query shape | Efficient for eviction-time audit queries | Efficient for expiry-time maintenance queries |
+| Failure mode | After 2031, rows accumulate safely in an unprunable catch-all | Missing or far-future partitions accumulate in a catch-all and require monitoring |
+| Operational burden | Larger schema, infrequent horizon migrations | Smaller schema, continuous provisioning and monitoring |
+
+The alternative is not unconditionally simpler. It exchanges catalog noise for recurring DDL,
+additional permissions, partition-horizon monitoring and a more complex PostgreSQL/MySQL
+maintenance implementation.
+
+Headgate therefore keeps the released eviction-month layout for the v0.1 series. A future
+schema revision should adopt expiry-based rolling partitions only if production evidence shows
+that mixed retention materially delays pruning. Migration 11 must not be rewritten after
+publication; any change must be a tested forward migration.
+
+## Boundaries
+
+- Admission, leases, acknowledgements, results, output, progress and tags remain entirely on
+  `headgate_job`.
+- Archive rows are not returned by ordinary job inspection. Any future audit endpoint must be
+  explicit and must keep payloads withheld by default.
+- Archive partitioning is an optional retention layer, not Headgate's dead-letter queue. The
+  inspectable `archived` job state remains in the hot lifecycle until ordinary retention
+  expires.
+- The destructive integration-test branch requires `HG_TEST_ARCHIVE_PRUNE=1` and an isolated
+  database. Normal shared-database tests never truncate archive data.

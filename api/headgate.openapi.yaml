@@ -27,6 +27,7 @@ paths:
   /queues:
     get:
       summary: List queues with backlog derivatives
+      parameters: [{$ref: '#/components/parameters/ControlLimit'}, {$ref: '#/components/parameters/ControlCursor'}]
       responses:
         '200':
           description: Queue backlog and throughput summaries.
@@ -169,13 +170,13 @@ paths:
               type: object
               required: [kind, payload]
               properties:
-                kind: {type: string}
+                kind: {type: string, maxLength: 128}
                 schema_version: {type: integer, default: 1}
-                payload: {type: string, contentEncoding: base64}
-                queue: {type: string, default: default}
+                payload: {type: string, contentEncoding: base64, maxLength: 1398104}
+                queue: {type: string, default: default, maxLength: 255}
                 priority: {type: integer}
-                partition_key: {type: string}
-                rate_class: {type: string}
+                partition_key: {type: string, maxLength: 255}
+                rate_class: {type: string, maxLength: 255}
                 weight:
                   type: integer
                   minimum: 1
@@ -392,10 +393,13 @@ paths:
   /partitions:
     get:
       summary: Show which partitions are being throttled and by how much.
-      parameters: [{name: queue, in: query, required: true, schema: {type: string}}]
+      parameters: [{name: queue, in: query, required: true, schema: {type: string}}, {$ref: '#/components/parameters/ControlLimit'}, {$ref: '#/components/parameters/ControlCursor'}]
       responses: {'200': {description: OK}}
   /quarantine:
-    get: {summary: List fingerprints that have repeatedly crashed workers., responses: {'200': {description: OK}}}
+    get:
+      summary: List fingerprints that have repeatedly crashed workers.
+      parameters: [{$ref: '#/components/parameters/ControlLimit'}, {$ref: '#/components/parameters/ControlCursor'}]
+      responses: {'200': {description: OK}}
   /quarantine/{fingerprint}:
     delete:
       summary: Release a quarantined fingerprint. Deliberate operator action.
@@ -405,6 +409,7 @@ paths:
   /workers:
     get:
       summary: List live workers and their acknowledged control state.
+      parameters: [{$ref: '#/components/parameters/ControlLimit'}, {$ref: '#/components/parameters/ControlCursor'}]
       responses:
         '200':
           description: OK
@@ -699,6 +704,7 @@ paths:
   /periodic:
     get:
       summary: Registered periodic/cron entries.
+      parameters: [{$ref: '#/components/parameters/ControlLimit'}, {$ref: '#/components/parameters/ControlCursor'}]
       responses: {'200': {description: OK}}
   /periodic/{id}:
     put:
@@ -804,6 +810,15 @@ components:
     Queue: {name: queue, in: path, required: true, schema: {type: string}}
     Id:    {name: id,    in: path, required: true, schema: {type: string}}
     Name:  {name: name,  in: path, required: true, schema: {type: string}}
+    ControlLimit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 200, default: 200}
+    ControlCursor:
+      name: cursor
+      in: query
+      description: Zero-based offset returned in the x-next-cursor response header.
+      schema: {type: integer, minimum: 0, default: 0}
     IdempotencyKey:
       name: Idempotency-Key
       in: header

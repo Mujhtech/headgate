@@ -464,6 +464,7 @@ func enqueueClientErr(w http.ResponseWriter, err error) {
 // its content, which is precisely what 422 means.
 
 const (
+	maxRequestBody = 2 << 20
 	msgBadJSON     = "bad json"
 	msgBadBody     = "invalid request body"
 	msgWrongMedia  = "expected Content-Type: application/json"
@@ -495,8 +496,13 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) (map[string]jso
 		errJSON(w, http.StatusUnsupportedMediaType, msgWrongMedia)
 		return nil, false
 	}
-	data, err := io.ReadAll(r.Body)
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBody))
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			errJSON(w, http.StatusRequestEntityTooLarge, "request body exceeds 2097152 bytes")
+			return nil, false
+		}
 		errJSON(w, http.StatusBadRequest, msgBadJSON)
 		return nil, false
 	}
@@ -644,8 +650,12 @@ func (a *api) listQueues(w http.ResponseWriter, r *http.Request) {
 		storeErr(w, err)
 		return
 	}
+	start, end, ok := controlPage(w, r, len(stats))
+	if !ok {
+		return
+	}
 	out := []map[string]any{}
-	for _, q := range stats {
+	for _, q := range stats[start:end] {
 		byState := map[string]any{}
 		for k, v := range q.ByState {
 			byState[k] = v
@@ -973,8 +983,7 @@ type enqueueBody struct {
 }
 
 func (a *api) genID() string {
-	return fmt.Sprintf("hg%012x%05x%04x", time.Now().UnixMilli(),
-		os.Getpid()&0xfffff, a.seq.Add(1)&0xffff)
+	return headgate.FormatGeneratedID(time.Now().UnixMilli(), os.Getpid(), a.seq.Add(1))
 }
 
 func (a *api) enqueue(w http.ResponseWriter, r *http.Request) {
@@ -1559,8 +1568,12 @@ func (a *api) partitions(w http.ResponseWriter, r *http.Request) {
 		storeErr(w, err)
 		return
 	}
+	start, end, ok := controlPage(w, r, len(ps))
+	if !ok {
+		return
+	}
 	out := []map[string]any{}
-	for _, p := range ps {
+	for _, p := range ps[start:end] {
 		out = append(out, map[string]any{
 			"partition_key": p.PartitionKey, "deficit": p.Deficit, "waiting": p.Waiting,
 		})
@@ -1574,8 +1587,12 @@ func (a *api) quarantine(w http.ResponseWriter, r *http.Request) {
 		storeErr(w, err)
 		return
 	}
+	start, end, ok := controlPage(w, r, len(qs))
+	if !ok {
+		return
+	}
 	out := []map[string]any{}
-	for _, q := range qs {
+	for _, q := range qs[start:end] {
 		out = append(out, map[string]any{
 			"fingerprint": q.Fingerprint, "kind": q.Kind, "crash_count": q.CrashCount,
 			"quarantined_at_ms": q.QuarantinedAtMs, "reason": q.Reason,
@@ -1621,8 +1638,12 @@ func (a *api) listPeriodic(w http.ResponseWriter, r *http.Request) {
 		storeErr(w, err)
 		return
 	}
+	start, end, ok := controlPage(w, r, len(ss))
+	if !ok {
+		return
+	}
 	out := []map[string]any{}
-	for _, s := range ss {
+	for _, s := range ss[start:end] {
 		out = append(out, scheduleJSON(s))
 	}
 	writeJSON(w, 200, out)
@@ -1819,8 +1840,12 @@ func (a *api) workers(w http.ResponseWriter, r *http.Request) {
 		storeErr(w, err)
 		return
 	}
+	start, end, ok := controlPage(w, r, len(ws))
+	if !ok {
+		return
+	}
 	out := []map[string]any{}
-	for _, wk := range ws {
+	for _, wk := range ws[start:end] {
 		out = append(out, map[string]any{
 			"worker_id": wk.WorkerID, "host": wk.Host, "pid": wk.PID,
 			"queues": wk.Queues, "concurrency": wk.Concurrency,
@@ -1833,6 +1858,32 @@ func (a *api) workers(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, 200, out)
+}
+
+// controlPage adds one consistent, bounded offset cursor to the small control-plane
+// collections. The stores also cap discovery; this layer makes every discovered row
+// reachable without letting one response grow with fleet size.
+func controlPage(w http.ResponseWriter, r *http.Request, length int) (int, int, bool) {
+	limit, ok := queryUint32(w, r, "limit", 200)
+	if !ok {
+		return 0, 0, false
+	}
+	if limit == 0 || limit > 200 {
+		errJSON(w, http.StatusBadRequest, "limit must be between 1 and 200")
+		return 0, 0, false
+	}
+	cursor, ok := queryUint64(w, r, "cursor", 0)
+	if !ok {
+		return 0, 0, false
+	}
+	if cursor > uint64(length) {
+		cursor = uint64(length)
+	}
+	end := min(cursor+uint64(limit), uint64(length))
+	if end < uint64(length) {
+		w.Header().Set("x-next-cursor", strconv.FormatUint(end, 10))
+	}
+	return int(cursor), int(end), true
 }
 
 func normalizeWorkerStatus(status string) string {
@@ -1972,7 +2023,7 @@ func (a *api) signalWorker(w http.ResponseWriter, r *http.Request) {
 // with a 200ms coalescing window, mirroring the Rust endpoint. A poll-only backend
 // gets keepalives only.
 func (a *api) events(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
+	_, ok := w.(http.Flusher)
 	if !ok {
 		errJSON(w, http.StatusInternalServerError, "streaming unsupported")
 		return
@@ -1980,7 +2031,10 @@ func (a *api) events(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(200)
-	flusher.Flush()
+	controller := http.NewResponseController(w)
+	if err := controller.Flush(); err != nil {
+		return
+	}
 	ns, notifying := any(a.store).(headgate.NotifyingStore)
 	notifying = notifying && a.store.Caps().Has(headgate.CapNotifying)
 	keepalive := time.NewTicker(15 * time.Second)
@@ -1988,9 +2042,17 @@ func (a *api) events(w http.ResponseWriter, r *http.Request) {
 	wake := make(chan string, 16)
 	if notifying {
 		go func() {
-			for r.Context().Err() == nil {
-				if q, ok, _ := ns.WaitWakeup(r.Context(), nil, time.Hour); ok {
-					wake <- q
+			for {
+				q, ok, err := ns.WaitWakeup(r.Context(), nil, time.Hour)
+				if err != nil || r.Context().Err() != nil {
+					return
+				}
+				if ok {
+					select {
+					case wake <- q:
+					case <-r.Context().Done():
+						return
+					}
 				}
 			}
 		}()
@@ -2000,22 +2062,31 @@ func (a *api) events(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-keepalive.C:
-			_, _ = fmt.Fprint(w, ": hb\n\n")
-			flusher.Flush()
+			if _, err := fmt.Fprint(w, ": hb\n\n"); err != nil {
+				return
+			}
+			if err := controller.Flush(); err != nil {
+				return
+			}
 		case first := <-wake:
 			queues := map[string]struct{}{}
 			if first != "" {
 				queues[first] = struct{}{}
 			}
-			deadline := time.After(200 * time.Millisecond)
+			deadline := time.NewTimer(200 * time.Millisecond)
 		coalesce:
 			for {
 				select {
+				case <-r.Context().Done():
+					if !deadline.Stop() {
+						<-deadline.C
+					}
+					return
 				case q := <-wake:
 					if q != "" {
 						queues[q] = struct{}{}
 					}
-				case <-deadline:
+				case <-deadline.C:
 					break coalesce
 				}
 			}
@@ -2024,8 +2095,12 @@ func (a *api) events(w http.ResponseWriter, r *http.Request) {
 				names = append(names, q)
 			}
 			data, _ := json.Marshal(map[string]any{"queues": names})
-			_, _ = fmt.Fprintf(w, "event: queue_activity\ndata: %s\n\n", data)
-			flusher.Flush()
+			if _, err := fmt.Fprintf(w, "event: queue_activity\ndata: %s\n\n", data); err != nil {
+				return
+			}
+			if err := controller.Flush(); err != nil {
+				return
+			}
 		}
 	}
 }

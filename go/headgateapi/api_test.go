@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -27,11 +28,57 @@ type errStore struct {
 	err error
 }
 
+func TestRequestBodyHasAHardLimit(t *testing.T) {
+	h := Handler(&errStore{err: errors.New("store must not be reached")})
+	body := `{"kind":"work","payload":"` + strings.Repeat("x", maxRequestBody) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(body))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("idempotency-key", "oversized-body")
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, req)
+	if res.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+}
+
 type outputAPIStore struct {
 	errStore
 	output     *headgate.JobOutput
 	progress   *headgate.JobProgress
 	checkpoint *headgate.Checkpoint
+}
+
+type queuePageStore struct{ errStore }
+
+func (s *queuePageStore) QueueStats(context.Context) ([]headgate.QueueStatsView, error) {
+	stats := make([]headgate.QueueStatsView, 205)
+	for i := range stats {
+		stats[i] = headgate.QueueStatsView{Queue: fmt.Sprintf("queue-%03d", i), Weight: 1}
+	}
+	return stats, nil
+}
+
+func TestControlCollectionsAreBoundedAndReturnANextCursor(t *testing.T) {
+	h := Handler(&queuePageStore{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/queues?limit=2&cursor=1", nil)
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || res.Header().Get("x-next-cursor") != "3" {
+		t.Fatalf("status=%d cursor=%q body=%s", res.Code, res.Header().Get("x-next-cursor"), res.Body.String())
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0]["queue"] != "queue-001" {
+		t.Fatalf("unexpected page: %#v", rows)
+	}
+
+	bad := httptest.NewRecorder()
+	h.ServeHTTP(bad, httptest.NewRequest(http.MethodGet, "/api/v1/queues?limit=201", nil))
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("oversized page status=%d body=%s", bad.Code, bad.Body.String())
+	}
 }
 
 func (s *outputAPIStore) GetJobOutput(context.Context, string) (*headgate.JobOutput, error) {

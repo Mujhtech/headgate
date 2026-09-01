@@ -12,9 +12,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use axum::extract::DefaultBodyLimit;
 use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{FromRequest, FromRequestParts, Path, Query, State};
-use axum::http::{Method, StatusCode};
+use axum::http::{HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router};
@@ -144,7 +145,7 @@ pub fn router(store: Arc<dyn Inspect>, cfg: ApiConfig) -> Router {
     } else {
         api
     };
-    let api = api.with_state(state);
+    let api = api.layer(DefaultBodyLimit::max(2 << 20)).with_state(state);
     Router::new().nest("/api/v1", api)
 }
 
@@ -209,6 +210,12 @@ where
 }
 
 fn json_rejection(r: JsonRejection) -> Response {
+    if r.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        return err_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "request body exceeds 2097152 bytes",
+        );
+    }
     match r {
         // Bodied routes require the media type. axum enforces this already; keeping the
         // 415 is deliberate — a proxy that strips Content-Type must not be answered with
@@ -435,8 +442,54 @@ async fn meta(State(s): State<ApiState>) -> Response {
     .into_response()
 }
 
-async fn list_queues(State(s): State<ApiState>) -> ApiResult {
+#[derive(Deserialize)]
+struct ControlPageQuery {
+    #[serde(default = "default_control_page_limit")]
+    limit: usize,
+    #[serde(default)]
+    cursor: usize,
+}
+
+fn default_control_page_limit() -> usize {
+    200
+}
+
+fn control_page(length: usize, query: &ControlPageQuery) -> Result<(usize, usize), Response> {
+    if query.limit == 0 || query.limit > 200 {
+        return Err(err_response(
+            StatusCode::BAD_REQUEST,
+            "limit must be between 1 and 200",
+        ));
+    }
+    let start = query.cursor.min(length);
+    Ok((start, start.saturating_add(query.limit).min(length)))
+}
+
+fn paged_values(values: Vec<Value>, start: usize, end: usize) -> Response {
+    let length = values.len();
+    let mut response = Json(
+        values
+            .into_iter()
+            .skip(start)
+            .take(end - start)
+            .collect::<Vec<_>>(),
+    )
+    .into_response();
+    if end < length {
+        response.headers_mut().insert(
+            "x-next-cursor",
+            HeaderValue::from_str(&end.to_string()).expect("numeric cursor is a valid header"),
+        );
+    }
+    response
+}
+
+async fn list_queues(
+    State(s): State<ApiState>,
+    ApiQuery(query): ApiQuery<ControlPageQuery>,
+) -> ApiResult {
     let stats = s.store.queue_stats().await.map_err(store_err)?;
+    let (start, end) = control_page(stats.len(), &query)?;
     let body: Vec<Value> = stats
         .iter()
         .map(|q| {
@@ -469,7 +522,7 @@ async fn list_queues(State(s): State<ApiState>) -> ApiResult {
             })
         })
         .collect();
-    Ok(Json(body).into_response())
+    Ok(paged_values(body, start, end))
 }
 
 #[derive(Deserialize, Default)]
@@ -1153,6 +1206,10 @@ async fn put_concurrency_limit(
 #[derive(Deserialize)]
 struct PartitionParams {
     queue: String,
+    #[serde(default = "default_control_page_limit")]
+    limit: usize,
+    #[serde(default)]
+    cursor: usize,
 }
 
 async fn partitions(
@@ -1160,6 +1217,11 @@ async fn partitions(
     ApiQuery(p): ApiQuery<PartitionParams>,
 ) -> ApiResult {
     let parts = s.store.partitions(&p.queue).await.map_err(store_err)?;
+    let query = ControlPageQuery {
+        limit: p.limit,
+        cursor: p.cursor,
+    };
+    let (start, end) = control_page(parts.len(), &query)?;
     let body: Vec<Value> = parts
         .iter()
         .map(|x| {
@@ -1170,11 +1232,15 @@ async fn partitions(
             })
         })
         .collect();
-    Ok(Json(body).into_response())
+    Ok(paged_values(body, start, end))
 }
 
-async fn quarantine(State(s): State<ApiState>) -> ApiResult {
+async fn quarantine(
+    State(s): State<ApiState>,
+    ApiQuery(query): ApiQuery<ControlPageQuery>,
+) -> ApiResult {
     let entries = s.store.quarantine_list().await.map_err(store_err)?;
+    let (start, end) = control_page(entries.len(), &query)?;
     let body: Vec<Value> = entries
         .iter()
         .map(|q| {
@@ -1187,7 +1253,7 @@ async fn quarantine(State(s): State<ApiState>) -> ApiResult {
             })
         })
         .collect();
-    Ok(Json(body).into_response())
+    Ok(paged_values(body, start, end))
 }
 
 async fn quarantine_release(State(s): State<ApiState>, Path(fp): Path<String>) -> ApiResult {
@@ -1338,9 +1404,17 @@ fn schedule_json(s: &Schedule) -> Value {
     })
 }
 
-async fn list_periodic(State(s): State<ApiState>) -> ApiResult {
+async fn list_periodic(
+    State(s): State<ApiState>,
+    ApiQuery(query): ApiQuery<ControlPageQuery>,
+) -> ApiResult {
     let schedules = s.store.list_schedules().await.map_err(store_err)?;
-    Ok(Json(schedules.iter().map(schedule_json).collect::<Vec<_>>()).into_response())
+    let (start, end) = control_page(schedules.len(), &query)?;
+    Ok(paged_values(
+        schedules.iter().map(schedule_json).collect::<Vec<_>>(),
+        start,
+        end,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -1541,13 +1615,17 @@ const WORKER_STALE_MS: i64 = 900_000;
 /// would overflow `bigint`. Live + stale = this; stale is the difference.
 const WORKER_ALL_MS: i64 = 315_576_000_000_000;
 
-async fn workers(State(s): State<ApiState>) -> ApiResult {
+async fn workers(
+    State(s): State<ApiState>,
+    ApiQuery(query): ApiQuery<ControlPageQuery>,
+) -> ApiResult {
     // 15 minutes of heartbeat grace; stale workers age out of the view.
     let ws = s
         .store
         .list_workers(WORKER_STALE_MS)
         .await
         .map_err(store_err)?;
+    let (start, end) = control_page(ws.len(), &query)?;
     let body: Vec<Value> = ws
         .iter()
         .map(|w| {
@@ -1571,7 +1649,7 @@ async fn workers(State(s): State<ApiState>) -> ApiResult {
             })
         })
         .collect();
-    Ok(Json(body).into_response())
+    Ok(paged_values(body, start, end))
 }
 
 /// surveyed policy behavior THE CLUSTER VIEW — the piece the multi-node-heartbeat row was
@@ -1729,11 +1807,10 @@ fn gen_id(seq: &AtomicU64) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    format!(
-        "hg{:012x}{:05x}{:04x}",
+    headgate_core::format_generated_id(
         now.as_millis() as u64,
-        std::process::id() & 0xfffff,
-        seq.fetch_add(1, Ordering::Relaxed) & 0xffff
+        std::process::id(),
+        seq.fetch_add(1, Ordering::Relaxed),
     )
 }
 

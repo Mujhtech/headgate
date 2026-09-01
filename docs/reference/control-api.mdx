@@ -16,7 +16,10 @@ The API is mounted at:
 
 ## Safety defaults
 
-- List endpoints use opaque cursors and server-capped page sizes.
+- Job lists use opaque keyset cursors. Queues, workers, schedules, partitions, and
+  quarantine use a bounded `limit` (maximum 200) plus a numeric cursor returned in the
+  `x-next-cursor` response header. Redis discovers these collections with bounded
+  `SSCAN`, never a blocking `SMEMBERS`.
 - Job payloads are omitted unless `include_payload=true` is requested and allowed.
 - Mutating requests require `Idempotency-Key`.
 - Explicit-ID actions are bounded; selector-based bulk actions run asynchronously.

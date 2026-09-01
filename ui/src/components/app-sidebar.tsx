@@ -1,13 +1,15 @@
-import { Link, useRouterState } from "@tanstack/react-router"
+import { useQuery } from "@tanstack/react-query";
+import { Link, useRouterState } from "@tanstack/react-router";
 import {
   ActivityIcon,
   CalendarClockIcon,
+  ChartNoAxesCombinedIcon,
   GaugeIcon,
   GitForkIcon,
   ListChecksIcon,
   ServerIcon,
   ShieldAlertIcon,
-} from "lucide-react"
+} from "lucide-react";
 
 import {
   Sidebar,
@@ -19,31 +21,54 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarRail,
-} from "@/components/ui/sidebar"
-import { config } from "@/lib/config"
+} from "@/components/ui/sidebar";
+import { api } from "@/lib/api";
+import { config } from "@/lib/config";
+
+interface RuntimeMeta {
+  version?: string;
+}
 
 const navigation = [
-  { to: "/queues", label: "Queues", icon: GaugeIcon },
-  { to: "/jobs", label: "Jobs", icon: ListChecksIcon },
-  { to: "/workflows", label: "Workflows", icon: GitForkIcon },
-  { to: "/rate-classes", label: "Rate classes", icon: ActivityIcon },
-  { to: "/quarantine", label: "Quarantine", icon: ShieldAlertIcon },
-  { to: "/periodic", label: "Periodic", icon: CalendarClockIcon },
-  { to: "/workers", label: "Workers", icon: ServerIcon },
-] as const
+  { icon: ChartNoAxesCombinedIcon, label: "Overview", to: "/overview" },
+  { icon: GaugeIcon, label: "Queues", to: "/queues" },
+  { icon: ListChecksIcon, label: "Jobs", to: "/jobs" },
+  { icon: GitForkIcon, label: "Workflows", to: "/workflows" },
+  { icon: ActivityIcon, label: "Rate classes", to: "/rate-classes" },
+  { icon: ShieldAlertIcon, label: "Quarantine", to: "/quarantine" },
+  { icon: CalendarClockIcon, label: "Periodic", to: "/periodic" },
+  { icon: ServerIcon, label: "Workers", to: "/workers" },
+] as const;
 
 export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
-  const pathname = useRouterState({ select: (state) => state.location.pathname })
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  });
+  const metaQuery = useQuery({
+    queryFn: ({ signal }) => api<RuntimeMeta>("/meta", { signal }),
+    queryKey: ["api", "meta"],
+    retry: 1,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  const runtimeVersion = metaQuery.data?.version?.trim();
+  const versionLabel = runtimeVersion
+    ? `${VERSION_NUMBER_PREFIX.test(runtimeVersion) ? "v" : ""}${runtimeVersion}`
+    : metaQuery.isPending
+      ? "…"
+      : "version unavailable";
 
   return (
-    <Sidebar variant="inset" collapsible="icon" {...props}>
+    <Sidebar collapsible="icon" variant="inset" {...props}>
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="lg" tooltip="headgate" render={<Link to="/queues" />}>
+            <SidebarMenuButton
+              render={<Link to="/overview" />}
+              size="lg"
+              tooltip="headgate"
+            >
               <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
-                <span className="text-sm font-semibold">h</span>
+                <span className="font-semibold text-sm">h</span>
               </div>
               <div className="grid flex-1 text-left leading-tight">
                 <span className="truncate font-semibold">headgate</span>
@@ -60,9 +85,11 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
             {navigation.map((item) => (
               <SidebarMenuItem key={item.to}>
                 <SidebarMenuButton
-                  isActive={pathname === item.to || pathname.startsWith(`${item.to}/`)}
-                  tooltip={item.label}
+                  isActive={
+                    pathname === item.to || pathname.startsWith(`${item.to}/`)
+                  }
                   render={<Link to={item.to} />}
+                  tooltip={item.label}
                 >
                   <item.icon />
                   <span>{item.label}</span>
@@ -73,11 +100,20 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
         </SidebarGroup>
       </SidebarContent>
       <SidebarFooter>
-        <p className="px-2 text-xs text-sidebar-foreground/65 group-data-[collapsible=icon]:hidden">
-          API {config.apiBase}
-        </p>
+        <div className="space-y-0.5 px-2 text-sidebar-foreground/65 text-xs group-data-[collapsible=icon]:hidden">
+          <p>
+            Headgate{" "}
+            <span className="font-mono" translate="no">
+              {versionLabel}
+            </span>
+          </p>
+          <p className="truncate" title={`API ${config.apiBase}`}>
+            API {config.apiBase}
+          </p>
+        </div>
       </SidebarFooter>
-      <SidebarRail />
+      {/*<SidebarRail />*/}
     </Sidebar>
-  )
+  );
 }
+const VERSION_NUMBER_PREFIX = /^\d/;

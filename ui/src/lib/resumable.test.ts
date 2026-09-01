@@ -1,22 +1,22 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it } from "vitest";
 
-import { hasResumableCheckpoint, type JobCheckpoint } from "@/lib/resumable"
+import { hasResumableCheckpoint, type JobCheckpoint } from "@/lib/resumable";
 
 const empty: JobCheckpoint = {
-  last_completed_step: null,
   completed_steps: [],
-  in_progress_step: null,
-  cursor_step: null,
+  crashes_by_step: {},
   cursor: null,
+  cursor_step: null,
+  in_progress_step: null,
+  last_completed_step: null,
   schema_version: 0,
   step_set_hash: "",
-  crashes_by_step: {},
-}
+};
 
 describe("resumable checkpoint presentation", () => {
   it("recognizes an empty checkpoint", () => {
-    expect(hasResumableCheckpoint(empty)).toBe(false)
-  })
+    expect(hasResumableCheckpoint(empty)).toBe(false);
+  });
 
   it.each([
     { completed_steps: ["download"] },
@@ -25,6 +25,6 @@ describe("resumable checkpoint presentation", () => {
     { crashes_by_step: { transform: 1 } },
     { schema_version: 2 },
   ])("recognizes persisted resumable state", (change) => {
-    expect(hasResumableCheckpoint({ ...empty, ...change })).toBe(true)
-  })
-})
+    expect(hasResumableCheckpoint({ ...empty, ...change })).toBe(true);
+  });
+});

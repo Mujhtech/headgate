@@ -1,9 +1,14 @@
-import { QueryClientProvider } from "@tanstack/react-query"
-import { HeadContent, Link, Scripts, createRootRoute } from "@tanstack/react-router"
+import { QueryClientProvider } from "@tanstack/react-query";
+import {
+  createRootRoute,
+  HeadContent,
+  Link,
+  Scripts,
+} from "@tanstack/react-router";
 
-import { TooltipProvider } from "@/components/ui/tooltip"
-import { queryClient } from "@/lib/query"
-import appCss from "../styles.css?url"
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { queryClient } from "@/lib/query";
+import appCss from "../styles.css?url";
 
 export const Route = createRootRoute({
   head: () => ({
@@ -17,19 +22,28 @@ export const Route = createRootRoute({
   }),
   shellComponent: RootDocument,
   notFoundComponent: NotFound,
-})
+});
 
 function NotFound() {
   return (
     <main className="grid min-h-svh place-items-center p-6 text-center">
       <div>
-        <p className="text-sm text-muted-foreground">404</p>
-        <h1 className="mt-2 text-2xl font-semibold text-balance">This console page does not exist</h1>
-        <p className="mt-2 text-sm text-muted-foreground">Use the operator navigation to return to a supported headgate view.</p>
-        <Link to="/queues" className="mt-5 inline-flex rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90">Open queues</Link>
+        <p className="text-muted-foreground text-sm">404</p>
+        <h1 className="mt-2 text-balance font-semibold text-2xl">
+          This console page does not exist
+        </h1>
+        <p className="mt-2 text-muted-foreground text-sm">
+          Use the operator navigation to return to a supported headgate view.
+        </p>
+        <Link
+          className="mt-5 inline-flex rounded-lg bg-primary px-4 py-2 font-medium text-primary-foreground text-sm hover:opacity-90"
+          to="/overview"
+        >
+          Open overview
+        </Link>
       </div>
     </main>
-  )
+  );
 }
 
 function RootDocument({ children }: { children: React.ReactNode }) {
@@ -48,5 +62,5 @@ function RootDocument({ children }: { children: React.ReactNode }) {
         <Scripts />
       </body>
     </html>
-  )
+  );
 }

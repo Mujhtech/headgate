@@ -1,27 +1,33 @@
-import { useSyncExternalStore } from "react"
+import { useSyncExternalStore } from "react";
 
-const listeners = new Set<() => void>()
-let interval: number | null = null
-let now = Date.now()
+const listeners = new Set<() => void>();
+let interval: number | null = null;
+let now = Date.now();
 
 function subscribe(listener: () => void) {
-  listeners.add(listener)
+  listeners.add(listener);
   if (interval == null) {
-    now = Date.now()
+    now = Date.now();
     interval = window.setInterval(() => {
-      now = Date.now()
-      listeners.forEach((notify) => notify())
-    }, 1_000)
+      now = Date.now();
+      for (const notify of listeners) {
+        notify();
+      }
+    }, 1000);
   }
   return () => {
-    listeners.delete(listener)
+    listeners.delete(listener);
     if (listeners.size === 0 && interval != null) {
-      window.clearInterval(interval)
-      interval = null
+      window.clearInterval(interval);
+      interval = null;
     }
-  }
+  };
 }
 
 export function useNow() {
-  return useSyncExternalStore(subscribe, () => now, () => now)
+  return useSyncExternalStore(
+    subscribe,
+    () => now,
+    () => now
+  );
 }

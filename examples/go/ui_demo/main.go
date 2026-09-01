@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	headgate "github.com/mujhtech/headgate/go"
 	"github.com/mujhtech/headgate/go/headgateui"
 )
 
@@ -54,6 +55,7 @@ func main() {
 func newDemoHandler(now time.Time) http.Handler {
 	api := &demoAPI{now: now}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/meta", api.meta)
 	mux.HandleFunc("GET /api/v1/jobs/counts", api.jobCounts)
 	mux.HandleFunc("GET /api/v1/jobs/{id}/admission", api.admission)
 	mux.HandleFunc("GET /api/v1/jobs/{id}/checkpoint", api.checkpoint)
@@ -72,6 +74,15 @@ func newDemoHandler(now time.Time) http.Handler {
 	mux.HandleFunc("GET /api/v1/events", api.events)
 	mux.Handle("/", headgateui.NewHandler(headgateui.Config{APIBase: "/api/v1", ReadOnly: true}))
 	return mux
+}
+
+func (d *demoAPI) meta(w http.ResponseWriter, _ *http.Request) {
+	d.writeJSON(w, map[string]any{
+		"version":      headgate.Version,
+		"backend":      "demo",
+		"capabilities": []string{"inspect"},
+		"limits":       map[string]any{"max_page_size": 200},
+	})
 }
 
 func (d *demoAPI) milliseconds(offset time.Duration) int64 {
@@ -203,18 +214,33 @@ func (d *demoAPI) checkpoint(w http.ResponseWriter, r *http.Request) {
 
 func (d *demoAPI) queues(w http.ResponseWriter, _ *http.Request) {
 	d.writeJSON(w, map[string]any{"queues": []map[string]any{
-		{"queue": "critical", "paused": false, "time_to_drain_ms": 42000, "arrival_rate": 5.4, "drain_rate": 8.1, "by_state": map[string]int{"available": 18, "running": 7, "retryable": 2}},
-		{"queue": "default", "paused": false, "time_to_drain_ms": 310000, "arrival_rate": 18.7, "drain_rate": 19.2, "by_state": map[string]int{"available": 94, "running": 21}},
-		{"queue": "mailers", "paused": false, "time_to_drain_ms": nil, "arrival_rate": 31.5, "drain_rate": 24.0, "by_state": map[string]int{"available": 631, "retryable": 15}},
-		{"queue": "imports", "paused": false, "time_to_drain_ms": 780000, "arrival_rate": 2.2, "drain_rate": 3.8, "by_state": map[string]int{"available": 48, "running": 4, "scheduled": 9}},
-		{"queue": "maintenance", "paused": true, "time_to_drain_ms": nil, "arrival_rate": 0.2, "drain_rate": 0.0, "by_state": map[string]int{"available": 12}},
+		{"queue": "critical", "paused": false, "unfinished_jobs": 27, "oldest_available_ms": 14000, "time_to_drain_ms": 42000, "arrival_rate": 5.4, "drain_rate": 8.1, "by_state": map[string]int{"available": 18, "running": 7, "retryable": 2}},
+		{"queue": "default", "paused": false, "unfinished_jobs": 115, "oldest_available_ms": 96000, "time_to_drain_ms": 310000, "arrival_rate": 18.7, "drain_rate": 19.2, "by_state": map[string]int{"available": 94, "running": 21}},
+		{"queue": "mailers", "paused": false, "unfinished_jobs": 646, "oldest_available_ms": 612000, "time_to_drain_ms": nil, "arrival_rate": 31.5, "drain_rate": 24.0, "by_state": map[string]int{"available": 631, "retryable": 15}},
+		{"queue": "imports", "paused": false, "unfinished_jobs": 61, "oldest_available_ms": 183000, "time_to_drain_ms": 780000, "arrival_rate": 2.2, "drain_rate": 3.8, "by_state": map[string]int{"available": 48, "running": 4, "scheduled": 9}},
+		{"queue": "maintenance", "paused": true, "unfinished_jobs": 12, "oldest_available_ms": 3600000, "time_to_drain_ms": nil, "arrival_rate": 0.2, "drain_rate": 0.0, "by_state": map[string]int{"available": 12}},
 	}})
 }
 
-func (d *demoAPI) queueHistory(w http.ResponseWriter, _ *http.Request) {
+func (d *demoAPI) queueHistory(w http.ResponseWriter, r *http.Request) {
 	buckets := make([]map[string]any, 0, 24)
 	for index := 23; index >= 0; index-- {
-		buckets = append(buckets, map[string]any{"at_ms": d.milliseconds(-time.Duration(index) * 5 * time.Minute), "arrived": 12 + (index*7)%24, "completed": 10 + (index*11)%27})
+		failed := 0
+		if index%7 == 0 {
+			failed = 2
+		}
+		rejections := map[string]int{}
+		if r.PathValue("queue") == "mailers" && index%5 == 0 {
+			rejections["rate_class"] = 3
+		}
+		buckets = append(buckets, map[string]any{
+			"at_ms":                d.milliseconds(-time.Duration(index) * 5 * time.Minute),
+			"arrived":              12 + (index*7)%24,
+			"completed":            10 + (index*11)%27,
+			"failed":               failed,
+			"depth":                120 + (23-index)*18,
+			"admission_rejections": rejections,
+		})
 	}
 	d.writeJSON(w, buckets)
 }

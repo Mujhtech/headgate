@@ -1,1 +1,0 @@
-import{Bn as e,Qn as t}from"./tooltip-DYGHePXL.js";import{s as n}from"./console-B05gUP46.js";import{n as r}from"./jobs-76aXZlFx.js";import{a as i}from"./index-BNoB9YLs.js";var a=t();function o(){let t=i.useSearch();return(0,a.jsxs)(a.Fragment,{children:[(0,a.jsx)(r,{...n()},`${t.q??``}:${t.queue??``}:${t.state??``}:${t.cursor??``}`),(0,a.jsx)(e,{})]})}export{o as component};

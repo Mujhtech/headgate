@@ -1,1 +1,0 @@
-import{Qn as e}from"./tooltip-DYGHePXL.js";import{s as t}from"./console-B05gUP46.js";import{n}from"./workflows-DM5oUC-9.js";var r=e();function i(){return(0,r.jsx)(n,{...t()})}export{i as component};

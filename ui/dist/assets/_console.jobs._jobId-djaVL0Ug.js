@@ -1,0 +1,1 @@
+import{s as e}from"./utils-DfzJLo_X.js";import{s as t}from"./console-D_Ddvzug.js";import{t as n}from"./jobs-CqSPFW8r.js";import{n as r}from"./index-CkYKsBL_.js";var i=e();function a(){let{jobId:e}=r.useParams(),a=r.useNavigate(),o=t();return(0,i.jsx)(n,{id:e,open:!0,setOpen:e=>{e||a({to:`/jobs`,search:e=>e,replace:!0})},notify:o.notify})}export{a as component};

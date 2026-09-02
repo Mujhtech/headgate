@@ -78,8 +78,8 @@ Install the runtime and one backend:
 
 ```toml
 [dependencies]
-headgate = "0.1"
-headgate-postgres = "0.1" # or headgate-mysql / headgate-redis
+headgate = "0.1.6"
+headgate-postgres = "0.1.6" # or headgate-mysql / headgate-redis
 ```
 
 See the [Rust SDK guide](https://headgate.mintlify.app/docs/sdk/rust/overview) for client,

@@ -14,8 +14,8 @@ uses. PostgreSQL is the reference backend; MySQL and Redis share the core admiss
 
 ```toml Cargo.toml
 [dependencies]
-headgate = "0.1"
-headgate-postgres = "0.1" # or headgate-mysql / headgate-redis
+headgate = "0.1.6"
+headgate-postgres = "0.1.6" # or headgate-mysql / headgate-redis
 # Optional: headgate-workflow, headgate-crypto, headgate-otel, headgate-ui
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

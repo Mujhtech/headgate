@@ -1665,6 +1665,9 @@ func (s *MysqlStore) SampleQueueMemory(ctx context.Context, limit uint32) (uint3
 		qs = append(qs, q)
 	}
 	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
 	for _, q := range qs {
 		var bytes uint64
 		var n uint32

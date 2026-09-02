@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -56,26 +57,42 @@ func TestRegisterBatchFuncRunsOneCallAndReturnsPerJobResults(t *testing.T) {
 }
 
 func TestRegisterBatchFuncFlushesAtMaxDelay(t *testing.T) {
-	reg := NewRegistry()
-	if err := RegisterBatchFunc[batchArgs](reg, 10, 5*time.Millisecond, func(jobs []BatchJob[batchArgs]) []error {
-		return make([]error, len(jobs))
-	}); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() {
-		done <- reg.handlers["batch.test"](context.Background(), Claim{Envelope: Envelope{
-			ID: "job", Kind: "batch.test", Payload: []byte(`{"N":1}`),
-		}})
-	}()
-	select {
-	case err := <-done:
-		if err != nil {
+	synctest.Test(t, func(t *testing.T) {
+		reg := NewRegistry()
+		var calls atomic.Int32
+		if err := reg.RegisterBatchFunc[batchArgs](10, 5*time.Millisecond, func(jobs []BatchJob[batchArgs]) []error {
+			calls.Add(1)
+			if len(jobs) != 1 || jobs[0].Job.Args.N != 1 {
+				t.Errorf("unexpected batch: %+v", jobs)
+			}
+			return make([]error, len(jobs))
+		}); err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("batch did not flush at max delay")
-	}
+		done := make(chan error, 1)
+		go func() {
+			done <- reg.handlers["batch.test"](context.Background(), Claim{Envelope: Envelope{
+				ID: "job", Kind: "batch.test", Payload: []byte(`{"N":1}`),
+			}})
+		}()
+		synctest.Wait()
+		synctest.Sleep(4 * time.Millisecond)
+		if calls.Load() != 0 {
+			t.Fatal("batch flushed before its maximum delay")
+		}
+		synctest.Sleep(time.Millisecond)
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatal("batch did not flush at max delay")
+		}
+		if calls.Load() != 1 {
+			t.Fatalf("batch calls = %d, want 1", calls.Load())
+		}
+	})
 }
 
 func TestCancelledPendingBatchMemberNeverReachesHandler(t *testing.T) {
@@ -107,5 +124,28 @@ func TestCancelledPendingBatchMemberNeverReachesHandler(t *testing.T) {
 	case <-called:
 		t.Fatal("cancelled member reached batch handler")
 	default:
+	}
+}
+
+func TestRegistryBatchMethodRejectsInvalidConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		size  int
+		delay time.Duration
+	}{
+		{"zero-size", 0, time.Second}, {"sub-millisecond", 1, time.Microsecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := NewRegistry()
+			if err := reg.RegisterBatchFunc[batchArgs](tc.size, tc.delay, func([]BatchJob[batchArgs]) []error {
+				t.Error("invalid batch handler ran")
+				return nil
+			}); err == nil {
+				t.Fatal("invalid configuration accepted")
+			}
+			if len(reg.handlers) != 0 {
+				t.Fatal("invalid configuration left a handler registered")
+			}
+		})
 	}
 }

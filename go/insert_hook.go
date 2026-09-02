@@ -49,14 +49,12 @@ func classifyInsertOutcome(err error) InsertOutcome {
 	if err == nil {
 		return InsertOutcome{Kind: InsertOutcomeSucceeded}
 	}
-	var duplicate *DuplicateError
-	if errors.As(err, &duplicate) {
+	if duplicate, ok := errors.AsType[*DuplicateError](err); ok {
 		return InsertOutcome{
 			Kind: InsertOutcomeDuplicate, ExistingID: duplicate.ExistingID, Replaced: duplicate.Replaced, Err: err,
 		}
 	}
-	var conflict *IDConflictError
-	if errors.As(err, &conflict) {
+	if conflict, ok := errors.AsType[*IDConflictError](err); ok {
 		return InsertOutcome{
 			Kind: InsertOutcomeIDConflict, JobID: conflict.JobID, Err: err,
 		}

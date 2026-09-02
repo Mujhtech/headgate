@@ -87,6 +87,9 @@ worker, and enqueue setup.
 
 ### Go
 
+Requires Go 1.27 or newer. See the [Go generics guide](docs/go-generics.md) for
+typed APIs and the Go 1.27 migration.
+
 ```go
 type WelcomeEmail struct {
 	Address string `json:"address"`

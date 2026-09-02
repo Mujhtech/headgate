@@ -58,6 +58,7 @@ evidence-debt: 0
 - go-mysql: driver/headgatemysql/store_test.go::TestStickyRoutingIsStrictBoundedAndSurvivesRequeue
 
 ### Task aggregation / batch handlers
+- go: batch_handler_test.go::TestRegistryBatchMethodRejectsInvalidConfiguration
 - rust: crates/headgate-core/src/lib.rs::admission_units_group_same_kind_and_respect_bound
 - rust: crates/headgate/tests/batch_handler.rs::typed_batch_handler_runs_once_and_acks_each_member_independently
 - rust: crates/headgate/tests/batch_handler.rs::typed_batch_handler_flushes_at_max_delay
@@ -105,6 +106,7 @@ NOTE: these are the security/shape contract. A live PostgreSQL maintenance run i
 
 ### **CLI**
 - go: headgatectl/main_test.go::TestClientUsesBoundedControlAPIAndBearerAuthentication
+- go: headgatectl/main_test.go::TestClientTimeoutCancelsRequestAndBodyRead
 NOTE: command construction is compile-tested with Cobra; the client test pins the API-only boundary and bearer propagation.
 
 ### **Redis Sentinel / Cluster**
@@ -163,6 +165,7 @@ NOTE: all six store/language cells assert newest-first retention at exactly 100 
 ## Enqueue
 
 ### Typed enqueue
+- go: runtime_test.go::TestRegistryMethodsPreserveValidationAndDispatch
 - rust: crates/headgate/tests/derive.rs::derive_generates_identity_and_json_codec
 - rust: crates/headgate/tests/runtime.rs::drain_success_retry_panic_and_control_outcomes
 - go: driver/headgatepgx/runtime_test.go::TestGoRuntimeDrainStepsAndPanics
@@ -642,6 +645,8 @@ NOTE: round 32l. Deleting the lost-lease check from `extend_lease` (`let _ = los
 - rust: crates/headgate/tests/task_data.rs::extensions_are_keyed_and_retrieved_by_concrete_type
 - rust: crates/headgate/tests/task_data.rs::concurrent_jobs_have_isolated_typed_data_and_it_never_enters_the_envelope
 - go: task_data_test.go::TestExtensionsAreKeyedAndRetrievedByConcreteType
+- go: task_data_test.go::TestExtensionMethodsShareTypedState
+- go: task_data_test.go::TestExtensionMethodsNilReceiver
 - go: headgatetest/task_data_test.go::TestConcurrentJobsHaveIsolatedTypedDataAndItNeverEntersTheEnvelope
 NOTE: round 32y. The container tests pin concrete-type lookup, wrong-type misses, replacement and removal; Go additionally requires `SetJobData` outside a handler to return `ErrTaskDataUnavailable` rather than falling back to a global. The runtime tests drive the real concurrent worker loop, not a type-map unit helper: two jobs store the SAME concrete type, both rendezvous before either reads, and each must recover its own marker while still seeing the unchanged worker default. They also require successful ack and inspect the retained envelope for the marker, so the proof covers dispatch lifetime and the persistence boundary together. Making the job map reuse the worker map failed both tests; the focused Go tests also pass `-race`. This is the storage substrate only—handler-parameter extraction remains a separate ❌ row.
 
@@ -1084,6 +1089,7 @@ NOTE: the two live Postgres control-channel tests deliver `restart` through a ru
 - go: driver/headgatepgx/store_test.go::TestNotifyWakesAWaitingSubscriber
 - go: driver/headgateredis/store_test.go::TestEnqueuePublishWakesAWaitingSubscriber
 - rust: crates/headgate-api/tests/api.rs::sse_events_stream_queue_activity
+- go: headgateapi/api_test.go::TestEventStreamHeartbeatCoalescingAndCancellation
 NOTE: all four prove `wait_wakeup`/`WaitWakeup` returns on an enqueue (plus the NOTIFYING cap); nothing asserts the row's claim that a worker loop's poll wait is actually shortcut by it.
 
 ## Observability
@@ -1148,6 +1154,11 @@ NOTE: the runtime tests prove the `JobSpan` hook fires exactly once with the par
 - go: tracecontext_test.go::TestTraceContextOfReadsTheTwoReservedHeaders
 - sh: xlang §8.4: Go enqueues traceparent -> Rust reads back the IDENTICAL value
 - sh: xlang §8.4 (Redis): a header-less job writes no headers field at all
+
+### Go worker profiles
+- go: runtime_test.go::TestWorkerProfileLabelsFollowDispatchAndRestoreCaller
+- go: runtime_test.go::TestWorkerAndDutyProfileLabels
+NOTE: Go-only operational profiles. The runtime supplies labels; the embedding application owns collection. The leak profile is the standard library detector and cannot diagnose every stuck handler.
 
 ### Metrics facade
 - rust: crates/headgate/src/worker.rs::a_sweep_that_deleted_rows_says_so

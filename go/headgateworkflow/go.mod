@@ -1,6 +1,6 @@
 module github.com/mujhtech/headgate/go/headgateworkflow
 
-go 1.24.0
+go 1.27.0
 
 require github.com/mujhtech/headgate/go v0.1.6
 

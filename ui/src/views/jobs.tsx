@@ -1199,12 +1199,15 @@ export function JobsView({ notify }: ViewProps) {
             <Badge variant="outline">{counts.data?.counts[value] ?? 0}</Badge>
           </Button>
         ))}
-        {counts.data?.approximate && (
+
+      </nav>
+      {counts.data?.approximate && (
+        <div className="flex">
           <span className="self-center text-muted-foreground text-xs">
             Counts are approximate
           </span>
-        )}
-      </nav>
+       </div>
+      )}
       <Card>
         <CardContent className="space-y-3 pt-4">
           <form className="flex flex-wrap items-end gap-2" onSubmit={submit}>

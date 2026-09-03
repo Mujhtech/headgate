@@ -207,11 +207,15 @@ paths:
     get:
       summary: Job detail — attempts timeline, errors, and per-attempt logs.
       description: |
-        River's detail view shows a timeline plus a per-attempt section with timing, the
-        error, and execution logs (its `riverlog` middleware persists them to the job).
-        Per-attempt logs are the difference between "it failed again" and knowing why, so
-        the envelope carries them rather than sending the operator to a log aggregator
-        with a job id and hope. `include_payload` applies here too.
+        Attempt history includes errors and logs saved at acknowledgement, not a live log stream.
+        Each attempt's logs property remains an array of strings. Plain strings are info-level
+        messages. Structured entries start with U+001E followed by "headgate-log-v1:" and a
+        JSON object: level (debug/info/warn/error), at_ms (worker capture time), message,
+        optional fields (scalar values), and optional truncated (boolean). Each encoded entry
+        is bounded to 2048 UTF-8 bytes. Unknown versions or malformed entries should display
+        as literal text. Log timestamps do not participate in store policy or lease decisions.
+        Logs may contain application data and are not encrypted by payload encryption.
+        `include_payload` applies to the job payload, not attempt logs.
       parameters:
         - {$ref: '#/components/parameters/Id'}
         - {name: include_payload, in: query, schema: {type: boolean, default: false}}

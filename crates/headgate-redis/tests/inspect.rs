@@ -14,6 +14,22 @@ use headgate_redis::{RedisStore, RedisStoreOptions};
 
 const PREFIX: &str = "rins";
 
+#[tokio::test]
+async fn structured_attempt_logs_survive_ack() {
+    let queue = format!(
+        "rust-redis-logs-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let Some(store) = store_p(&queue).await else {
+        return;
+    };
+    headgate_testkit::assert_structured_attempt_logs(store.as_ref(), &queue).await;
+}
+
 /// Each test gets its OWN prefix and cleans only that — tests in one binary run
 /// concurrently, and a shared-prefix wipe mid-flight is the flake that teaches this.
 async fn store_p(prefix: &str) -> Option<Arc<RedisStore>> {

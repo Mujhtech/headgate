@@ -6,6 +6,8 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+pub mod log;
+
 /// Portable lifecycle result written by every worker runtime and store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {

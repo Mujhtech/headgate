@@ -13,6 +13,7 @@ import {
   SearchIcon,
 } from "lucide-react";
 import { type SubmitEvent, useMemo, useState } from "react";
+import { AttemptLogs } from "@/components/attempt-logs";
 import { ActionButton } from "@/components/ui/action-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -862,11 +863,9 @@ export function JobDrawer({
                       {event.error && (
                         <p className="mt-1 text-sm">{event.error}</p>
                       )}
-                      {event.logs?.length && (
-                        <pre className="mt-2 overflow-x-auto whitespace-pre-wrap rounded-lg bg-muted p-3 text-xs">
-                          {event.logs.join("\n")}
-                        </pre>
-                      )}
+                      {event.logs && event.logs.length > 0 ? (
+                        <AttemptLogs logs={event.logs} />
+                      ) : null}
                     </li>
                   ))}
                 </ol>

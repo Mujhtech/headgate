@@ -41,7 +41,8 @@ type stepState struct {
 	version    uint32
 	crashes    map[string]uint32
 	// attempt-log contract per-attempt execution logs, delivered with the ack. Bounded — see Log.
-	logs []string
+	logs       []string
+	logsClosed bool
 	// surveyed policy behavior final actual rate-budget usage. nil means the admission estimate was exact;
 	// pointer-to-zero is a real full refund. Protected by mu with the other attempt data.
 	actualWeight *uint32
@@ -69,26 +70,16 @@ func TraceContextFrom(ctx context.Context) (TraceContext, bool) {
 	return s.trace, s.hasTrace
 }
 
-// Log records one execution-log line onto THIS attempt (attempt-log contract, River's riverlog): it
-// lands inside the attempt's error-history entry when the runner acks, so the console
-// can answer "why did attempt 3 fail" without a log aggregator. Bounded: 100 lines per
-// attempt, 2KB per line (truncated) — the history is a timeline, not a log store.
-// Outside a running job (no runner context) it is a no-op.
+// Log records a plain-text info entry in the current attempt. It persists at
+// acknowledgement, not live. Use [Logger] for levels, timestamps, and fields.
+// Both APIs share a 100-entry limit; text is truncated to 2 KiB at a UTF-8 boundary.
+// Outside a job or after the runtime collects its logs, Log is a no-op.
 func Log(ctx context.Context, msg string) {
 	s, err := stepStateFrom(ctx)
 	if err != nil {
 		return
 	}
-	if len(msg) > 2048 {
-		msg = msg[:2048]
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.logs) < 100 {
-		s.logs = append(s.logs, msg)
-	} else if len(s.logs) == 100 {
-		s.logs = append(s.logs, "... log cap reached (100 lines/attempt)")
-	}
+	s.appendLog(plainLogLine(msg))
 }
 
 // Logf is Log with formatting.
@@ -209,6 +200,7 @@ func (s *stepState) takeLogs() []string {
 	defer s.mu.Unlock()
 	out := s.logs
 	s.logs = nil
+	s.logsClosed = true
 	return out
 }
 

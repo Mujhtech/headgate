@@ -14,6 +14,115 @@ contracts.
 | Progress | During an attempt | Yes | No |
 | Attempt logs | Collected during handling | Stored with outcome | No |
 
+## Log an attempt
+
+<Note>
+Structured log levels are available on the development branch; they are not included in
+v0.1.6. The existing plain-text `Log` / `ctx.log` API remains supported.
+</Note>
+
+Use a job-scoped logger inside the handler. It attaches diagnostics to that attempt without
+changing the outcome. An error-level log does **not** fail a job; return an error to do that.
+
+<CodeGroup>
+
+```go Go
+log := headgate.Logger(ctx)
+log.Info("Downloading source file", "file_id", "file-123")
+log.Debug("Download progress", "bytes_received", 4096)
+log.Warn("Upstream throttled request", "retry_after_ms", 2000)
+log.Error("Download failed", "error", errors.New("connection reset"))
+
+// Existing calls remain plain-text info entries.
+headgate.Log(ctx, "Cleaning up temporary files")
+```
+
+```rust Rust
+ctx.logger().info("Downloading source file")
+    .field("file_id", "file-123")
+    .emit();
+ctx.logger().debug("Download progress")
+    .field("bytes_received", 4096)
+    .emit();
+ctx.logger().warn("Upstream throttled request")
+    .field("retry_after_ms", 2000)
+    .emit();
+ctx.logger().error("Download failed")
+    .field("error", "connection reset")
+    .emit();
+
+ctx.log("Cleaning up temporary files");
+```
+
+</CodeGroup>
+
+Go returns a standard `*slog.Logger` with debug, info, warn, and error enabled. It supports
+`With`, `WithGroup`, `LogAttrs`, and the context variants. Named groups become dotted field
+keys, for example `log.WithGroup("request").Info("Fetched", "status", 200)` stores
+`request.status`. Avoid literal dots in keys when using groups, because they share that
+namespace. Custom slog levels map to the nearest lower standard severity, clamped to debug
+or error. Outside a job, this logger discards records; it does not fall back to global logs.
+
+Rust uses an explicit `.emit()` builder. Dropping the builder without emitting does not
+record anything. Neither logger installs a global handler or captures unrelated application
+logs. Automatic `tracing` capture is not provided by this change.
+
+### When logs become visible
+
+The console shows saved entries under the job's **attempt timeline**, with a level filter,
+capture timestamp, message, and expandable fields. Existing strings appear at info level
+without an invented timestamp. A structured timestamp is captured on the worker clock;
+it is diagnostic information, not the store clock used for leases and scheduling.
+
+Logs are buffered in memory and saved with a successful fenced acknowledgement for
+**success, retry, skip, and undecodable**. They are not live-streamed. A process crash or
+lost lease before acknowledgement can lose the buffer. Snooze, rate-limited, and revoke
+outcomes do not retain logs. Successful jobs need positive `retention_ms` to remain
+inspectable; zero deletes the successful record and its logs. Transactional `Once`
+completion does not flush the outer attempt's buffer, so use application logging for
+diagnostics that must survive that path.
+
+### Bounds and privacy
+
+- Each attempt accepts 100 entries, followed by one visible cap marker. Plain and structured
+  calls share this budget. Calls made after the runtime takes the buffer are discarded.
+- Each structured entry is at most 2 KiB **including its encoded fields and metadata**.
+  Oversized entries remove fields before shortening the message and display **Truncated**.
+- Up to 32 fields are captured. Keys are capped at 128 UTF-8 bytes and string values at
+  1 KiB. Fields are JSON scalars: strings, numbers, booleans, and null. Arbitrary objects
+  and arrays become `[unsupported log value]`; log selected scalar properties instead.
+- Go resolves `slog.LogValuer`, formats errors as text, and formats duration/time attributes
+  as strings. Nested slog groups are bounded to four levels. Invalid UTF-8 is repaired.
+- Job log fields are not automatically redacted or encrypted. Do not log tokens, passwords,
+  full payloads, or sensitive customer data. Encrypted job payloads do not encrypt logs.
+
+### Storage compatibility
+
+The attempt's `logs` property remains a string array. New structured strings begin with
+the record-separator character U+001E followed by `headgate-log-v1:` and a JSON object
+containing `level`, `at_ms`, `message`, optional `fields`, and optional `truncated`.
+The shared Go `headgateshared.DecodeLog` and Rust `headgate::LogEntry::decode` readers
+understand this format. Unknown versions and malformed entries remain literal info text.
+The console uses the same versioned format; an older console displays the encoded text.
+No schema migration or replacement of existing attempt history is required.
+
+### Run locally
+
+The progress examples emit info, debug, and warning records from a real handler. From
+the repository root, using the development checkout:
+
+```bash
+(cd examples/go && GOWORK=off go run ./progress)
+cargo run -p headgate-examples --bin progress
+```
+
+To inspect sample structured logs in the console, run the read-only UI demo and open
+`/jobs/job-running-1042`. Its earlier retry attempt includes all four levels.
+
+```bash
+(cd examples/go && GOWORK=off go run ./ui_demo -addr 127.0.0.1:8080)
+```
+
 ## Report progress
 
 <CodeGroup>

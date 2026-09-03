@@ -894,6 +894,7 @@ dependencies = [
  "headgate-core",
  "headgate-macros",
  "headgate-postgres",
+ "headgate-shared",
  "headgate-testkit",
  "libc",
  "serde",
@@ -1064,8 +1065,10 @@ dependencies = [
  "headgate",
  "headgate-core",
  "headgate-migrate",
+ "headgate-shared",
  "mysql_async",
  "redis",
+ "serde_json",
  "tokio",
  "tokio-postgres",
 ]

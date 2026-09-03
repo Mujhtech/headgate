@@ -27,6 +27,7 @@ mod enqueue_middleware;
 mod extractor;
 mod insert_hook;
 mod isolated;
+mod log;
 mod periodic_hook;
 mod plugin;
 pub mod schedule_spec;
@@ -57,10 +58,12 @@ pub use extractor::{
     Attempt, Data, ExtractionError, FromJobRequest, FromJobRequestTuple, FromMetadata, Meta,
     Metadata, TaskId, WorkerContext,
 };
+pub use headgate_shared::log::{LogEntry, LogLevel};
 pub use insert_hook::{InsertAttempt, InsertHook, InsertHookEvent, InsertHookFn, InsertOutcome};
 pub use isolated::{
     ISOLATED_PROTOCOL_PREFIX, IsolatedOutcome, IsolatedProcess, IsolatedRequest, IsolatedResponse,
 };
+pub use log::{JobLogger, LogEvent};
 pub use periodic_hook::{
     PeriodicEnqueueAttempt, PeriodicEnqueueHook, PeriodicEnqueueHookEvent, PeriodicEnqueueHookFn,
 };

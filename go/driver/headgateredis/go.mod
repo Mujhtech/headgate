@@ -1,11 +1,11 @@
 module github.com/mujhtech/headgate/go/driver/headgateredis
 
-go 1.24.0
+go 1.25.0
 
 require (
-	github.com/mujhtech/headgate/go v0.1.6
-	github.com/mujhtech/headgate/go/headgatetest v0.1.6
-	github.com/redis/go-redis/v9 v9.7.0
+	github.com/mujhtech/headgate/go v0.1.7
+	github.com/mujhtech/headgate/go/headgatetest v0.1.7
+	github.com/redis/go-redis/v9 v9.7.3
 )
 
 require (
@@ -15,10 +15,9 @@ require (
 	github.com/go-sql-driver/mysql v1.9.3 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/pgx/v5 v5.7.2 // indirect
-	github.com/mujhtech/headgate/go/headgatemigrate v0.1.6 // indirect
-	golang.org/x/crypto v0.31.0 // indirect
-	golang.org/x/text v0.21.0 // indirect
+	github.com/jackc/pgx/v5 v5.9.2 // indirect
+	github.com/mujhtech/headgate/go/headgatemigrate v0.1.7 // indirect
+	golang.org/x/text v0.39.0 // indirect
 )
 
 replace github.com/mujhtech/headgate/go => ../..

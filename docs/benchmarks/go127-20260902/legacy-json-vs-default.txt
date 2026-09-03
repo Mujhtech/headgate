@@ -1,0 +1,24 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/mujhtech/headgate/go
+cpu: Apple M2 Pro
+                │ legacy-json.txt │ default.txt │
+                │                  sec/op                   │    sec/op      vs base                │
+DecodeArgs1K                                    5.981µ ± 1%     1.778µ ± 2%  -70.28% (p=0.000 n=10)
+TypedDispatch1K                                 6.042µ ± 1%     1.836µ ± 2%  -69.61% (p=0.000 n=10)
+MarshalArgs1K                                   1.448µ ± 2%     1.188µ ± 1%  -17.99% (p=0.000 n=10)
+geomean                                         3.740µ          1.571µ       -58.00%
+
+                │ legacy-json.txt │ default.txt │
+                │                   B/op                    │     B/op       vs base                │
+DecodeArgs1K                                   1.320Ki ± 0%    1.094Ki ± 0%  -17.16% (p=0.000 n=10)
+TypedDispatch1K                                1.477Ki ± 0%    1.250Ki ± 0%  -15.34% (p=0.000 n=10)
+MarshalArgs1K                                  1.172Ki ± 0%    1.219Ki ± 0%   +4.00% (p=0.000 n=10)
+geomean                                        1.317Ki         1.186Ki        -9.99%
+
+                │ legacy-json.txt │ default.txt │
+                │                 allocs/op                 │   allocs/op    vs base                │
+DecodeArgs1K                                     8.000 ± 0%      3.000 ± 0%  -62.50% (p=0.000 n=10)
+TypedDispatch1K                                  9.000 ± 0%      4.000 ± 0%  -55.56% (p=0.000 n=10)
+MarshalArgs1K                                    2.000 ± 0%      3.000 ± 0%  +50.00% (p=0.000 n=10)
+geomean                                          5.241           3.302       -37.00%

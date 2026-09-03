@@ -87,7 +87,12 @@ worker, and enqueue setup.
 
 ### Go
 
+<<<<<<< HEAD
+Requires Go 1.27 or newer. See the [Go generics guide](docs/go-generics.md) for
+typed APIs and the Go 1.27 migration.
+=======
 Requires Go 1.25 or newer.
+>>>>>>> main
 
 ```go
 type WelcomeEmail struct {

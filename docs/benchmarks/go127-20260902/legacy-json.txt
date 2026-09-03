@@ -1,0 +1,80 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/mujhtech/headgate/go
+cpu: Apple M2 Pro
+BenchmarkDecodeArgs1K    	   39598	      5979 ns/op	    1352 B/op	       8 allocs/op
+BenchmarkTypedDispatch1K 	   39650	      6107 ns/op	    1512 B/op	       9 allocs/op
+BenchmarkMarshalArgs1K   	  168183	      1449 ns/op	    1200 B/op	       2 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/mujhtech/headgate/go
+cpu: Apple M2 Pro
+BenchmarkDecodeArgs1K    	   39522	      5983 ns/op	    1352 B/op	       8 allocs/op
+BenchmarkTypedDispatch1K 	   39613	      6043 ns/op	    1512 B/op	       9 allocs/op
+BenchmarkMarshalArgs1K   	  167858	      1443 ns/op	    1200 B/op	       2 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/mujhtech/headgate/go
+cpu: Apple M2 Pro
+BenchmarkDecodeArgs1K    	   40575	      6037 ns/op	    1352 B/op	       8 allocs/op
+BenchmarkTypedDispatch1K 	   38998	      6183 ns/op	    1512 B/op	       9 allocs/op
+BenchmarkMarshalArgs1K   	  162414	      1493 ns/op	    1200 B/op	       2 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/mujhtech/headgate/go
+cpu: Apple M2 Pro
+BenchmarkDecodeArgs1K    	   39621	      6013 ns/op	    1352 B/op	       8 allocs/op
+BenchmarkTypedDispatch1K 	   40065	      6002 ns/op	    1512 B/op	       9 allocs/op
+BenchmarkMarshalArgs1K   	  167923	      1443 ns/op	    1200 B/op	       2 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/mujhtech/headgate/go
+cpu: Apple M2 Pro
+BenchmarkDecodeArgs1K    	   39369	      6042 ns/op	    1352 B/op	       8 allocs/op
+BenchmarkTypedDispatch1K 	   39805	      6040 ns/op	    1512 B/op	       9 allocs/op
+BenchmarkMarshalArgs1K   	  168828	      1445 ns/op	    1200 B/op	       2 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/mujhtech/headgate/go
+cpu: Apple M2 Pro
+BenchmarkDecodeArgs1K    	   40070	      5969 ns/op	    1352 B/op	       8 allocs/op
+BenchmarkTypedDispatch1K 	   39417	      6101 ns/op	    1512 B/op	       9 allocs/op
+BenchmarkMarshalArgs1K   	  165369	      1475 ns/op	    1200 B/op	       2 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/mujhtech/headgate/go
+cpu: Apple M2 Pro
+BenchmarkDecodeArgs1K    	   39558	      5964 ns/op	    1352 B/op	       8 allocs/op
+BenchmarkTypedDispatch1K 	   40039	      5995 ns/op	    1512 B/op	       9 allocs/op
+BenchmarkMarshalArgs1K   	  168151	      1445 ns/op	    1200 B/op	       2 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/mujhtech/headgate/go
+cpu: Apple M2 Pro
+BenchmarkDecodeArgs1K    	   40399	      5921 ns/op	    1352 B/op	       8 allocs/op
+BenchmarkTypedDispatch1K 	   39837	      6015 ns/op	    1512 B/op	       9 allocs/op
+BenchmarkMarshalArgs1K   	  164977	      1447 ns/op	    1200 B/op	       2 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/mujhtech/headgate/go
+cpu: Apple M2 Pro
+BenchmarkDecodeArgs1K    	   40203	      5955 ns/op	    1352 B/op	       8 allocs/op
+BenchmarkTypedDispatch1K 	   40221	      6004 ns/op	    1512 B/op	       9 allocs/op
+BenchmarkMarshalArgs1K   	  168115	      1450 ns/op	    1200 B/op	       2 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/mujhtech/headgate/go
+cpu: Apple M2 Pro
+BenchmarkDecodeArgs1K    	   40054	      6031 ns/op	    1352 B/op	       8 allocs/op
+BenchmarkTypedDispatch1K 	   39528	      6076 ns/op	    1512 B/op	       9 allocs/op
+BenchmarkMarshalArgs1K   	  166473	      1460 ns/op	    1200 B/op	       2 allocs/op
+PASS

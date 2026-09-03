@@ -296,12 +296,10 @@ func IsUnavailable(err error) bool {
 	if err == nil {
 		return false
 	}
-	var una *UnavailableError
-	if errors.As(err, &una) {
+	if _, ok := errors.AsType[*UnavailableError](err); ok {
 		return true
 	}
-	var netErr net.Error
-	if errors.As(err, &netErr) {
+	if _, ok := errors.AsType[net.Error](err); ok {
 		return true
 	}
 	return errors.Is(err, syscall.ECONNREFUSED) ||
@@ -324,8 +322,7 @@ func WrapUnavailable(err error) error {
 	if err == nil {
 		return nil
 	}
-	var unavailable *UnavailableError
-	if errors.As(err, &unavailable) {
+	if _, ok := errors.AsType[*UnavailableError](err); ok {
 		return err
 	}
 	if IsUnavailable(err) {

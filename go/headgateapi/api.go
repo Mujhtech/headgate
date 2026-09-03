@@ -413,8 +413,7 @@ func (a *api) authorizeEnqueue(w http.ResponseWriter, r *http.Request, batch []h
 	if err == nil {
 		return true
 	}
-	var forbidden *headgate.EnqueueForbiddenError
-	if errors.As(err, &forbidden) {
+	if forbidden, ok := errors.AsType[*headgate.EnqueueForbiddenError](err); ok {
 		writeJSON(w, http.StatusForbidden, map[string]any{
 			"error": "enqueue forbidden", "kind": forbidden.Kind,
 		})
@@ -498,8 +497,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) (map[string]jso
 	}
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBody))
 	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
+		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			errJSON(w, http.StatusRequestEntityTooLarge, "request body exceeds 2097152 bytes")
 			return nil, false
 		}
@@ -507,8 +505,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) (map[string]jso
 		return nil, false
 	}
 	if err := json.Unmarshal(data, dst); err != nil {
-		var typeErr *json.UnmarshalTypeError
-		if errors.As(err, &typeErr) {
+		if _, ok := errors.AsType[*json.UnmarshalTypeError](err); ok {
 			// Valid JSON, wrong shape — serde's `invalid type: …, expected i32` case.
 			errJSON(w, http.StatusUnprocessableEntity, msgBadBody)
 			return nil, false

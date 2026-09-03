@@ -325,8 +325,7 @@ func (s *RedisStore) AckAttemptWithActualWeight(ctx context.Context, lease headg
 		return err
 	}
 	if e := parseTagged(res); e != nil {
-		var lr *headgate.LeaseRejectedError
-		if errors.As(e, &lr) {
+		if _, ok := errors.AsType[*headgate.LeaseRejectedError](e); ok {
 			return &headgate.LeaseRejectedError{JobID: lease.JobID}
 		}
 		return e
@@ -354,8 +353,7 @@ func (s *RedisStore) AckSuccessWithResult(ctx context.Context, lease headgate.Le
 		return err
 	}
 	if err := parseTagged(res); err != nil {
-		var rejected *headgate.LeaseRejectedError
-		if errors.As(err, &rejected) {
+		if _, ok := errors.AsType[*headgate.LeaseRejectedError](err); ok {
 			return &headgate.LeaseRejectedError{JobID: lease.JobID}
 		}
 		return err
@@ -377,8 +375,7 @@ func (s *RedisStore) WriteJobOutput(
 		return nil, err
 	}
 	if err := parseTagged(res); err != nil {
-		var rejected *headgate.LeaseRejectedError
-		if errors.As(err, &rejected) {
+		if _, ok := errors.AsType[*headgate.LeaseRejectedError](err); ok {
 			return nil, &headgate.LeaseRejectedError{JobID: lease.JobID}
 		}
 		return nil, err
@@ -414,8 +411,7 @@ func (s *RedisStore) WriteJobProgress(
 		return nil, err
 	}
 	if err := parseTagged(res); err != nil {
-		var rejected *headgate.LeaseRejectedError
-		if errors.As(err, &rejected) {
+		if _, ok := errors.AsType[*headgate.LeaseRejectedError](err); ok {
 			return nil, &headgate.LeaseRejectedError{JobID: lease.JobID}
 		}
 		return nil, err
@@ -535,8 +531,7 @@ func (s *RedisStore) Checkpoint(ctx context.Context, lease headgate.LeaseRef, cp
 		return err
 	}
 	if e := parseTagged(res); e != nil {
-		var lr *headgate.LeaseRejectedError
-		if errors.As(e, &lr) {
+		if _, ok := errors.AsType[*headgate.LeaseRejectedError](e); ok {
 			return &headgate.LeaseRejectedError{JobID: lease.JobID}
 		}
 		return e

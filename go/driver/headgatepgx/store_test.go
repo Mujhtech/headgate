@@ -15,6 +15,11 @@ import (
 	"github.com/mujhtech/headgate/go/headgatetest"
 )
 
+func TestStructuredAttemptLogsSurviveAck(t *testing.T) {
+	store, _ := testStore(t)
+	headgatetest.RequireStructuredAttemptLogs(t, store, "go-pg-logs-"+strconv.FormatInt(time.Now().UnixNano(), 10))
+}
+
 func TestEnqueueBackpressureHotPathUsesConstantSizeCounters(t *testing.T) {
 	sql := strings.ToLower(enqueueBackpressureDepthSQL)
 	if !strings.Contains(sql, "headgate_enqueue_policy") || strings.Count(sql, "headgate_enqueue_counter") != 2 {

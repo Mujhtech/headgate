@@ -5,11 +5,11 @@ go 1.27.0
 replace github.com/mujhtech/headgate/go => ../
 
 require (
-	github.com/mujhtech/headgate/go v0.1.6
-	github.com/mujhtech/headgate/go/driver/headgatemysql v0.1.6
-	github.com/mujhtech/headgate/go/driver/headgatepgx v0.1.6
-	github.com/mujhtech/headgate/go/driver/headgateredis v0.1.6
-	github.com/mujhtech/headgate/go/headgateui v0.1.6
+	github.com/mujhtech/headgate/go v0.1.7
+	github.com/mujhtech/headgate/go/driver/headgatemysql v0.1.7
+	github.com/mujhtech/headgate/go/driver/headgatepgx v0.1.7
+	github.com/mujhtech/headgate/go/driver/headgateredis v0.1.7
+	github.com/mujhtech/headgate/go/headgateui v0.1.7
 )
 
 require (
@@ -34,3 +34,7 @@ replace github.com/mujhtech/headgate/go/driver/headgateredis => ../driver/headga
 replace github.com/mujhtech/headgate/go/driver/headgatemysql => ../driver/headgatemysql
 
 replace github.com/mujhtech/headgate/go/headgateui => ../headgateui
+
+replace github.com/mujhtech/headgate/go/headgatetest => ../headgatetest
+
+replace github.com/mujhtech/headgate/go/headgatemigrate => ../headgatemigrate

@@ -82,6 +82,7 @@
             "group": "Guides",
             "pages": [
               "docs/guides/handlers",
+              "docs/guides/task-versioning",
               "docs/guides/handler-context",
               "docs/guides/enqueueing",
               "docs/guides/transactions-and-orms",

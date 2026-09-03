@@ -102,7 +102,7 @@ struct CtxInner {
     steps: Mutex<StepState>,
     /// attempt-log contract per-attempt execution logs, delivered with the ack into the attempt's
     /// error-history entry. Bounded — see [`JobCtx::log`].
-    logs: Mutex<Vec<String>>,
+    logs: Arc<Mutex<crate::log::LogBuffer>>,
     /// surveyed policy behavior actual rate-budget usage reported by the handler. `None` means the
     /// admission estimate was exact; `Some(0)` is a real full refund. Last report wins,
     /// matching a points handle whose final total is authoritative.
@@ -175,7 +175,7 @@ impl JobCtx {
                     schema_version: claim.envelope.schema_version,
                     crashes_by_step: cp.crashes_by_step.clone(),
                 }),
-                logs: Mutex::new(Vec::new()),
+                logs: Arc::new(Mutex::new(crate::log::LogBuffer::default())),
                 actual_weight: Mutex::new(None),
                 result: Mutex::new(None),
                 trace,
@@ -262,30 +262,22 @@ impl JobCtx {
         self.inner.tracked.cancel_and_wait().await;
     }
 
-    /// attempt-log contract record one execution-log line onto THIS attempt (River's riverlog): it
-    /// lands inside the attempt's error-history entry when the runner acks, so the
-    /// console can answer "why did attempt 3 fail" without a log aggregator. Bounded:
-    /// 100 lines per attempt, 2KB per line (truncated) — the history is a timeline,
-    /// not a log store.
+    /// Record a plain-text info entry, saved at acknowledgement rather than live.
+    /// Use [`Self::logger`] for levels, capture timestamps, and structured fields.
+    /// Both APIs share 100 entries per attempt; text is capped at 2 KiB of UTF-8.
     pub fn log(&self, msg: impl Into<String>) {
-        let mut msg = msg.into();
-        if msg.len() > 2048 {
-            let mut end = 2048;
-            while !msg.is_char_boundary(end) {
-                end -= 1;
-            }
-            msg.truncate(end);
-        }
-        let mut logs = self.inner.logs.lock().unwrap();
-        if logs.len() < 100 {
-            logs.push(msg);
-        } else if logs.len() == 100 {
-            logs.push("... log cap reached (100 lines/attempt)".into());
+        self.logger().plain(&msg.into());
+    }
+
+    /// Structured, attempt-local logging. Call `.emit()` after adding optional fields.
+    pub fn logger(&self) -> crate::JobLogger {
+        crate::JobLogger {
+            buffer: self.inner.logs.clone(),
         }
     }
 
     pub(crate) fn take_logs(&self) -> Vec<String> {
-        std::mem::take(&mut *self.inner.logs.lock().unwrap())
+        self.inner.logs.lock().unwrap().take()
     }
 
     /// Report the actual surveyed policy behavior rate-budget cost after the upstream call. Admission

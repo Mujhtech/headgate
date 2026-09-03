@@ -17,6 +17,7 @@ import (
 	"time"
 
 	headgate "github.com/mujhtech/headgate/go"
+	"github.com/mujhtech/headgate/go/headgateshared"
 	"github.com/mujhtech/headgate/go/headgateui"
 )
 
@@ -90,6 +91,14 @@ func (d *demoAPI) milliseconds(offset time.Duration) int64 {
 }
 
 func (d *demoAPI) allJobs() []map[string]any {
+	logs := []string{"render started"}
+	for i, level := range []string{"debug", "info", "warn", "error"} {
+		logs = append(logs, headgateshared.EncodeLog(headgateshared.LogEntry{
+			Level: level, AtMs: d.milliseconds(-6*time.Minute + time.Duration(i)*time.Second),
+			Message: []string{"Loaded template", "Rendering report", "Upstream is slow", "Upstream returned 503"}[i],
+			Fields:  map[string]any{"report_id": "demo-report", "request": i + 1},
+		}))
+	}
 	workflow := map[string]any{
 		"workflow_id": "daily-import-2026-08-28",
 		"nodes": []map[string]any{
@@ -101,7 +110,7 @@ func (d *demoAPI) allJobs() []map[string]any {
 	}
 	workflowJSON, _ := json.Marshal(workflow)
 	return []map[string]any{
-		{"id": "job-running-1042", "kind": "reports:render", "queue": "critical", "state": "running", "attempt": 1, "crash_attempt": 0, "max_attempts": 5, "schema_version": 2, "partition_key": "tenant-acme", "rate_class": "external-api", "fingerprint": "sha256:8c77a6d52d1f", "enqueued_at_ms": d.milliseconds(-8 * time.Minute), "scheduled_at_ms": d.milliseconds(-7 * time.Minute), "errors": []map[string]any{{"outcome": "retry", "at_ms": d.milliseconds(-6 * time.Minute), "attempt": 1, "error": "upstream returned 503", "logs": []string{"render started", "retrying upstream request"}}}},
+		{"id": "job-running-1042", "kind": "reports:render", "queue": "critical", "state": "running", "attempt": 1, "crash_attempt": 0, "max_attempts": 5, "schema_version": 2, "partition_key": "tenant-acme", "rate_class": "external-api", "fingerprint": "sha256:8c77a6d52d1f", "enqueued_at_ms": d.milliseconds(-8 * time.Minute), "scheduled_at_ms": d.milliseconds(-7 * time.Minute), "errors": []map[string]any{{"outcome": "retry", "at_ms": d.milliseconds(-6 * time.Minute), "attempt": 1, "error": "upstream returned 503", "logs": logs}}},
 		{"id": "job-rate-limited-2031", "kind": "email:deliver", "queue": "mailers", "state": "available", "attempt": 0, "crash_attempt": 0, "max_attempts": 10, "schema_version": 1, "partition_key": "tenant-north", "rate_class": "email-provider", "fingerprint": "sha256:b4383c410f29", "enqueued_at_ms": d.milliseconds(-3 * time.Minute), "scheduled_at_ms": d.milliseconds(-2 * time.Minute)},
 		{"id": "job-retry-3019", "kind": "webhook:dispatch", "queue": "default", "state": "retryable", "attempt": 2, "crash_attempt": 0, "max_attempts": 8, "schema_version": 3, "partition_key": "tenant-acme", "fingerprint": "sha256:f881f0d9a5ea", "enqueued_at_ms": d.milliseconds(-22 * time.Minute), "scheduled_at_ms": d.milliseconds(90 * time.Second), "errors": []map[string]any{{"outcome": "retry", "at_ms": d.milliseconds(-2 * time.Minute), "attempt": 2, "error": "connection reset by peer"}}},
 		{"id": "job-completed-992", "kind": "billing:invoice", "queue": "critical", "state": "completed", "attempt": 1, "crash_attempt": 0, "max_attempts": 5, "schema_version": 1, "partition_key": "tenant-south", "fingerprint": "sha256:60564e2df293", "enqueued_at_ms": d.milliseconds(-45 * time.Minute), "scheduled_at_ms": d.milliseconds(-44 * time.Minute), "finalized_at_ms": d.milliseconds(-43 * time.Minute)},

@@ -81,7 +81,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel>Operate</SidebarGroupLabel>
-          <SidebarMenu>
+          <SidebarMenu className="gap-0.5">
             {navigation.map((item) => (
               <SidebarMenuItem key={item.to}>
                 <SidebarMenuButton

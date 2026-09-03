@@ -16,8 +16,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut registry = Registry::new();
     registry
         .register::<RenderVideo, _, _>(|ctx: JobCtx, _| async move {
+            ctx.logger()
+                .info("Decoding source")
+                .field("video_id", "demo-1")
+                .emit();
             ctx.report_progress(2, 10, Some("decoded source".into()))
                 .await?;
+            ctx.logger()
+                .debug("Encoding frames")
+                .field("frame", 700)
+                .emit();
+            ctx.logger()
+                .warn("Using software encoder")
+                .field("reason", "GPU unavailable")
+                .emit();
             ctx.report_progress(7, 10, Some("encoding frame 700".into()))
                 .await?;
             Ok(())

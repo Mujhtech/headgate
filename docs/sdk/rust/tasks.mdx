@@ -26,6 +26,10 @@ let envelope = headgate::Envelope {
 ```
 
 <Note>
-Kind and schema version are durable public contracts. Keep the kind stable and use aliases
-and upcasters when deployed payloads need to evolve.
+Kind and schema version are durable public contracts. Keep the kind stable and set the
+envelope's `schema_version` explicitly. The derived `Task` rejects other versions by
+default. Custom upcasting currently needs a manual `impl Task` instead of `#[derive(Task)]`.
 </Note>
+
+See [Task versioning](/docs/guides/task-versioning) for a complete welcome-email v1 → v2 → v3
+implementation, including the current-version decode arm and rolling-deployment guidance.

@@ -5,7 +5,8 @@ icon: "braces"
 ---
 
 The registry maps durable task kinds to typed handlers. Registration validates kind names,
-versions, aliases, and collisions before a worker starts polling.
+aliases, and collisions before a worker starts polling. Payload versions are decoded when
+the job executes; registration does not validate all historical payload shapes.
 
 <CodeGroup>
 
@@ -46,6 +47,13 @@ ack over a newer lease holder, but it may continue external side effects unneces
 
 ## Payload evolution
 
-Keep task kinds stable. Increment schema versions when decoding changes. Register aliases
-for kind renames and explicit upcasters for old payloads. A payload that cannot be decoded
-becomes `undecodable`; it does not burn retries that cannot repair bytes.
+Keep task kinds stable and declare schema versions explicitly in producer envelopes.
+Use application-defined upcasters for old payloads and aliases for kind renames.
+A codec failure becomes `undecodable`; it does not burn retries that cannot repair bytes.
+Go version checks require the optional `Versioned` interface; a plain JSON task does not
+enforce them automatically.
+
+<Card title="Task versioning: v1 to v3" icon="code-branch" href="/docs/guides/task-versioning">
+  Rename a field, add a required field, implement Go and Rust upcasters, and deploy readers
+  before writers. Includes runnable examples and rejection tests.
+</Card>

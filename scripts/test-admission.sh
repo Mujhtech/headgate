@@ -3113,6 +3113,7 @@ result_contract(){ # backend harness label
   local fail_before=$fail
   local suffix="${backend}-${label//[^A-Za-z0-9]/}-$$"
   local queue="result-$suffix" base="result-$suffix-" claim job lease fence stale before
+  local decoy_job decoy_lease decoy_fence rest sweep evicted evicted_total=0 eviction_status=bounded
   case "$backend" in
     pg) reset_pg ;;
     redis) $RED flushall >/dev/null ;;
@@ -3151,6 +3152,18 @@ result_contract(){ # backend harness label
        "$($tool get_result job="$job")" "none" \
        "Job results $label: ...witness: the ephemeral result ack committed" "$before"
 
+  # Eviction is store-wide, even though enqueue/admit are queue-scoped. Keep an
+  # expired backlog in another queue so an exact-one-row assumption cannot recur.
+  $tool enqueue count=11 prefix="${base}unrelated" queue="${queue}-unrelated" \
+        fp="result-unrelated-$suffix" sched=1000 retention=1 >/dev/null
+  claim=$($tool admit queues="${queue}-unrelated" capacity=11 lease_ms=600000 worker=w \
+        lease="RESULT-U-$suffix" quantum=1000)
+  chk "Job results $label: unrelated expiry backlog exceeds one sweep batch" \
+      "$(printf '%s\n' "$claim" | wc -l)" "11"
+  while IFS='|' read -r decoy_job decoy_lease decoy_fence rest; do
+    $tool ack job="$decoy_job" lease="$decoy_lease" fence="$decoy_fence" outcome=success >/dev/null
+  done <<< "$claim"
+
   $tool enqueue count=1 prefix="${base}evict" queue="$queue" fp="result-evict-$suffix" \
         sched=1000 retention=1 >/dev/null
   claim=$($tool admit queues="$queue" capacity=1 lease_ms=600000 worker=w \
@@ -3159,9 +3172,22 @@ result_contract(){ # backend harness label
   $tool ack_result job="$job" lease="$lease" fence="$fence" version=9 bytes=evict-me >/dev/null
   before=$($tool get_result job="$job")
   sleep 0.02
-  evicted=$($tool evict limit=10)
+  # Drain bounded batches until this fixture disappears, not until an assumed
+  # global count is reached. Other tests may have left additional expired rows.
+  for sweep in {1..100}; do
+    evicted=$($tool evict limit=10)
+    case "$evicted" in
+      [0-9]|10) evicted_total=$((evicted_total+evicted)) ;;
+      *) eviction_status="invalid-count:$evicted"; break ;;
+    esac
+    [ "$($tool get_result job="$job")" = none ] && break
+    sleep 0.02
+  done
+  [ "$evicted_total" -ge 12 ] || eviction_status="incomplete:$evicted_total"
   chk "Job results $label: eviction removes the retained result with its job" \
-      "$before|$evicted|$($tool get_result job="$job")" "9|evict-me|1|none"
+      "$before|$eviction_status|$($tool get_result job="$job")" "9|evict-me|bounded|none"
+  chk "Job results $label: an unexpired retained result survives the global sweep" \
+      "$($tool get_result job="${base}kept1")" "7|result-value"
   [ "$fail" = "$fail_before" ] && result_cells=$((result_cells+1))
 }
 

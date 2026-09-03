@@ -4,9 +4,9 @@ go 1.27.0
 
 require (
 	github.com/go-sql-driver/mysql v1.10.1
-	github.com/mujhtech/headgate/go v0.1.6
-	github.com/mujhtech/headgate/go/headgatemigrate v0.1.6
-	github.com/mujhtech/headgate/go/headgatetest v0.1.6
+	github.com/mujhtech/headgate/go v0.1.7
+	github.com/mujhtech/headgate/go/headgatemigrate v0.1.7
+	github.com/mujhtech/headgate/go/headgatetest v0.1.7
 )
 
 require (

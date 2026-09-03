@@ -625,7 +625,21 @@ NOTE: both runtime tests assert the row's claim exactly (available, `(attempt, c
 - sh: per-attempt logs land inside the attempt's entry
 - go: driver/headgatepgx/runtime_test.go::TestGoRuntimeDrainStepsAndPanics
 - go-mysql: driver/headgatemysql/store_test.go::TestTheGoRuntimeRunsUnchangedOverGoMysql
-NOTE: the row claims "all five stores"; the shell label ran on PG and Redis and its MySQL twin did not, so three of five. The CAPTURE side is Go-only — Rust's `JobCtx::log` has no test call site, and the shell assertions feed logs through the harness's ack flag rather than through the runtime API.
+- go: log_test.go::TestLoggerLevelsAndFields
+- go: log_test.go::TestLoggerBoundedConcurrentCapture
+- go: log_test.go::TestLoggerWithGroupsAndIsolation
+- go: log_test.go::TestLoggerAttributeBudget
+- go: headgatetest/log_test.go::TestStructuredLoggerRunsThroughRunner
+- go: driver/headgatepgx/store_test.go::TestStructuredAttemptLogsSurviveAck
+- go: driver/headgateredis/store_test.go::TestStructuredAttemptLogsSurviveAck
+- go-mysql: driver/headgatemysql/store_test.go::TestStructuredAttemptLogsSurviveAck
+- rust: crates/headgate/tests/log.rs::structured_logs_persist_without_failing_successful_job
+- rust: crates/headgate/src/log.rs::bounded_concurrent_logs_close_with_attempt
+- rust: crates/headgate-shared/src/log.rs::log_wire_compatibility
+- rust: crates/headgate-postgres/tests/store.rs::structured_attempt_logs_survive_ack
+- rust: crates/headgate-redis/tests/inspect.rs::structured_attempt_logs_survive_ack
+- rust-mysql: crates/headgate-mysql/tests/store.rs::structured_attempt_logs_survive_ack
+NOTE: structured logging adds four levels, diagnostic worker timestamps, bounded scalar fields, and UI filters without changing the string-array store port. Both real runtimes capture plain and structured entries, and error-level records leave a successful outcome unchanged. On 2026-09-03 the dedicated durable tests ran against isolated Postgres 17, Redis 7.4, and MySQL 8.4 instances in BOTH languages: success/retry/skip/undecodable preserve literal and structured entries, while stale-fence acknowledgements fail. UI parser/component tests verify legacy/malformed fallback and level filtering. This does not claim live streaming, encryption of logs, or retention on snooze/rate_limited/revoke.
 
 ### Sandboxed / isolated execution
 - rust: crates/headgate/src/isolated.rs::executes_versioned_request_with_sanitized_environment

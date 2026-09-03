@@ -1,0 +1,423 @@
+---
+title: "Task versioning"
+description: "Evolve a welcome-email task from v1 to v3 with explicit Go and Rust upcasters and safe rolling deployments."
+icon: "git-branch"
+---
+
+Changing a task struct does not change jobs already stored in Headgate. Each job carries
+its task kind, schema version, and original payload bytes. An **upcaster** decodes an older
+payload into the shape expected by the current handler.
+
+Headgate supplies the dispatch and error-handling mechanism. Your application supplies
+the field conversions and defaults. Upcasting is not a database migration and does not
+rewrite the stored job.
+
+## A welcome email across three versions
+
+Keep the task kind `email:welcome` stable while the payload evolves:
+
+| Version | Stored JSON | Current v3 handler receives |
+| --- | --- | --- |
+| 1 | `{"address":"ada@example.com"}` | `{"email":"ada@example.com","locale":"en"}` |
+| 2 | `{"email":"ada@example.com"}` | `{"email":"ada@example.com","locale":"en"}` |
+| 3 | `{"email":"ada@example.com","locale":"fr"}` | The same v3 values |
+
+Version 2 renames the wire field `address` to `email`. Version 3 adds `locale`.
+This application deliberately chooses English for historical jobs; Headgate does not
+choose that default.
+
+<Note>
+Renaming a Go field while retaining its `json:"address"` tag does not change the wire
+format. The same applies to retaining a Rust field's serialized name with Serde.
+A task's schema version is also independent of the Headgate package version.
+</Note>
+
+## What dispatch does
+
+There is one registered handler per task kind, not one handler per kind/version pair.
+
+1. A producer writes an envelope with the correct `schema_version`.
+2. A worker claims the job through normal admission and finds the handler by kind.
+3. The handler's decoder reads that stored version and returns the current task type.
+4. Only a successful decode reaches application handler code.
+
+An unsupported version or a codec error becomes `undecodable`, not an ordinary
+retryable handler failure. A successfully upcast job uses normal handler outcome rules:
+returning a handler error can still retry it.
+
+Conversion runs again on each later execution of the original job. Keep upcasters
+deterministic and free of external side effects. There is no automatic v1 → v2 → v3
+conversion registry: the current implementation below handles v1 and v2 directly.
+
+## Go: implement Versioned
+
+Go's `Versioned` interface requires `Kind()`, `Version()`, and
+`Upcast(version, payload) (headgate.Args, error)`.
+
+For a nonzero stored version different from `Version()`, Headgate calls `Upcast`.
+For the current version it uses normal JSON decoding instead. The returned value from
+`Upcast` must have exactly the registered type: this example returns a `WelcomeEmail`
+value, not a `*WelcomeEmail`.
+
+The custom `UnmarshalJSON` below checks required current-version fields because plain
+Go JSON decoding accepts absent fields as zero values. Historical decoders apply the
+same validation after mapping their fields.
+
+```go Go
+import (
+    "encoding/json"
+    "fmt"
+    headgate "github.com/mujhtech/headgate/go"
+)
+
+// WelcomeEmail is the current payload shape; persisted v1 and v2 jobs still use the same kind.
+type WelcomeEmail struct {
+	Email  string `json:"email"`
+	Locale string `json:"locale"`
+}
+
+func (WelcomeEmail) Kind() string    { return "email:welcome" }
+func (WelcomeEmail) Version() uint32 { return 3 }
+
+var _ headgate.Versioned = WelcomeEmail{}
+
+func (w WelcomeEmail) validate() error {
+	if w.Email == "" || w.Locale == "" {
+		return fmt.Errorf("email and locale must be nonempty")
+	}
+	return nil
+}
+
+// UnmarshalJSON validates current-version payloads, which do not pass through Upcast.
+func (w *WelcomeEmail) UnmarshalJSON(data []byte) error {
+	type wire WelcomeEmail
+	var decoded wire
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	current := WelcomeEmail(decoded)
+	if err := current.validate(); err != nil {
+		return err
+	}
+	*w = current
+	return nil
+}
+
+// Upcast supplies the application's historical locale default only for v1 and v2.
+func (WelcomeEmail) Upcast(version uint32, payload []byte) (headgate.Args, error) {
+	var current WelcomeEmail
+	switch version {
+	case 1:
+		var old struct {
+			Address string `json:"address"`
+		}
+		if err := json.Unmarshal(payload, &old); err != nil {
+			return nil, err
+		}
+		current = WelcomeEmail{Email: old.Address, Locale: "en"}
+	case 2:
+		var old struct {
+			Email string `json:"email"`
+		}
+		if err := json.Unmarshal(payload, &old); err != nil {
+			return nil, err
+		}
+		current = WelcomeEmail{Email: old.Email, Locale: "en"}
+	default:
+		return nil, fmt.Errorf("schema version %d: %w", version, headgate.ErrNoUpcastPath)
+	}
+	if err := current.validate(); err != nil {
+		return nil, err
+	}
+	return current, nil
+}
+```
+
+<Warning>
+Implement the methods on the value type when registering `WelcomeEmail`. Implementing
+`Version()` alone does not satisfy `Versioned`. Without the complete interface,
+Headgate uses plain JSON decoding without enforcing the stored schema version.
+A renamed or missing field can otherwise become an empty string without an error.
+</Warning>
+
+The alias `type wire WelcomeEmail` avoids recursively calling `UnmarshalJSON`. In this
+example, an actual v3 payload missing `locale` is rejected; only v1/v2 get the historical
+default. Adapt this validation to your application's requirements.
+
+## Rust: implement Task manually
+
+The current `#[derive(Task)]` generates identity and a JSON codec. Its default upcaster
+accepts only the declared current version. It does not offer an attribute for a custom
+upcaster, and you cannot add a second `impl Task` to override the derived one.
+
+Keep the Serde derives, remove the `Task` derive and its `#[task(...)]` attribute, and
+write the complete implementation:
+
+```rust Rust
+use headgate::{CodecError, Task};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+struct WelcomeEmail {
+    email: String,
+    locale: String,
+}
+
+impl WelcomeEmail {
+    fn validate(self) -> Result<Self, CodecError> {
+        if self.email.is_empty() || self.locale.is_empty() {
+            return Err(CodecError::Malformed(
+                "email and locale must be nonempty".into(),
+            ));
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Deserialize)]
+struct WelcomeV1 {
+    address: String,
+}
+
+#[derive(Deserialize)]
+struct WelcomeV2 {
+    email: String,
+}
+
+fn malformed(error: serde_json::Error) -> CodecError {
+    CodecError::Malformed(error.to_string())
+}
+
+impl Task for WelcomeEmail {
+    const TYPE: &'static str = "email:welcome";
+    const VERSION: u32 = 3;
+
+    fn encode(&self) -> Result<Vec<u8>, CodecError> {
+        serde_json::to_vec(self).map_err(malformed)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, CodecError> {
+        serde_json::from_slice::<Self>(bytes)
+            .map_err(malformed)?
+            .validate()
+    }
+
+    fn upcast(version: u32, bytes: &[u8]) -> Result<Self, CodecError> {
+        let current = match version {
+            1 => {
+                let old: WelcomeV1 = serde_json::from_slice(bytes).map_err(malformed)?;
+                Self {
+                    email: old.address,
+                    locale: "en".into(),
+                }
+            }
+            2 => {
+                let old: WelcomeV2 = serde_json::from_slice(bytes).map_err(malformed)?;
+                Self {
+                    email: old.email,
+                    locale: "en".into(),
+                }
+            }
+            Self::VERSION => return Self::decode(bytes),
+            other => return Err(CodecError::UnknownVersion(other)),
+        };
+        current.validate()
+    }
+}
+```
+
+Add `serde_json = "1"` alongside `headgate` and Serde in the application's Cargo
+dependencies. Unlike the Go dispatch path, Rust calls `Task::upcast` for the current
+version too, so the `Self::VERSION => Self::decode(bytes)` arm is necessary.
+
+Serde rejects missing required `String` fields. The explicit validation also rejects
+empty values. `#[serde(alias = "address")]`, optional fields, and `#[serde(default)]`
+can help design a compatible decoder, but do not bypass Headgate's version check.
+
+## Enqueue v3 explicitly
+
+These snippets belong inside an application function with a configured store.
+Go needs `context` and `encoding/json`; Rust needs `Task` in scope.
+Use an application-generated job ID for each intended email, and select a retention
+period appropriate to the application.
+
+<CodeGroup>
+
+```go Go
+task := WelcomeEmail{Email: "ada@example.com", Locale: "fr"}
+payload, err := json.Marshal(task)
+if err != nil {
+    return err
+}
+
+client := headgate.NewClient(store)
+err = client.Enqueue(ctx, []headgate.Envelope{{
+    ID: jobID,
+    Kind: task.Kind(),
+    SchemaVersion: task.Version(),
+    Payload: payload,
+    Queue: "mail",
+    MaxAttempts: 3,
+    RetentionMs: 86_400_000,
+}})
+if err != nil {
+    return err
+}
+```
+
+```rust Rust
+let task = WelcomeEmail {
+    email: "ada@example.com".into(),
+    locale: "fr".into(),
+};
+let client = headgate::Client::new(store.clone());
+client.enqueue(&[headgate::Envelope {
+    id: job_id,
+    kind: WelcomeEmail::TYPE.into(),
+    schema_version: WelcomeEmail::VERSION,
+    payload: task.encode()?,
+    queue: "mail".into(),
+    max_attempts: 3,
+    retention_ms: 86_400_000,
+    ..Default::default()
+}]).await?;
+```
+
+</CodeGroup>
+
+<Warning>
+A manual envelope does not infer its version from the task type. Always set
+`SchemaVersion: task.Version()` or `schema_version: WelcomeEmail::VERSION`.
+Stores normalize version 0 to the default version 1; it does not mean "latest".
+The direct Go `DecodeArgs` path accepts version 0 as ordinary JSON, so testing only a
+zero-version envelope can accidentally miss your upcaster.
+</Warning>
+
+The producer client derives a missing fingerprint but does not run your task's decoder
+to verify that its declared version matches its bytes.
+
+## Register one current handler
+
+The handler receives `email` and `locale` regardless of which supported version was
+stored. These registration fragments assume `registry` exists. Replace the diagnostic
+message with your actual cancellable, idempotent delivery operation.
+
+<CodeGroup>
+
+```go Go
+err := headgate.RegisterFunc[WelcomeEmail](registry,
+    func(ctx context.Context, job *headgate.Job[WelcomeEmail]) error {
+        headgate.Logger(ctx).Info("Welcome email decoded", "locale", job.Args.Locale)
+        return nil
+    })
+if err != nil {
+    return err
+}
+```
+
+```rust Rust
+registry.register::<WelcomeEmail, _, _>(|ctx: headgate::JobCtx, task| async move {
+    ctx.logger().info("Welcome email decoded").field("locale", task.locale).emit();
+    Ok(())
+})?;
+```
+
+</CodeGroup>
+
+Serve the `mail` queue with the ordinary [Go runner](/docs/sdk/go/runner) or
+[Rust worker](/docs/sdk/rust/worker). Do not register the v1, v2, and v3 types separately
+under `email:welcome`; duplicate kind registration is rejected.
+
+## Adding a field without breaking old jobs
+
+An added optional field may be wire-compatible if its absence has a defined meaning.
+A required field needs an explicit policy:
+
+- derive it deterministically from the historical payload;
+- choose a documented, semantically correct default;
+- or decline the conversion when no safe value exists.
+
+Do not pretend an invented value is a migration. If a conversion cannot be made safely,
+return a codec error and resolve the incompatible jobs operationally. Ordinary handler
+errors are not a substitute: those retry rather than classify the bytes as undecodable.
+
+Defaults are specific to the schema they repair. In this guide, accepting a v1 job without
+`locale` does not justify accepting a malformed v3 producer that forgot it.
+
+## Deploy readers before writers
+
+Admission does not select workers by the payload versions they understand. An old worker
+can claim a new-version job if it serves that queue. A version-aware old worker may park
+it as undecodable; an unversioned Go worker may decode it incorrectly.
+
+1. Deploy the new worker with v1, v2, and v3 decoding while producers still emit the old version.
+2. Wait until all incompatible workers serving those queues have drained and stopped.
+3. Switch producers and any stored periodic job definitions to explicitly emit v3.
+4. Retain old upcasters while old scheduled, retryable, or redrivable jobs can still run.
+
+Repeat that rollout when moving from v2 to v3. If old and new workers must coexist without
+compatible readers, use explicitly separated routing and queues; a version number alone
+does not isolate them.
+
+A rollback must remain capable of reading versions already produced. Once v3 jobs exist,
+rolling back to a v1-only worker is not safe. Stop or revert writers first and use a
+compatible rollback build, or explicitly handle the incompatible backlog.
+
+## Stored jobs, redrive, and other identities
+
+Upcasting does not replace the original payload, schema version, ID, or fingerprint in
+storage. The console still shows the originally stored data. Retrying that job decodes
+those original bytes again. Do not manually rewrite stored ciphertext or payload metadata
+as a substitute for a decoder.
+
+A task kind rename is separate: retain the old kind as a Go `KindAliases()` entry or a
+Rust `Task::ALIASES` entry. Aliases route old kind names; they do not rename payload fields.
+
+A task payload version is also distinct from the step schema used by
+[resumable work](/docs/guides/resumable-work). Successfully decoding a job does not make a
+changed durable step set compatible.
+
+For [encrypted jobs](/docs/guides/encryption-at-rest), use encrypted handler registration.
+Decryption precedes typed decoding/upcasting, and authenticated data binds the original
+job ID, kind, and schema version. Keep old decryption keys as well as old decoders until
+all relevant jobs have aged out.
+
+## Run the example locally
+
+The source checkout includes examples that need no database, mail server, or credentials:
+
+<CodeGroup>
+
+```bash Go
+cd examples/go
+GOWORK=off go run ./versioning
+GOWORK=off go test -race ./versioning
+```
+
+```bash Rust
+cargo run -p headgate-examples --bin versioning
+cargo test -p headgate-examples --bin versioning
+```
+
+</CodeGroup>
+
+Both examples print:
+
+```text
+v1 -> success
+v2 -> success
+v3 -> success
+future -> undecodable
+missing-locale -> undecodable
+malformed-v1 -> undecodable
+```
+
+They run the real registration/decoding/acknowledgement path with the in-memory test
+store. Assertions check the current values received by the handler, rejection before
+handler execution, the durable terminal state, and preservation of original payload
+bytes and schema versions. The Go tests also verify `ErrNoUpcastPath`; Rust tests verify
+`CodecError::UnknownVersion`. Both examples run in `scripts/test-examples.sh`.
+
+These checks demonstrate payload evolution, not live SQL/Redis conformance. For an
+application rollout, add fixtures from every payload version you still retain, malformed
+inputs, future versions, and the exact producer envelope construction you deploy.

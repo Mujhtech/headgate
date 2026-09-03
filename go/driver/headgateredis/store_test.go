@@ -21,6 +21,12 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+func TestStructuredAttemptLogsSurviveAck(t *testing.T) {
+	queue := "go-redis-logs-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	store, _, _ := testStore(t, queue)
+	headgatetest.RequireStructuredAttemptLogs(t, store, queue)
+}
+
 func TestEnqueueBackpressureHotPathUsesConstantSizeCounters(t *testing.T) {
 	source, err := luaFS.ReadFile("lua/enqueue.lua")
 	if err != nil {

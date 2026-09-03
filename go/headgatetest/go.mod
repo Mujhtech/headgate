@@ -6,7 +6,7 @@ require (
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/mujhtech/headgate/go v0.1.6
-	github.com/mujhtech/headgate/go/headgatemigrate v0.1.6
+	github.com/mujhtech/headgate/go/headgatemigrate v0.1.7
 	github.com/redis/go-redis/v9 v9.22.0
 )
 

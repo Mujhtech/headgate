@@ -25,6 +25,11 @@ envelope := headgate.Envelope{
 ```
 
 <Note>
-`Kind()` is a durable public identifier. Keep it stable and register explicit version
-decoders when deployed payloads evolve.
+`Kind()` is a durable public identifier. Keep it stable. Implement `Versioned` with
+`Version()` and `Upcast()` when deployed payloads evolve, and set `Envelope.SchemaVersion`
+explicitly. Matching versions use JSON decoding; other nonzero versions use `Upcast`.
+Without `Versioned`, missing fields may silently decode to zero values.
 </Note>
+
+See [Task versioning](/docs/guides/task-versioning) for a complete welcome-email v1 → v2 → v3
+example, required-field validation, and rolling-deployment guidance.

@@ -57,6 +57,13 @@ logs a name only for illustration; choose non-sensitive fields in real jobs.
 
 ## Producer
 
+For payload changes, implement the full `Versioned` interface (`Version` and `Upcast`) and
+stamp `Envelope.SchemaVersion` explicitly. Matching versions use normal JSON decoding;
+nonzero foreign versions call `Upcast`, which must return exactly the registered type.
+Without this interface, missing/renamed fields can silently become zero values.
+Use the [task-versioning guide](https://headgate.mintlify.app/docs/guides/task-versioning)
+for tested conversions and current-version required-field validation.
+
 Use a unique application job ID per intended job, or a stable ID when deliberately
 deduplicating one logical operation. This fragment assumes `jobID`, `ctx`, `store`, and
 the `encoding/json` import are already available:

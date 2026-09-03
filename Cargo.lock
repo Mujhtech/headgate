@@ -955,6 +955,7 @@ dependencies = [
  "headgate-testkit",
  "headgate-workflow",
  "serde",
+ "serde_json",
  "tokio",
 ]
 

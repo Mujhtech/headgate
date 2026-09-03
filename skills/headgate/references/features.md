@@ -17,6 +17,10 @@ signatures and backend requirements rather than guessing APIs from a different q
 
 ## Documentation routes
 
+- [Task versioning](https://headgate.mintlify.app/docs/guides/task-versioning): Go's opt-in
+  `Versioned` interface, Rust's manual `Task::upcast`, explicit envelope versions, required
+  fields, and reader-before-writer deployments. There is one handler per kind, not per version.
+
 - [Policies](https://headgate.mintlify.app/docs/concepts/policies) and
   [admission](https://headgate.mintlify.app/docs/concepts/admission): queue/global capacity,
   rate classes, tenant partitions, fairness, and backpressure.

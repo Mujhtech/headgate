@@ -87,6 +87,12 @@ the attempt. Replace the illustrative name field with non-sensitive diagnostics 
 
 ## Outcomes and durable work
 
+Payload evolution needs `Task::upcast` and an explicit envelope `schema_version`. The
+current derive accepts only the declared version; custom upcasting requires a manual
+`impl Task` instead of the `Task` derive. Handle the current version in that upcaster too.
+See [task versioning](https://headgate.mintlify.app/docs/guides/task-versioning) for the
+complete implementation and reader-before-writer rollout.
+
 - Return `Ok(())` for success. Return a handler error for a retryable failure.
 - `Control::Snooze(Duration)` and `Control::RateLimited` are non-consuming outcomes;
   `Control::Skip` archives without another retry. Convert controls into the handler's

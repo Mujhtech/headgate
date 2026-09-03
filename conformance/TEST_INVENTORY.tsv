@@ -130,4 +130,4 @@ go	go/subscription_test.go	2
 go	go/task_data_test.go	1
 go	go/tracecontext_test.go	4
 go	go/validate_test.go	10
-sh	scripts/test-admission.sh	545
+sh	scripts/test-admission.sh	547

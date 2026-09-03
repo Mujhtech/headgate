@@ -59,6 +59,13 @@ func RequireStructuredAttemptLogs(t *testing.T, store interface {
 			if saved.Level != entry.Level || saved.AtMs != entry.AtMs || saved.Message != entry.Message || saved.Fields["bytes"] != float64(42) || saved.Fields["file_id"] != "résumé" {
 				t.Fatalf("saved: %+v", saved)
 			}
+			// Later contracts run global retention sweeps against the same test database.
+			if err := store.DeleteJob(ctx, id); err != nil {
+				t.Fatal(err)
+			}
+			if job, err := store.GetJob(ctx, id, false); err != nil || job != nil {
+				t.Fatalf("log fixture cleanup: %+v %v", job, err)
+			}
 		})
 	}
 }

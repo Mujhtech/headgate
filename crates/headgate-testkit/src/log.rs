@@ -77,5 +77,8 @@ pub async fn assert_structured_attempt_logs(store: &dyn Inspect, queue: &str) {
         assert_eq!(saved.len(), 2);
         assert_eq!(saved[0], "legacy log");
         assert_eq!(LogEntry::decode(saved[1].as_str().unwrap()), entry);
+        // Later contracts run global retention sweeps against the same test database.
+        store.delete_job(&id).await.unwrap();
+        assert!(store.get_job(&id, false).await.unwrap().is_none());
     }
 }

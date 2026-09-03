@@ -1,0 +1,4 @@
+interface:
+  display_name: "Headgate"
+  short_description: "Build reliable Headgate jobs in Go and Rust"
+  default_prompt: "Use $headgate to integrate background jobs into this application with its existing language and database."

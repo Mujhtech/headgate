@@ -157,6 +157,16 @@ Then open `http://127.0.0.1:8080`. For production mounting and security guidance
 See the [feature index](https://headgate.mintlify.app/docs/reference/feature-index) for the
 full list and the documented boundaries of each backend.
 
+## Agent skill
+
+The [Headgate skill](skills/headgate/SKILL.md) helps coding agents integrate producers,
+workers, workflows, and operational tooling in Go and Rust applications.
+Install it with the [Skills CLI](https://skills.sh/docs/cli):
+
+```bash
+npx skills add Mujhtech/headgate
+```
+
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE).

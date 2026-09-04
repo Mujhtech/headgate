@@ -1,1 +1,0 @@
-import{s as e}from"./utils-VRcxtyuh.js";import{s as t}from"./console-Cm9CRB2q.js";import{n}from"./workflows-Bdi9X82w.js";var r=e();function i(){return(0,r.jsx)(n,{...t()})}export{i as component};

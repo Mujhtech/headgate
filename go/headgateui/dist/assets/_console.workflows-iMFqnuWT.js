@@ -1,0 +1,1 @@
+import{o as e}from"./utils-o8v-URZ_.js";import{s as t}from"./console-DorERn64.js";import{n}from"./workflows-BYP4jEBE.js";var r=e();function i(){return(0,r.jsx)(n,{...t()})}export{i as component};

@@ -26,6 +26,7 @@ import { Progress } from "@/components/ui/progress";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -1282,12 +1283,14 @@ export function JobsView({ notify }: ViewProps) {
                   <SelectValue>{state || "All states"}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All states</SelectItem>
-                  {states.map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {value}
-                    </SelectItem>
-                  ))}
+                  <SelectGroup>
+                    <SelectItem value="all">All states</SelectItem>
+                    {states.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {value}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
                 </SelectContent>
               </Select>
             </div>
@@ -1334,10 +1337,12 @@ export function JobsView({ notify }: ViewProps) {
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="retry">Retry</SelectItem>
-                  <SelectItem value="archive">Archive</SelectItem>
-                  <SelectItem value="cancel">Cancel</SelectItem>
-                  <SelectItem value="delete">Delete</SelectItem>
+                  <SelectGroup>
+                    <SelectItem value="retry">Retry</SelectItem>
+                    <SelectItem value="archive">Archive</SelectItem>
+                    <SelectItem value="cancel">Cancel</SelectItem>
+                    <SelectItem value="delete">Delete</SelectItem>
+                  </SelectGroup>
                 </SelectContent>
               </Select>
               <ActionButton
@@ -1378,9 +1383,11 @@ export function JobsView({ notify }: ViewProps) {
                     </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="cancel">Cancel</SelectItem>
-                    <SelectItem value="retry">Retry</SelectItem>
-                    <SelectItem value="delete">Delete</SelectItem>
+                    <SelectGroup>
+                      <SelectItem value="cancel">Cancel</SelectItem>
+                      <SelectItem value="retry">Retry</SelectItem>
+                      <SelectItem value="delete">Delete</SelectItem>
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
               </div>

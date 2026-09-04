@@ -32,6 +32,7 @@ import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -433,11 +434,13 @@ export function ConsoleLayout() {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {themeOptions.map((option) => (
-                          <SelectItem key={option.value} value={option.value}>
-                            {option.label}
-                          </SelectItem>
-                        ))}
+                        <SelectGroup>
+                          {themeOptions.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
                       </SelectContent>
                     </Select>
                     <p className="text-muted-foreground text-xs">
@@ -454,14 +457,16 @@ export function ConsoleLayout() {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {pollingIntervalOptions.map((option) => (
-                          <SelectItem
-                            key={option.value}
-                            value={String(option.value)}
-                          >
-                            {option.label}
-                          </SelectItem>
-                        ))}
+                        <SelectGroup>
+                          {pollingIntervalOptions.map((option) => (
+                            <SelectItem
+                              key={option.value}
+                              value={String(option.value)}
+                            >
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
                       </SelectContent>
                     </Select>
                     <p className="text-muted-foreground text-xs">

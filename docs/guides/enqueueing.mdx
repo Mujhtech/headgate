@@ -165,6 +165,19 @@ is unhealthy and probes again after its cooldown.
 Applications should retry only typed unavailable errors, with their own deadline and
 jitter. Retrying a forbidden, malformed, or conflicting request cannot make it valid.
 
+## Resource boundaries
+
+Every store adapter applies the same limits before starting a write: at most 1,000 jobs
+and 16 MiB of encoded job data per atomic enqueue, 1 MiB per payload, 128 headers totaling
+64 KiB, 1 KiB per unique key, and 255 bytes for store identifiers. Timeout, deadline, and
+retention values cannot be negative. The control API additionally rejects request bodies
+larger than 2 MiB with HTTP 413.
+
+These are safety ceilings, not recommended batch sizes. Keep ordinary producer batches
+small enough to fit the application's latency budget. A workflow reserves one batch slot
+for its coordinator, so a graph can contain at most 999 task nodes and 10,000 dependency
+edges.
+
 ## Authorization, middleware, and hooks
 
 An enqueue authorizer receives application-supplied identity and every envelope. Headgate

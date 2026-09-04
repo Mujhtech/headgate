@@ -174,7 +174,7 @@ func TestConnectionBudgetKeepsRenewalAcksAndDutiesLiveBehindHeldTransactions(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close(ctx)
+	defer func() { _ = admin.Close(ctx) }()
 	queue := fmt.Sprintf("cb-go-pg-%d", os.Getpid())
 	workerID := fmt.Sprintf("cb-go-pg-w-%d", os.Getpid())
 	if _, err := admin.Exec(ctx, "DELETE FROM headgate_job WHERE queue = $1", queue); err != nil {

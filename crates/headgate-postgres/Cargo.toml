@@ -14,6 +14,7 @@ license.workspace = true
 
 [dependencies]
 headgate-core = { workspace = true }
+headgate-shared = { workspace = true }
 headgate-sql = { workspace = true }
 # For the harness binary's `drain` command (cross-language execution conformance).
 # Cycle-safe: headgate's dependency on this crate is dev-only.

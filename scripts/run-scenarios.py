@@ -395,19 +395,27 @@ def run_scenario(sc, lang, backend, bin_path):
         else:
             backend.seed_rate_class(rc)
     for spec in given.get("jobs", []):
-        args = [
-            "enqueue",
-            f"count={spec['count']}",
-            f"prefix={spec.get('prefix', 'j')}",
-            f"queue={spec.get('queue', 'default')}",
-            f"partition={spec.get('partition_key', '')}",
-            f"rate={spec.get('rate_class', '')}",
-            f"fp={spec.get('fingerprint', 'fp')}",
-            f"sched={spec.get('scheduled_at_ms', 1000)}",
-            f"priority={spec.get('priority', 0)}",
-            "retention=86400000",
-        ]
-        harness(bin_path, backend, *args)
+        count = spec["count"]
+        prefix = spec.get("prefix", "j")
+        for batch, offset in enumerate(range(0, count, 1000)):
+            size = min(1000, count - offset)
+            # Enqueue has a deliberate 1,000-job request ceiling. Large adversarial
+            # fixtures still need their full cardinality, so build them through several
+            # bounded calls with distinct, original-prefix-preserving job IDs.
+            batch_prefix = prefix if count <= 1000 else f"{prefix}{batch}-"
+            args = [
+                "enqueue",
+                f"count={size}",
+                f"prefix={batch_prefix}",
+                f"queue={spec.get('queue', 'default')}",
+                f"partition={spec.get('partition_key', '')}",
+                f"rate={spec.get('rate_class', '')}",
+                f"fp={spec.get('fingerprint', 'fp')}",
+                f"sched={spec.get('scheduled_at_ms', 1000)}",
+                f"priority={spec.get('priority', 0)}",
+                "retention=86400000",
+            ]
+            harness(bin_path, backend, *args)
     # Quarantine is seeded AFTER the jobs, and that ORDER IS THE SEMANTIC: §5.2 makes
     # `enqueue` of a quarantined fingerprint a hard rejection, so seeding it first would
     # make the fixture unbuildable. The state the scenario describes — jobs already

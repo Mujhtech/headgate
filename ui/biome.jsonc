@@ -1,0 +1,62 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "extends": [
+    "ultracite/biome/core",
+    "ultracite/biome/react",
+    "ultracite/biome/tanstack",
+    "ultracite/biome/vitest"
+  ],
+  "linter": {
+    "rules": {
+      "complexity": {
+        // JSX branches inflate this score without making the underlying control flow unsafe.
+        "noExcessiveCognitiveComplexity": "off",
+        // React event handlers deliberately discard mutation promises after errors are handled by React Query.
+        "noVoid": "off"
+      },
+      "performance": {
+        // Timer simulations and bounded worker pools intentionally await each iteration.
+        "noAwaitInLoops": "off",
+        // Inline handlers carry row-specific values; memoizing each one adds more work than it saves here.
+        "noJsxPropsBind": "off"
+      },
+      "style": {
+        // Conditional JSX is clearer beside the markup than split into distant render helpers.
+        "noNestedTernary": "off"
+      },
+      "suspicious": {
+        // Native confirmation is the final safety boundary for destructive operator actions.
+        "noAlert": "off",
+        // API fields intentionally treat both absent and explicit null values as missing.
+        "noEqualsToNull": "off",
+        // API response fields are strongly typed; their values cannot leak React-renderable numbers or strings through boolean guards.
+        "noLeakedRender": "off"
+      }
+    }
+  },
+  "overrides": [
+    {
+      "includes": ["src/components/ui/**"],
+      "linter": {
+        "rules": {
+          "a11y": {
+            // This generic primitive receives its control association from each call site.
+            "noLabelWithoutControl": "off"
+          },
+          "security": {
+            // The generated chart style contains only trusted, local chart configuration.
+            "noDangerouslySetInnerHtml": "off"
+          },
+          "performance": {
+            // shadcn primitives use namespace imports to keep React and Recharts types colocated.
+            "noNamespaceImport": "off"
+          },
+          "suspicious": {
+            // The generated sidebar persists only its own boolean collapse state.
+            "noDocumentCookie": "off"
+          }
+        }
+      }
+    }
+  ]
+}

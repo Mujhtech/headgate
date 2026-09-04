@@ -221,15 +221,19 @@ func TestGoControlChannelQuietResumeTerminate(t *testing.T) {
 	defer cancelRun() // a failed assertion must not leave duty loops refreshing leases
 	runDone := make(chan error, 1)
 	go func() { runDone <- r.Run(runCtx) }()
-
-	waitFor(t, 10*time.Second, func() bool {
+	workerState := func(id string) (headgate.WorkerMeta, bool) {
 		ws, _ := s.ListWorkers(context.Background(), 60_000)
 		for _, w := range ws {
-			if w.WorkerID == "gosig-w" {
-				return true
+			if w.WorkerID == id {
+				return w, true
 			}
 		}
-		return false
+		return headgate.WorkerMeta{}, false
+	}
+
+	waitFor(t, 10*time.Second, func() bool {
+		w, ok := workerState("gosig-w")
+		return ok && w.Status == "running" && w.DutiesActive
 	})
 	// Resign is consume-once and releases duties without stopping admission. First
 	// require this worker to own scheduler, then prove immediate fenced takeover.
@@ -242,6 +246,10 @@ func TestGoControlChannelQuietResumeTerminate(t *testing.T) {
 	if err := s.SignalWorker(ctx, "gosig-w", "resign"); err != nil {
 		t.Fatal(err)
 	}
+	waitFor(t, 10*time.Second, func() bool {
+		w, ok := workerState("gosig-w")
+		return ok && !w.DutiesActive && w.PendingCommand == ""
+	})
 	waitFor(t, 10*time.Second, func() bool {
 		got, err := s.ClaimDuty(context.Background(), "scheduler", "gosig-contender", time.Minute)
 		return err == nil && got
@@ -258,7 +266,10 @@ func TestGoControlChannelQuietResumeTerminate(t *testing.T) {
 	if err := s.SignalWorker(ctx, "gosig-w", "quiet"); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(1500 * time.Millisecond) // several heartbeats; quiet is sticky
+	waitFor(t, 10*time.Second, func() bool {
+		w, ok := workerState("gosig-w")
+		return ok && w.Status == "quiet" && w.PendingCommand == ""
+	})
 	e := rtEnv("gosig-1", "ok")
 	e.Queue = "gosig"
 	if err := s.Enqueue(ctx, []headgate.Envelope{e}); err != nil {
@@ -273,7 +284,8 @@ func TestGoControlChannelQuietResumeTerminate(t *testing.T) {
 	}
 	waitFor(t, 10*time.Second, func() bool {
 		st, _, _, _ := rtRowSoft(s, "gosig-1")
-		return st == "completed"
+		w, ok := workerState("gosig-w")
+		return st == "completed" && ok && w.Status == "running" && w.PendingCommand == ""
 	})
 	// The live heartbeat must deliver and consume restart. Its unbounded in-flight
 	// semantics are pinned deterministically in runtime_test.go.
@@ -285,6 +297,9 @@ func TestGoControlChannelQuietResumeTerminate(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("restart must stop the old Go runner after draining")
 	}
+	if w, ok := workerState("gosig-w"); !ok || w.Status != "restarting" || w.DutiesActive || w.PendingCommand != "" {
+		t.Fatalf("restart state = %+v, found=%v", w, ok)
+	}
 
 	// Retain the pre-existing live proof for bounded terminate on a replacement worker.
 	termCfg := cfg
@@ -295,13 +310,8 @@ func TestGoControlChannelQuietResumeTerminate(t *testing.T) {
 	termDone := make(chan error, 1)
 	go func() { termDone <- termRunner.Run(runCtx) }()
 	waitFor(t, 10*time.Second, func() bool {
-		ws, _ := s.ListWorkers(context.Background(), 60_000)
-		for _, w := range ws {
-			if w.WorkerID == termCfg.WorkerID {
-				return true
-			}
-		}
-		return false
+		w, ok := workerState(termCfg.WorkerID)
+		return ok && w.Status == "running" && !w.DutiesActive
 	})
 	if err := s.SignalWorker(ctx, termCfg.WorkerID, "terminate"); err != nil {
 		t.Fatal(err)
@@ -310,5 +320,8 @@ func TestGoControlChannelQuietResumeTerminate(t *testing.T) {
 	case <-termDone:
 	case <-time.After(10 * time.Second):
 		t.Fatal("terminate must stop the Go runner")
+	}
+	if w, ok := workerState(termCfg.WorkerID); !ok || w.Status != "terminating" || w.DutiesActive || w.PendingCommand != "" {
+		t.Fatalf("terminate state = %+v, found=%v", w, ok)
 	}
 }

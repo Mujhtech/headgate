@@ -77,3 +77,35 @@ func TestRegisterBatchFuncFlushesAtMaxDelay(t *testing.T) {
 		t.Fatal("batch did not flush at max delay")
 	}
 }
+
+func TestCancelledPendingBatchMemberNeverReachesHandler(t *testing.T) {
+	reg := NewRegistry()
+	called := make(chan struct{}, 1)
+	if err := RegisterBatchFunc[batchArgs](reg, 10, time.Hour, func(jobs []BatchJob[batchArgs]) []error {
+		called <- struct{}{}
+		return make([]error, len(jobs))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- reg.handlers["batch.test"](ctx, Claim{Envelope: Envelope{
+			ID: "cancelled", Kind: "batch.test", Payload: []byte(`{"N":1}`),
+		}})
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled member returned %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled batch member stayed pending")
+	}
+	select {
+	case <-called:
+		t.Fatal("cancelled member reached batch handler")
+	default:
+	}
+}

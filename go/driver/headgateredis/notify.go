@@ -19,6 +19,9 @@ type waker struct {
 	rdb     redis.UniversalClient
 	channel string
 	started atomic.Bool
+	ctx     context.Context
+	cancel  context.CancelFunc
+	done    chan struct{}
 
 	mu   sync.Mutex
 	subs map[chan string]struct{}
@@ -28,7 +31,14 @@ type waker struct {
 // the CALLER (failure classification) and must be distinct from a client in transaction/pipeline use —
 // pub/sub dedicates the connection it subscribes on.
 func (s *RedisStore) WithWake(rdb redis.UniversalClient) *RedisStore {
-	s.wake = &waker{rdb: rdb, channel: s.key("wake"), subs: map[chan string]struct{}{}}
+	if s.wake != nil {
+		s.wake.close()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.wake = &waker{
+		rdb: rdb, channel: s.key("wake"), ctx: ctx, cancel: cancel,
+		done: make(chan struct{}), subs: map[chan string]struct{}{},
+	}
 	return s
 }
 
@@ -84,25 +94,52 @@ func (w *waker) ensureStarted() {
 		return
 	}
 	go func() {
+		defer close(w.done)
 		for {
-			w.subscribeOnce()
-			time.Sleep(time.Second) // reconnect backoff; missed = latency, not loss
+			w.subscribeOnce(w.ctx)
+			timer := time.NewTimer(time.Second)
+			select {
+			case <-timer.C:
+			case <-w.ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return
+			}
 		}
 	}()
 }
 
-func (w *waker) subscribeOnce() {
-	ctx := context.Background()
+func (w *waker) subscribeOnce(ctx context.Context) {
 	pubsub := w.rdb.Subscribe(ctx, w.channel)
-	defer pubsub.Close()
-	for msg := range pubsub.Channel() {
-		w.mu.Lock()
-		for ch := range w.subs {
-			select {
-			case ch <- msg.Payload:
-			default: // a slow subscriber drops the hint; its poll timer covers it
+	defer func() { _ = pubsub.Close() }()
+	channel := pubsub.Channel()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg, ok := <-channel:
+			if !ok {
+				return
 			}
+			w.mu.Lock()
+			for ch := range w.subs {
+				select {
+				case ch <- msg.Payload:
+				default: // a slow subscriber drops the hint; its poll timer covers it
+				}
+			}
+			w.mu.Unlock()
 		}
-		w.mu.Unlock()
+	}
+}
+
+func (w *waker) close() {
+	if w == nil {
+		return
+	}
+	w.cancel()
+	if w.started.Load() {
+		<-w.done
 	}
 }

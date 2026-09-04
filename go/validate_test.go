@@ -8,6 +8,7 @@ package headgate
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"syscall"
@@ -219,5 +220,29 @@ func TestSaturationStrategySpellingsAreOneCrossBackendContract(t *testing.T) {
 	}
 	if SaturationStrategy("cancel_newest").Valid() {
 		t.Fatal("unknown strategy must not silently fall back to queue")
+	}
+}
+
+func TestEnqueueResourceBoundariesRejectOversizedAndNegativeInput(t *testing.T) {
+	base := Envelope{ID: "a", Kind: "work", Queue: "default"}
+	cases := []Envelope{
+		{ID: "a", Kind: "work", Queue: "default", Payload: make([]byte, MaxJobPayloadBytes+1)},
+		{ID: "a", Kind: "work", Queue: "default", Headers: map[string]string{"x": string(make([]byte, MaxJobHeadersBytes+1))}},
+		{ID: "a", Kind: "work", Queue: "default", TimeoutMs: -1},
+		{ID: "a", Kind: "work", Queue: "default", DeadlineMs: -1},
+		{ID: "a", Kind: "work", Queue: "default", RetentionMs: -1},
+	}
+	for i, envelope := range cases {
+		if err := ValidateEnqueue([]Envelope{envelope}); err == nil {
+			t.Fatalf("case %d unexpectedly passed", i)
+		}
+	}
+	batch := make([]Envelope, MaxEnqueueBatchSize+1)
+	for i := range batch {
+		batch[i] = base
+		batch[i].ID = fmt.Sprintf("job-%d", i)
+	}
+	if err := ValidateEnqueue(batch); err == nil {
+		t.Fatal("oversized enqueue batch unexpectedly passed")
 	}
 }

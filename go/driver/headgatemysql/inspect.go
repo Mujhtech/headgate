@@ -32,16 +32,17 @@ import (
 	"strings"
 
 	headgate "github.com/mujhtech/headgate/go"
+	"github.com/mujhtech/headgate/go/headgateshared"
 )
 
 const (
 	// sampleLimit is the most rows any counting query may touch. Past this, counts are
 	// approximate — a queue console must never be able to pin the database.
-	sampleLimit = int64(50_000)
+	sampleLimit = int64(headgateshared.InspectionSampleLimit)
 	// positionLimit caps queue-position lookups; "position >= 1000" is answer enough.
-	positionLimit       = int64(1_000)
-	quietPartitionLimit = 1_000
-	maxPage             = uint32(200)
+	positionLimit       = int64(headgateshared.InspectionPositionLimit)
+	quietPartitionLimit = headgateshared.InspectionQuietPartitionLimit
+	maxPage             = uint32(headgateshared.InspectionMaxPage)
 )
 
 type quietPartMetric struct {
@@ -79,7 +80,7 @@ func (s *MysqlStore) quietGroupMetrics(ctx context.Context, queue string, nowMs 
 	if err != nil {
 		return headgate.QuietGroupMetrics{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	parts := make([]quietPartMetric, 0)
 	for rows.Next() {
 		var p quietPartMetric
@@ -135,12 +136,9 @@ func (s *MysqlStore) quietGroupMetrics(ctx context.Context, queue string, nowMs 
 		ArrivalRate: float64(arrived) / 60.0, DrainRate: float64(completed) / 60.0,
 		NoisyPartitions: uint32(len(noisy)), Approximate: approx || backlog >= sampleLimit,
 	}
-	if q.DrainRate > q.ArrivalRate && q.DrainRate > 0 {
-		ttd := int64(float64(backlog) / (q.DrainRate - q.ArrivalRate) * 1000.0)
-		q.TimeToDrainMs = &ttd
-	}
+	q.TimeToDrainMs = headgate.TimeToDrainMillis(backlog, q.ArrivalRate, q.DrainRate)
 	if oldestAt != nil {
-		age := max(nowMs-*oldestAt, 0)
+		age := headgate.AgeMillis(nowMs, *oldestAt)
 		q.OldestAvailableMs = &age
 	}
 	return q, nil
@@ -151,6 +149,7 @@ var _ headgate.InspectStore = (*MysqlStore)(nil)
 var _ headgate.ResultInspectStore = (*MysqlStore)(nil)
 var _ headgate.OutputInspectStore = (*MysqlStore)(nil)
 var _ headgate.ProgressInspectStore = (*MysqlStore)(nil)
+var _ headgate.CheckpointInspectStore = (*MysqlStore)(nil)
 
 const jobCols = `j.ulid, j.kind, j.queue, CAST(j.state AS CHAR) AS state_text,
 	j.schema_version, j.priority, j.attempt, j.crash_attempt, j.max_attempts,
@@ -268,6 +267,22 @@ func (s *MysqlStore) GetJobProgress(ctx context.Context, id string) (*headgate.J
 	}, nil
 }
 
+func (s *MysqlStore) GetJobCheckpoint(ctx context.Context, id string) (*headgate.Checkpoint, error) {
+	var raw sql.NullString
+	var cursor []byte
+	err := s.db.QueryRowContext(ctx,
+		`SELECT CAST(checkpoint AS CHAR), cp_cursor FROM headgate_job WHERE ulid = ?`, id).
+		Scan(&raw, &cursor)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	checkpoint := decodeCheckpoint(raw, cursor)
+	return &checkpoint, nil
+}
+
 func (s *MysqlStore) ListJobs(ctx context.Context, f headgate.JobFilter, cursor string, limit uint32) (headgate.JobPage, error) {
 	if limit < 1 {
 		limit = 1
@@ -340,7 +355,7 @@ func (s *MysqlStore) ListJobs(ctx context.Context, f headgate.JobFilter, cursor 
 	if err != nil {
 		return headgate.JobPage{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var page headgate.JobPage
 	var lastInternal int64
 	for rows.Next() {
@@ -374,7 +389,7 @@ func (s *MysqlStore) Counts(ctx context.Context, queue *string) (headgate.StateC
 	if err != nil {
 		return headgate.StateCounts{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := headgate.StateCounts{Counts: map[string]int64{}}
 	var total int64
 	for rows.Next() {
@@ -403,11 +418,11 @@ func (s *MysqlStore) QueueStats(ctx context.Context) ([]headgate.QueueStatsView,
 			      WHERE bucket_ms >= `+nowMS+` - 3600000
 			UNION SELECT DISTINCT queue FROM
 			      (SELECT queue FROM headgate_job LIMIT ?) s
-			ORDER BY 1`, sampleLimit)
+			ORDER BY 1 LIMIT 10000`, sampleLimit)
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		var out []string
 		for rows.Next() {
 			var q string
@@ -437,7 +452,7 @@ func (s *MysqlStore) QueueStats(ctx context.Context) ([]headgate.QueueStatsView,
 			if err != nil {
 				return nil, 0, 0, err
 			}
-			defer rows.Close()
+			defer func() { _ = rows.Close() }()
 			m := map[string]int64{}
 			var backlog, total int64
 			for rows.Next() {
@@ -508,16 +523,15 @@ func (s *MysqlStore) QueueStats(ctx context.Context) ([]headgate.QueueStatsView,
 			return nil, err
 		}
 		if oldestAt.Valid {
-			age := max(nowMs-oldestAt.Int64, 0)
+			age := headgate.AgeMillis(nowMs, oldestAt.Int64)
 			v.OldestAvailableMs = &age
 		}
 		v.ArrivalRate = float64(arrived.Int64) / 60.0
 		v.DrainRate = float64(completed.Int64) / 60.0
 		// backlog metrics time-to-drain: nil when arrival >= drain — the alert condition.
-		if v.DrainRate > v.ArrivalRate && v.DrainRate > 0 {
-			ttd := int64(float64(v.UnfinishedJobs) / (v.DrainRate - v.ArrivalRate) * 1000.0)
-			v.TimeToDrainMs = &ttd
-		}
+		v.TimeToDrainMs = headgate.TimeToDrainMillis(
+			int64(v.UnfinishedJobs), v.ArrivalRate, v.DrainRate,
+		)
 		v.QuietGroups, err = s.quietGroupMetrics(ctx, q, nowMs)
 		if err != nil {
 			return nil, err
@@ -569,7 +583,7 @@ func (s *MysqlStore) RateClasses(ctx context.Context) ([]headgate.RateClassState
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []headgate.RateClassState
 	for rows.Next() {
 		var r headgate.RateClassState
@@ -584,13 +598,8 @@ func (s *MysqlStore) RateClasses(ctx context.Context) ([]headgate.RateClassState
 }
 
 func (s *MysqlStore) UpsertRateClass(ctx context.Context, cfg headgate.RateClassConfig) error {
-	if cfg.WindowMs < 1 {
-		// boundary validation, and it divides the refill. Text matches the Rust store word-for-word
-		// (the mutation diff asserts error-message parity).
-		return &headgate.InvalidError{Msg: "window_ms must be >= 1"}
-	}
-	if cfg.Limit < 0 || cfg.Burst < 1 {
-		return &headgate.InvalidError{Msg: "limit must be >= 0 and burst >= 1"}
+	if err := headgate.ValidateRateClassConfig(cfg); err != nil {
+		return err
 	}
 	// Invariant 16 kill switch: paused = limit 0 AND tokens 0, refill adds nothing.
 	limit, tokensInsert := cfg.Limit, cfg.Burst
@@ -617,7 +626,7 @@ func (s *MysqlStore) ConcurrencyLimits(ctx context.Context) ([]headgate.Concurre
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []headgate.ConcurrencyLimit
 	for rows.Next() {
 		var v headgate.ConcurrencyLimit
@@ -633,14 +642,8 @@ func (s *MysqlStore) ConcurrencyLimits(ctx context.Context) ([]headgate.Concurre
 }
 
 func (s *MysqlStore) UpsertConcurrencyLimit(ctx context.Context, cfg headgate.ConcurrencyLimit) error {
-	if cfg.Name == "" || cfg.Queue == "" {
-		return &headgate.InvalidError{Msg: "name and queue must not be empty"}
-	}
-	if cfg.MaxConcurrent == 0 {
-		return &headgate.InvalidError{Msg: "max_concurrent must be >= 1"}
-	}
-	if !cfg.OnSaturated.Valid() {
-		return &headgate.InvalidError{Msg: fmt.Sprintf("unknown saturation strategy `%s`", cfg.OnSaturated)}
+	if err := headgate.ValidateConcurrencyLimit(cfg); err != nil {
+		return err
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO headgate_concurrency_limit
@@ -671,11 +674,11 @@ func (s *MysqlStore) Partitions(ctx context.Context, queue string) ([]headgate.P
 		      (SELECT partition_key FROM
 		         (SELECT DISTINCT partition_key FROM headgate_job
 		          WHERE queue = ? AND state = 'available' LIMIT 1000) t)
-		ORDER BY 1`, queue, sampleLimit, queue, queue, queue)
+		ORDER BY 1 LIMIT 10000`, queue, sampleLimit, queue, queue, queue)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []headgate.PartitionState
 	for rows.Next() {
 		var p headgate.PartitionState
@@ -694,7 +697,7 @@ func (s *MysqlStore) QuarantineList(ctx context.Context) ([]headgate.QuarantineE
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []headgate.QuarantineEntry
 	for rows.Next() {
 		var q headgate.QuarantineEntry
@@ -779,14 +782,14 @@ func (s *MysqlStore) OperatorRetry(ctx context.Context, id string) error {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO headgate_active_partition (queue, partition_key)
 			SELECT queue, partition_key FROM headgate_job
-			WHERE ulid = ? AND state = 'archived'
+			WHERE ulid = ? AND state IN ('archived', 'cancelled')
 			ON DUPLICATE KEY UPDATE queue = VALUES(queue)`, id); err != nil {
 			return 0, err
 		}
 		res, err := tx.ExecContext(ctx, `
 			UPDATE headgate_job SET state = 'available', scheduled_at_ms = `+nowMS+`,
 			       finalized_at_ms = NULL
-			WHERE ulid = ? AND state = 'archived'`, id)
+			WHERE ulid = ? AND state IN ('archived', 'cancelled')`, id)
 		if err != nil {
 			return 0, err
 		}
@@ -809,7 +812,7 @@ func (s *MysqlStore) OperatorRetry(ctx context.Context, id string) error {
 	if !found {
 		return headgate.NotFoundf("job %s", id)
 	}
-	return headgate.Invalidf("operator_retry is only defined from archived; job %s is %s", id, st)
+	return headgate.Invalidf("operator_retry is only defined from archived or cancelled; job %s is %s", id, st)
 }
 
 func (s *MysqlStore) OperatorCancel(ctx context.Context, id string) error {
@@ -963,86 +966,25 @@ func (s *MysqlStore) ExplainAdmission(ctx context.Context, id string) (*headgate
 		return nil, err
 	}
 
-	ex := &headgate.AdmissionExplain{State: state, Detail: map[string]string{"state": state}}
-	block := func(by string, eta *int64) *headgate.AdmissionExplain {
-		ex.Admissible, ex.BlockedBy, ex.EstimatedAdmissionMs = false, by, eta
-		return ex
-	}
-	zero := int64(0)
-	switch state {
-	case "running":
-		ex.Admissible, ex.EstimatedAdmissionMs = true, &zero
-		return ex, nil
-	case "scheduled", "retryable":
-		ex.Detail["scheduled_at_ms"] = fmt.Sprint(scheduledAt)
-		eta := max64(scheduledAt-nowMs, 0)
-		return block("schedule", &eta), nil
-	case "quarantined":
-		return block("quarantine", nil), nil // will not clear on its own
-	case "available":
-	default: // terminal
-		ex.Admissible = false
-		return ex, nil
-	}
-	// Available: the gate's clauses in the gate's order.
-	if paused {
-		return block("queue_paused", nil), nil
-	}
-	if scheduledAt > nowMs {
-		ex.Detail["scheduled_at_ms"] = fmt.Sprint(scheduledAt)
-		eta := scheduledAt - nowMs
-		return block("schedule", &eta), nil
-	}
-	if quarantined {
-		ex.Detail["fingerprint"] = fingerprint
-		return block("quarantine", nil), nil
-	}
-	if rateClass != "" {
-		required := aheadInClass + max64(weight, 1)
-		ex.Detail["rate_class"] = rateClass
-		ex.Detail["weight"] = fmt.Sprint(max64(weight, 1))
-		ex.Detail["tokens_ahead_in_class"] = fmt.Sprint(aheadInClass)
-		if !avail.Valid {
-			// an unconfigured class is UNLIMITED, not blocking — the gate's
-			// `b.name IS NULL OR ...` fail-open arm. Still reported, because "you named
-			// a rate class that does not exist" is worth seeing even when nothing stalls.
-			ex.Detail["tokens_available"] = "unlimited (no such rate class)"
-		} else {
-			ex.Detail["tokens_available"] = fmt.Sprint(avail.Int64)
-			if avail.Int64 < required {
-				var eta *int64
-				if limitPerWindow.Valid && limitPerWindow.Int64 > 0 && windowMs.Valid {
-					e := max64(required-avail.Int64, 1) * windowMs.Int64 / limitPerWindow.Int64
-					eta = &e
-				}
-				return block("rate_class", eta), nil
-			}
+	nullableInt := func(value sql.NullInt64) *int64 {
+		if !value.Valid {
+			return nil
 		}
+		copy := value.Int64
+		return &copy
 	}
-	if maxConc.Valid {
-		ex.Detail["max_concurrent"] = fmt.Sprint(maxConc.Int64)
-		ex.Detail["inflight"] = fmt.Sprint(inflight)
-		strategy := string(headgate.SaturateQueue)
-		if onSaturated.Valid {
-			strategy = onSaturated.String
-		}
-		ex.Detail["on_saturated"] = strategy
-		if inflight >= maxConc.Int64 && strategy != string(headgate.SaturateCancelRunning) {
-			return block("concurrency_limit", nil), nil // clears when something finishes
-		}
+	strategy := ""
+	if onSaturated.Valid {
+		strategy = onSaturated.String
 	}
-	// Fairness never blocks outright — it is work-conserving (invariant 11).
-	ex.Detail["position_in_partition"] = fmt.Sprint(aheadInPartition)
-	ex.Detail["partition_deficit"] = fmt.Sprint(deficit)
-	ex.Admissible, ex.EstimatedAdmissionMs = true, &zero
-	return ex, nil
-}
-
-func max64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
+	return headgate.EvaluateAdmission(headgateshared.AdmissionFacts{
+		State: state, NowMs: nowMs, ScheduledAtMs: scheduledAt,
+		QueuePaused: paused, Quarantined: quarantined, Fingerprint: fingerprint,
+		RateClass: rateClass, Weight: weight, TokensAvailable: nullableInt(avail),
+		TokensAhead: aheadInClass, LimitPerWindow: limitPerWindow.Int64,
+		WindowMs: windowMs.Int64, MaxConcurrent: nullableInt(maxConc), Inflight: inflight,
+		Saturation: strategy, Position: aheadInPartition, Deficit: deficit,
+	}), nil
 }
 
 func (s *MysqlStore) History(ctx context.Context, queue string, sinceMs, bucketMs int64) ([]headgate.HistoryBucket, error) {
@@ -1058,7 +1000,7 @@ func (s *MysqlStore) History(ctx context.Context, queue string, sinceMs, bucketM
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []headgate.HistoryBucket
 	for rows.Next() {
 		var b headgate.HistoryBucket
@@ -1176,14 +1118,7 @@ func scanSchedule(row rowScanner, extra ...any) (headgate.ScheduleEntry, error) 
 }
 
 func missedName(p headgate.MissedPolicy) string {
-	switch p {
-	case headgate.MissedRunOnce:
-		return "run_once"
-	case headgate.MissedBackfill:
-		return "backfill"
-	default:
-		return "skip"
-	}
+	return p.String()
 }
 
 func (s *MysqlStore) UpsertSchedule(ctx context.Context, e headgate.ScheduleEntry) error {
@@ -1235,7 +1170,7 @@ func (s *MysqlStore) ListSchedules(ctx context.Context) ([]headgate.ScheduleEntr
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []headgate.ScheduleEntry
 	for rows.Next() {
 		e, err := scanSchedule(rows)
@@ -1255,7 +1190,7 @@ func (s *MysqlStore) DueSchedules(ctx context.Context, limit int64) ([]headgate.
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []headgate.ScheduleEntry
 	var now int64
 	for rows.Next() {
@@ -1328,8 +1263,8 @@ func (s *MysqlStore) RecordScheduleEvent(ctx context.Context, event headgate.Sch
 }
 
 func (s *MysqlStore) ListScheduleEvents(ctx context.Context, scheduleID string, beforeEventID uint64, limit uint32) ([]headgate.ScheduleEvent, error) {
-	if limit == 0 || limit > headgate.ScheduleEventLimit {
-		return nil, headgate.Invalidf("schedule event limit must be between 1 and 100")
+	if err := headgate.ValidateScheduleEventLimit(limit); err != nil {
+		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, schedule_id, tick_ms, job_id, CAST(outcome AS CHAR), reason, recorded_at_ms
@@ -1339,7 +1274,7 @@ func (s *MysqlStore) ListScheduleEvents(ctx context.Context, scheduleID string, 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []headgate.ScheduleEvent
 	for rows.Next() {
 		var event headgate.ScheduleEvent
@@ -1355,6 +1290,10 @@ func (s *MysqlStore) ListScheduleEvents(ctx context.Context, scheduleID string, 
 // ---------- worker registry + surveyed policy behavior control channel ----------
 
 func (s *MysqlStore) HeartbeatWorker(ctx context.Context, w headgate.WorkerMeta) (string, error) {
+	status := w.Status
+	if status == "" {
+		status = "running"
+	}
 	queues, err := json.Marshal(w.Queues)
 	if err != nil || w.Queues == nil {
 		queues = []byte("[]")
@@ -1371,17 +1310,19 @@ func (s *MysqlStore) HeartbeatWorker(ctx context.Context, w headgate.WorkerMeta)
 	if _, err := conn.ExecContext(ctx, `
 		INSERT INTO headgate_worker
 		       (worker_id, host, pid, queues, concurrency, started_at_ms, heartbeat_at_ms,
-		        inflight, polls, empty_polls)
-		VALUES (?, ?, ?, CAST(? AS JSON), ?, ?, `+nowMS+`, ?, ?, ?) AS new
+		        inflight, polls, empty_polls, status, duties_active)
+		VALUES (?, ?, ?, CAST(? AS JSON), ?, ?, `+nowMS+`, ?, ?, ?, ?, ?) AS new
 		ON DUPLICATE KEY UPDATE
 		  queues = new.queues, concurrency = new.concurrency,
 		  heartbeat_at_ms = new.heartbeat_at_ms,
 		  -- ADDITIVE: LEVELS, so the beat overwrites rather than
 		  -- accumulating (same rule as the PG adapter).
 		  inflight = new.inflight, polls = new.polls,
-		  empty_polls = new.empty_polls`,
+		  empty_polls = new.empty_polls, status = new.status,
+		  duties_active = new.duties_active`,
 		w.WorkerID, w.Host, int64(w.PID), string(queues), int64(w.Concurrency),
-		w.StartedAtMs, int64(w.Inflight), int64(w.Polls), int64(w.EmptyPolls)); err != nil {
+		w.StartedAtMs, int64(w.Inflight), int64(w.Polls), int64(w.EmptyPolls),
+		status, w.DutiesActive); err != nil {
 		return "", err
 	}
 	var cmd sql.NullString
@@ -1400,21 +1341,22 @@ func (s *MysqlStore) ListWorkers(ctx context.Context, staleAfterMs int64) ([]hea
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT worker_id, host, pid, CAST(queues AS CHAR) AS queues_json,
 		       concurrency, started_at_ms, heartbeat_at_ms,
-		       inflight, polls, empty_polls
+		       inflight, polls, empty_polls, status, duties_active, command
 		FROM headgate_worker
 		WHERE heartbeat_at_ms >= `+nowMS+` - ?
 		ORDER BY worker_id LIMIT 10000`, staleAfterMs)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []headgate.WorkerMeta
 	for rows.Next() {
 		var w headgate.WorkerMeta
 		var pid, conc, inflight, polls, emptyPolls int64
-		var queuesJSON sql.NullString
+		var queuesJSON, command sql.NullString
 		if err := rows.Scan(&w.WorkerID, &w.Host, &pid, &queuesJSON, &conc,
-			&w.StartedAtMs, &w.HeartbeatAtMs, &inflight, &polls, &emptyPolls); err != nil {
+			&w.StartedAtMs, &w.HeartbeatAtMs, &inflight, &polls, &emptyPolls,
+			&w.Status, &w.DutiesActive, &command); err != nil {
 			return nil, err
 		}
 		w.PID = int32(pid)
@@ -1423,6 +1365,9 @@ func (s *MysqlStore) ListWorkers(ctx context.Context, staleAfterMs int64) ([]hea
 		}
 		w.Concurrency = uint32(conc)
 		w.Inflight, w.Polls, w.EmptyPolls = uint32(inflight), uint64(polls), uint64(emptyPolls)
+		if command.Valid {
+			w.PendingCommand = command.String
+		}
 		out = append(out, w)
 	}
 	return out, rows.Err()
@@ -1431,12 +1376,10 @@ func (s *MysqlStore) ListWorkers(ctx context.Context, staleAfterMs int64) ([]hea
 func (s *MysqlStore) SignalWorker(ctx context.Context, workerID, command string) error {
 	var cmd any
 	if command != "" {
-		switch command {
-		case "quiet", "resume", "restart", "terminate", "resign":
-			cmd = command
-		default:
+		if !headgate.ValidWorkerCommand(command) {
 			return &headgate.InvalidError{Msg: "command must be quiet, resume, restart, terminate, or resign"}
 		}
+		cmd = command
 	}
 	// CLIENT_FOUND_ROWS (package contract): matched-rows semantics, so clearing an
 	// already-NULL command still counts the row and 0 truly means "no such worker".
@@ -1464,7 +1407,7 @@ func (s *MysqlStore) DistinctKinds(ctx context.Context, limit int64) ([]string, 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []string
 	for rows.Next() {
 		var k string
@@ -1481,15 +1424,11 @@ func (s *MysqlStore) DistinctKinds(ctx context.Context, limit int64) ([]string, 
 // actionStates: which states each bulk action may touch — the transition table's rows,
 // nothing more.
 func actionStates(action string) (string, bool) {
-	switch action {
-	case "retry":
-		return "('archived')", true
-	case "cancel":
-		return "('scheduled', 'available', 'running')", true
-	case "delete":
-		return "('scheduled', 'available', 'retryable', 'completed', 'archived', 'cancelled', 'quarantined', 'undecodable')", true
+	states, ok := headgate.BulkActionStates(action)
+	if !ok {
+		return "", false
 	}
-	return "", false
+	return "('" + strings.Join(states, "', '") + "')", true
 }
 
 func selectorWhere(req headgate.BulkOp, allowedStates string) (string, []any) {
@@ -1526,8 +1465,7 @@ func nz(s string) any {
 }
 
 func (s *MysqlStore) CreateOperation(ctx context.Context, req headgate.BulkOp) error {
-	if req.Queue == "" && req.State == "" && req.Kind == "" && req.PartitionKey == "" &&
-		req.OlderThanMs == nil {
+	if !req.HasSelector() {
 		return &headgate.InvalidError{Msg: "empty selector is rejected"} // control API contract
 	}
 	allowed, ok := actionStates(req.Action)
@@ -1588,12 +1526,12 @@ func (s *MysqlStore) RunPendingOperations(ctx context.Context, batch int64) (uin
 	for rows.Next() {
 		var o opRow
 		if err := rows.Scan(&o.id, &o.action, &o.selector); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return 0, err
 		}
 		ops = append(ops, o)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
@@ -1637,7 +1575,7 @@ func (s *MysqlStore) PromoteJob(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var q, p string
 	if err = tx.QueryRowContext(ctx, "SELECT queue,partition_key FROM headgate_job WHERE ulid=? AND state='pending' FOR UPDATE", id).Scan(&q, &p); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1710,8 +1648,8 @@ func (s *MysqlStore) SampleQueueMemory(ctx context.Context, limit uint32) (uint3
 	if limit < 1 {
 		limit = 1
 	}
-	if limit > 1000 {
-		limit = 1000
+	if limit > headgateshared.InspectionMemorySampleLimit {
+		limit = headgateshared.InspectionMemorySampleLimit
 	}
 	rows, err := s.db.QueryContext(ctx, "SELECT queue FROM headgate_queue_state ORDER BY queue LIMIT 200")
 	if err != nil {
@@ -1721,12 +1659,12 @@ func (s *MysqlStore) SampleQueueMemory(ctx context.Context, limit uint32) (uint3
 	for rows.Next() {
 		var q string
 		if err = rows.Scan(&q); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return 0, err
 		}
 		qs = append(qs, q)
 	}
-	rows.Close()
+	_ = rows.Close()
 	for _, q := range qs {
 		var bytes uint64
 		var n uint32

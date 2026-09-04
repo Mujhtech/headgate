@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	headgate "github.com/mujhtech/headgate/go"
+	"github.com/mujhtech/headgate/go/headgateshared"
 	"github.com/mujhtech/headgate/go/headgateui"
 )
 
@@ -54,8 +56,10 @@ func main() {
 func newDemoHandler(now time.Time) http.Handler {
 	api := &demoAPI{now: now}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/meta", api.meta)
 	mux.HandleFunc("GET /api/v1/jobs/counts", api.jobCounts)
 	mux.HandleFunc("GET /api/v1/jobs/{id}/admission", api.admission)
+	mux.HandleFunc("GET /api/v1/jobs/{id}/checkpoint", api.checkpoint)
 	mux.HandleFunc("GET /api/v1/jobs/{id}/progress", api.progress)
 	mux.HandleFunc("GET /api/v1/jobs/{id}", api.job)
 	mux.HandleFunc("GET /api/v1/jobs", api.jobs)
@@ -73,11 +77,28 @@ func newDemoHandler(now time.Time) http.Handler {
 	return mux
 }
 
+func (d *demoAPI) meta(w http.ResponseWriter, _ *http.Request) {
+	d.writeJSON(w, map[string]any{
+		"version":      headgate.Version,
+		"backend":      "demo",
+		"capabilities": []string{"inspect"},
+		"limits":       map[string]any{"max_page_size": 200},
+	})
+}
+
 func (d *demoAPI) milliseconds(offset time.Duration) int64 {
 	return d.now.Add(offset).UnixMilli()
 }
 
 func (d *demoAPI) allJobs() []map[string]any {
+	logs := []string{"render started"}
+	for i, level := range []string{"debug", "info", "warn", "error"} {
+		logs = append(logs, headgateshared.EncodeLog(headgateshared.LogEntry{
+			Level: level, AtMs: d.milliseconds(-6*time.Minute + time.Duration(i)*time.Second),
+			Message: []string{"Loaded template", "Rendering report", "Upstream is slow", "Upstream returned 503"}[i],
+			Fields:  map[string]any{"report_id": "demo-report", "request": i + 1},
+		}))
+	}
 	workflow := map[string]any{
 		"workflow_id": "daily-import-2026-08-28",
 		"nodes": []map[string]any{
@@ -89,7 +110,7 @@ func (d *demoAPI) allJobs() []map[string]any {
 	}
 	workflowJSON, _ := json.Marshal(workflow)
 	return []map[string]any{
-		{"id": "job-running-1042", "kind": "reports:render", "queue": "critical", "state": "running", "attempt": 1, "crash_attempt": 0, "max_attempts": 5, "schema_version": 2, "partition_key": "tenant-acme", "rate_class": "external-api", "fingerprint": "sha256:8c77a6d52d1f", "enqueued_at_ms": d.milliseconds(-8 * time.Minute), "scheduled_at_ms": d.milliseconds(-7 * time.Minute), "errors": []map[string]any{{"outcome": "retry", "at_ms": d.milliseconds(-6 * time.Minute), "attempt": 1, "error": "upstream returned 503", "logs": []string{"render started", "retrying upstream request"}}}},
+		{"id": "job-running-1042", "kind": "reports:render", "queue": "critical", "state": "running", "attempt": 1, "crash_attempt": 0, "max_attempts": 5, "schema_version": 2, "partition_key": "tenant-acme", "rate_class": "external-api", "fingerprint": "sha256:8c77a6d52d1f", "enqueued_at_ms": d.milliseconds(-8 * time.Minute), "scheduled_at_ms": d.milliseconds(-7 * time.Minute), "errors": []map[string]any{{"outcome": "retry", "at_ms": d.milliseconds(-6 * time.Minute), "attempt": 1, "error": "upstream returned 503", "logs": logs}}},
 		{"id": "job-rate-limited-2031", "kind": "email:deliver", "queue": "mailers", "state": "available", "attempt": 0, "crash_attempt": 0, "max_attempts": 10, "schema_version": 1, "partition_key": "tenant-north", "rate_class": "email-provider", "fingerprint": "sha256:b4383c410f29", "enqueued_at_ms": d.milliseconds(-3 * time.Minute), "scheduled_at_ms": d.milliseconds(-2 * time.Minute)},
 		{"id": "job-retry-3019", "kind": "webhook:dispatch", "queue": "default", "state": "retryable", "attempt": 2, "crash_attempt": 0, "max_attempts": 8, "schema_version": 3, "partition_key": "tenant-acme", "fingerprint": "sha256:f881f0d9a5ea", "enqueued_at_ms": d.milliseconds(-22 * time.Minute), "scheduled_at_ms": d.milliseconds(90 * time.Second), "errors": []map[string]any{{"outcome": "retry", "at_ms": d.milliseconds(-2 * time.Minute), "attempt": 2, "error": "connection reset by peer"}}},
 		{"id": "job-completed-992", "kind": "billing:invoice", "queue": "critical", "state": "completed", "attempt": 1, "crash_attempt": 0, "max_attempts": 5, "schema_version": 1, "partition_key": "tenant-south", "fingerprint": "sha256:60564e2df293", "enqueued_at_ms": d.milliseconds(-45 * time.Minute), "scheduled_at_ms": d.milliseconds(-44 * time.Minute), "finalized_at_ms": d.milliseconds(-43 * time.Minute)},
@@ -174,20 +195,61 @@ func (d *demoAPI) progress(w http.ResponseWriter, r *http.Request) {
 	d.writeJSON(w, map[string]any{"current": current, "total": total, "message": message, "updated_at_ms": d.milliseconds(-4 * time.Second), "fence": 7})
 }
 
+func (d *demoAPI) checkpoint(w http.ResponseWriter, r *http.Request) {
+	checkpoint := map[string]any{
+		"last_completed_step": nil,
+		"completed_steps":     []string{},
+		"in_progress_step":    nil,
+		"cursor_step":         nil,
+		"cursor":              nil,
+		"schema_version":      0,
+		"step_set_hash":       "",
+		"crashes_by_step":     map[string]int{},
+	}
+	if r.PathValue("id") == "job-running-1042" {
+		checkpoint = map[string]any{
+			"last_completed_step": "fetch-source",
+			"completed_steps":     []string{"validate-request", "fetch-source"},
+			"in_progress_step":    "render-pages",
+			"cursor_step":         "render-pages",
+			"cursor":              base64.StdEncoding.EncodeToString([]byte(`{"page":67,"total":100}`)),
+			"schema_version":      1,
+			"step_set_hash":       "sha256:reports-render-v2",
+			"crashes_by_step":     map[string]int{"fetch-source": 1},
+		}
+	}
+	d.writeJSON(w, checkpoint)
+}
+
 func (d *demoAPI) queues(w http.ResponseWriter, _ *http.Request) {
 	d.writeJSON(w, map[string]any{"queues": []map[string]any{
-		{"queue": "critical", "paused": false, "time_to_drain_ms": 42000, "arrival_rate": 5.4, "drain_rate": 8.1, "by_state": map[string]int{"available": 18, "running": 7, "retryable": 2}},
-		{"queue": "default", "paused": false, "time_to_drain_ms": 310000, "arrival_rate": 18.7, "drain_rate": 19.2, "by_state": map[string]int{"available": 94, "running": 21}},
-		{"queue": "mailers", "paused": false, "time_to_drain_ms": nil, "arrival_rate": 31.5, "drain_rate": 24.0, "by_state": map[string]int{"available": 631, "retryable": 15}},
-		{"queue": "imports", "paused": false, "time_to_drain_ms": 780000, "arrival_rate": 2.2, "drain_rate": 3.8, "by_state": map[string]int{"available": 48, "running": 4, "scheduled": 9}},
-		{"queue": "maintenance", "paused": true, "time_to_drain_ms": nil, "arrival_rate": 0.2, "drain_rate": 0.0, "by_state": map[string]int{"available": 12}},
+		{"queue": "critical", "paused": false, "unfinished_jobs": 27, "oldest_available_ms": 14000, "time_to_drain_ms": 42000, "arrival_rate": 5.4, "drain_rate": 8.1, "by_state": map[string]int{"available": 18, "running": 7, "retryable": 2}},
+		{"queue": "default", "paused": false, "unfinished_jobs": 115, "oldest_available_ms": 96000, "time_to_drain_ms": 310000, "arrival_rate": 18.7, "drain_rate": 19.2, "by_state": map[string]int{"available": 94, "running": 21}},
+		{"queue": "mailers", "paused": false, "unfinished_jobs": 646, "oldest_available_ms": 612000, "time_to_drain_ms": nil, "arrival_rate": 31.5, "drain_rate": 24.0, "by_state": map[string]int{"available": 631, "retryable": 15}},
+		{"queue": "imports", "paused": false, "unfinished_jobs": 61, "oldest_available_ms": 183000, "time_to_drain_ms": 780000, "arrival_rate": 2.2, "drain_rate": 3.8, "by_state": map[string]int{"available": 48, "running": 4, "scheduled": 9}},
+		{"queue": "maintenance", "paused": true, "unfinished_jobs": 12, "oldest_available_ms": 3600000, "time_to_drain_ms": nil, "arrival_rate": 0.2, "drain_rate": 0.0, "by_state": map[string]int{"available": 12}},
 	}})
 }
 
-func (d *demoAPI) queueHistory(w http.ResponseWriter, _ *http.Request) {
+func (d *demoAPI) queueHistory(w http.ResponseWriter, r *http.Request) {
 	buckets := make([]map[string]any, 0, 24)
 	for index := 23; index >= 0; index-- {
-		buckets = append(buckets, map[string]any{"at_ms": d.milliseconds(-time.Duration(index) * 5 * time.Minute), "arrived": 12 + (index*7)%24, "completed": 10 + (index*11)%27})
+		failed := 0
+		if index%7 == 0 {
+			failed = 2
+		}
+		rejections := map[string]int{}
+		if r.PathValue("queue") == "mailers" && index%5 == 0 {
+			rejections["rate_class"] = 3
+		}
+		buckets = append(buckets, map[string]any{
+			"at_ms":                d.milliseconds(-time.Duration(index) * 5 * time.Minute),
+			"arrived":              12 + (index*7)%24,
+			"completed":            10 + (index*11)%27,
+			"failed":               failed,
+			"depth":                120 + (23-index)*18,
+			"admission_rejections": rejections,
+		})
 	}
 	d.writeJSON(w, buckets)
 }
@@ -234,9 +296,9 @@ func (d *demoAPI) periodicEvents(w http.ResponseWriter, r *http.Request) {
 
 func (d *demoAPI) workers(w http.ResponseWriter, _ *http.Request) {
 	d.writeJSON(w, map[string]any{"workers": []map[string]any{
-		{"worker_id": "worker-api-01", "host": "jobs-a.internal", "queues": []string{"critical", "default"}, "inflight": 18, "concurrency": 32, "heartbeat_at_ms": d.milliseconds(-2 * time.Second)},
-		{"worker_id": "worker-mail-02", "host": "jobs-b.internal", "queues": []string{"mailers"}, "inflight": 28, "concurrency": 32, "heartbeat_at_ms": d.milliseconds(-time.Second)},
-		{"worker_id": "worker-import-03", "host": "jobs-c.internal", "queues": []string{"imports", "workflows"}, "inflight": 7, "concurrency": 16, "heartbeat_at_ms": d.milliseconds(-3 * time.Second)},
+		{"worker_id": "worker-api-01", "host": "jobs-a.internal", "queues": []string{"critical", "default"}, "inflight": 18, "concurrency": 32, "heartbeat_at_ms": d.milliseconds(-2 * time.Second), "status": "running", "duties_active": true},
+		{"worker_id": "worker-mail-02", "host": "jobs-b.internal", "queues": []string{"mailers"}, "inflight": 28, "concurrency": 32, "heartbeat_at_ms": d.milliseconds(-time.Second), "status": "quiet", "duties_active": true},
+		{"worker_id": "worker-import-03", "host": "jobs-c.internal", "queues": []string{"imports", "workflows"}, "inflight": 7, "concurrency": 16, "heartbeat_at_ms": d.milliseconds(-3 * time.Second), "status": "running", "duties_active": false},
 	}})
 }
 

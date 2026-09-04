@@ -730,17 +730,21 @@ func (x *Claim) GetFence() uint64 {
 }
 
 type WorkerInfo struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	WorkerId      string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
-	Host          string                 `protobuf:"bytes,2,opt,name=host,proto3" json:"host,omitempty"`
-	Pid           int32                  `protobuf:"varint,3,opt,name=pid,proto3" json:"pid,omitempty"`
-	Version       string                 `protobuf:"bytes,4,opt,name=version,proto3" json:"version,omitempty"`
-	Queues        []string               `protobuf:"bytes,5,rep,name=queues,proto3" json:"queues,omitempty"`
-	Concurrency   uint32                 `protobuf:"varint,6,opt,name=concurrency,proto3" json:"concurrency,omitempty"`
-	StartedAtMs   int64                  `protobuf:"varint,7,opt,name=started_at_ms,json=startedAtMs,proto3" json:"started_at_ms,omitempty"`
-	HeartbeatAtMs int64                  `protobuf:"varint,8,opt,name=heartbeat_at_ms,json=heartbeatAtMs,proto3" json:"heartbeat_at_ms,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId       string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	Host           string                 `protobuf:"bytes,2,opt,name=host,proto3" json:"host,omitempty"`
+	Pid            int32                  `protobuf:"varint,3,opt,name=pid,proto3" json:"pid,omitempty"`
+	Version        string                 `protobuf:"bytes,4,opt,name=version,proto3" json:"version,omitempty"`
+	Queues         []string               `protobuf:"bytes,5,rep,name=queues,proto3" json:"queues,omitempty"`
+	Concurrency    uint32                 `protobuf:"varint,6,opt,name=concurrency,proto3" json:"concurrency,omitempty"`
+	StartedAtMs    int64                  `protobuf:"varint,7,opt,name=started_at_ms,json=startedAtMs,proto3" json:"started_at_ms,omitempty"`
+	HeartbeatAtMs  int64                  `protobuf:"varint,8,opt,name=heartbeat_at_ms,json=heartbeatAtMs,proto3" json:"heartbeat_at_ms,omitempty"`
+	Inflight       uint32                 `protobuf:"varint,9,opt,name=inflight,proto3" json:"inflight,omitempty"`
+	Status         string                 `protobuf:"bytes,10,opt,name=status,proto3" json:"status,omitempty"`
+	DutiesActive   bool                   `protobuf:"varint,11,opt,name=duties_active,json=dutiesActive,proto3" json:"duties_active,omitempty"`
+	PendingCommand string                 `protobuf:"bytes,12,opt,name=pending_command,json=pendingCommand,proto3" json:"pending_command,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *WorkerInfo) Reset() {
@@ -827,6 +831,34 @@ func (x *WorkerInfo) GetHeartbeatAtMs() int64 {
 		return x.HeartbeatAtMs
 	}
 	return 0
+}
+
+func (x *WorkerInfo) GetInflight() uint32 {
+	if x != nil {
+		return x.Inflight
+	}
+	return 0
+}
+
+func (x *WorkerInfo) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *WorkerInfo) GetDutiesActive() bool {
+	if x != nil {
+		return x.DutiesActive
+	}
+	return false
+}
+
+func (x *WorkerInfo) GetPendingCommand() string {
+	if x != nil {
+		return x.PendingCommand
+	}
+	return ""
 }
 
 // admission policy Admission policy, evaluated store-side inside the claim.
@@ -1264,7 +1296,7 @@ const file_headgate_proto_rawDesc = "" +
 	"\benvelope\x18\x01 \x01(\v2\x15.headgate.v1.EnvelopeR\benvelope\x12\x19\n" +
 	"\blease_id\x18\x02 \x01(\tR\aleaseId\x12-\n" +
 	"\x13lease_expires_at_ms\x18\x03 \x01(\x03R\x10leaseExpiresAtMs\x12\x14\n" +
-	"\x05fence\x18\x04 \x01(\x04R\x05fence\"\xef\x01\n" +
+	"\x05fence\x18\x04 \x01(\x04R\x05fence\"\xf1\x02\n" +
 	"\n" +
 	"WorkerInfo\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x12\n" +
@@ -1274,7 +1306,12 @@ const file_headgate_proto_rawDesc = "" +
 	"\x06queues\x18\x05 \x03(\tR\x06queues\x12 \n" +
 	"\vconcurrency\x18\x06 \x01(\rR\vconcurrency\x12\"\n" +
 	"\rstarted_at_ms\x18\a \x01(\x03R\vstartedAtMs\x12&\n" +
-	"\x0fheartbeat_at_ms\x18\b \x01(\x03R\rheartbeatAtMs\"h\n" +
+	"\x0fheartbeat_at_ms\x18\b \x01(\x03R\rheartbeatAtMs\x12\x1a\n" +
+	"\binflight\x18\t \x01(\rR\binflight\x12\x16\n" +
+	"\x06status\x18\n" +
+	" \x01(\tR\x06status\x12#\n" +
+	"\rduties_active\x18\v \x01(\bR\fdutiesActive\x12'\n" +
+	"\x0fpending_command\x18\f \x01(\tR\x0ependingCommand\"h\n" +
 	"\tRateClass\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\x04R\x05limit\x12\x1b\n" +

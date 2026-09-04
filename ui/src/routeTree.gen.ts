@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ConsoleRouteImport } from './routes/_console'
 import { Route as ConsoleJobsRouteImport } from './routes/_console.jobs'
+import { Route as ConsoleOverviewRouteImport } from './routes/_console.overview'
 import { Route as ConsolePeriodicRouteImport } from './routes/_console.periodic'
 import { Route as ConsoleQuarantineRouteImport } from './routes/_console.quarantine'
 import { Route as ConsoleQueuesRouteImport } from './routes/_console.queues'
@@ -33,6 +34,11 @@ const ConsoleRoute = ConsoleRouteImport.update({
 const ConsoleJobsRoute = ConsoleJobsRouteImport.update({
   id: '/jobs',
   path: '/jobs',
+  getParentRoute: () => ConsoleRoute,
+} as any)
+const ConsoleOverviewRoute = ConsoleOverviewRouteImport.update({
+  id: '/overview',
+  path: '/overview',
   getParentRoute: () => ConsoleRoute,
 } as any)
 const ConsolePeriodicRoute = ConsolePeriodicRouteImport.update({
@@ -80,6 +86,7 @@ const ConsoleWorkflowsWorkflowIdRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/jobs': typeof ConsoleJobsRouteWithChildren
+  '/overview': typeof ConsoleOverviewRoute
   '/periodic': typeof ConsolePeriodicRoute
   '/quarantine': typeof ConsoleQuarantineRoute
   '/queues': typeof ConsoleQueuesRoute
@@ -92,6 +99,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/jobs': typeof ConsoleJobsRouteWithChildren
+  '/overview': typeof ConsoleOverviewRoute
   '/periodic': typeof ConsolePeriodicRoute
   '/quarantine': typeof ConsoleQuarantineRoute
   '/queues': typeof ConsoleQueuesRoute
@@ -106,6 +114,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/_console': typeof ConsoleRouteWithChildren
   '/_console/jobs': typeof ConsoleJobsRouteWithChildren
+  '/_console/overview': typeof ConsoleOverviewRoute
   '/_console/periodic': typeof ConsolePeriodicRoute
   '/_console/quarantine': typeof ConsoleQuarantineRoute
   '/_console/queues': typeof ConsoleQueuesRoute
@@ -120,6 +129,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/jobs'
+    | '/overview'
     | '/periodic'
     | '/quarantine'
     | '/queues'
@@ -132,6 +142,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/jobs'
+    | '/overview'
     | '/periodic'
     | '/quarantine'
     | '/queues'
@@ -145,6 +156,7 @@ export interface FileRouteTypes {
     | '/'
     | '/_console'
     | '/_console/jobs'
+    | '/_console/overview'
     | '/_console/periodic'
     | '/_console/quarantine'
     | '/_console/queues'
@@ -181,6 +193,13 @@ declare module '@tanstack/react-router' {
       path: '/jobs'
       fullPath: '/jobs'
       preLoaderRoute: typeof ConsoleJobsRouteImport
+      parentRoute: typeof ConsoleRoute
+    }
+    '/_console/overview': {
+      id: '/_console/overview'
+      path: '/overview'
+      fullPath: '/overview'
+      preLoaderRoute: typeof ConsoleOverviewRouteImport
       parentRoute: typeof ConsoleRoute
     }
     '/_console/periodic': {
@@ -256,6 +275,7 @@ const ConsoleJobsRouteWithChildren = ConsoleJobsRoute._addFileChildren(
 
 interface ConsoleRouteChildren {
   ConsoleJobsRoute: typeof ConsoleJobsRouteWithChildren
+  ConsoleOverviewRoute: typeof ConsoleOverviewRoute
   ConsolePeriodicRoute: typeof ConsolePeriodicRoute
   ConsoleQuarantineRoute: typeof ConsoleQuarantineRoute
   ConsoleQueuesRoute: typeof ConsoleQueuesRoute
@@ -267,6 +287,7 @@ interface ConsoleRouteChildren {
 
 const ConsoleRouteChildren: ConsoleRouteChildren = {
   ConsoleJobsRoute: ConsoleJobsRouteWithChildren,
+  ConsoleOverviewRoute: ConsoleOverviewRoute,
   ConsolePeriodicRoute: ConsolePeriodicRoute,
   ConsoleQuarantineRoute: ConsoleQuarantineRoute,
   ConsoleQueuesRoute: ConsoleQueuesRoute,

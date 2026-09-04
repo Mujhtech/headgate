@@ -6,7 +6,7 @@
 --
 -- KEYS[1] prefix; ARGV[1] op:
 --   beat   worker_id host pid queues(csv) concurrency started_at_ms
---          [inflight polls empty_polls]                            -> command | ''
+--          [inflight polls empty_polls status duties_active]      -> command | ''
 --   signal worker_id command(''=clear)                             -> 1 | 0 (not found)
 --
 -- regression revision grew the beat ADDITIVELY: ARGV[8..10] are appended after the existing seven,
@@ -24,7 +24,8 @@ if op == 'beat' then
   redis.call('HSET', k, 'host', ARGV[3], 'pid', ARGV[4], 'queues', ARGV[5],
              'concurrency', ARGV[6], 'started_at_ms', started, 'heartbeat_at_ms', now,
              'inflight', ARGV[8] or 0, 'polls', ARGV[9] or 0,
-             'empty_polls', ARGV[10] or 0)
+             'empty_polls', ARGV[10] or 0, 'status', ARGV[11] or 'running',
+             'duties_active', ARGV[12] or 0)
   redis.call('PEXPIRE', k, 86400000)
   redis.call('SADD', p .. ':workers', ARGV[2])
   return redis.call('HGET', k, 'command') or ''

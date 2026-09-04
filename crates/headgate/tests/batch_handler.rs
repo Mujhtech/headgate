@@ -108,3 +108,40 @@ async fn typed_batch_handler_flushes_at_max_delay() {
     assert_eq!(done, vec!["solo"]);
     assert_eq!(store.job_state("solo").unwrap().1, "completed");
 }
+
+#[tokio::test]
+async fn timed_out_pending_batch_member_never_reaches_handler() {
+    let store = Arc::new(MemStore::new());
+    let mut timed = env("timed-out");
+    timed.timeout_ms = 5;
+    store.enqueue(&[timed]).await.unwrap();
+    let calls = Arc::new(AtomicU32::new(0));
+    let seen = calls.clone();
+    let mut registry = Registry::new();
+    registry
+        .register_batch::<BatchArgs, _, _>(
+            10,
+            Duration::from_secs(10),
+            move |jobs: Vec<BatchJob<BatchArgs>>| {
+                let seen = seen.clone();
+                async move {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    jobs.into_iter().map(|_| Ok::<(), BoxError>(())).collect()
+                }
+            },
+        )
+        .unwrap();
+    let cfg = WorkerConfig {
+        queues: vec!["batch-test".into()],
+        ..Default::default()
+    };
+    let done = tokio::time::timeout(
+        Duration::from_secs(1),
+        testing::drain(&store, &Arc::new(registry), &cfg, 1),
+    )
+    .await
+    .expect("timed-out member must leave the batch promptly");
+    assert_eq!(done, vec!["timed-out"]);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(store.job_state("timed-out").unwrap().1, "retryable");
+}

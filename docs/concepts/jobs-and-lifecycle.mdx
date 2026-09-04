@@ -39,6 +39,8 @@ stateDiagram-v2
   running --> quarantined: repeated crashes
   running --> cancelled: operator cancel
   running --> undecodable: incompatible payload or steps
+  archived --> available: operator retry
+  cancelled --> available: operator retry
   completed --> deleted: retention
 ```
 

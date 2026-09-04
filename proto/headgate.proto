@@ -141,6 +141,10 @@ message WorkerInfo {
   uint32 concurrency  = 6;
   int64  started_at_ms = 7;
   int64  heartbeat_at_ms = 8;
+  uint32 inflight = 9;
+  string status = 10;
+  bool duties_active = 11;
+  string pending_command = 12;
 }
 
 // admission policy Admission policy, evaluated store-side inside the claim.

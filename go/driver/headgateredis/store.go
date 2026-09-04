@@ -14,15 +14,14 @@ package headgateredis
 import (
 	"context"
 	"embed"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	headgate "github.com/mujhtech/headgate/go"
+	"github.com/mujhtech/headgate/go/headgateshared"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -72,10 +71,12 @@ func defaults(o Options) Options {
 }
 
 type RedisStore struct {
-	rdb    redis.UniversalClient
-	prefix string
-	opts   Options
-	wake   *waker // nil on client-supplied stores: no URL, no pub/sub, honest Caps
+	rdb       redis.UniversalClient
+	prefix    string
+	opts      Options
+	wake      *waker // nil on client-supplied stores: no URL, no pub/sub, honest Caps
+	owned     bool
+	ownedWake bool
 }
 
 var _ headgate.Store = (*RedisStore)(nil)
@@ -100,7 +101,10 @@ func Connect(url, prefix string) (*RedisStore, error) {
 		return nil, fmt.Errorf("headgate: bad redis url: %w", err)
 	}
 	s := New(redis.NewClient(opt), prefix)
-	return s.WithWake(redis.NewClient(opt)), nil
+	s.owned = true
+	s.WithWake(redis.NewClient(opt))
+	s.ownedWake = true
+	return s, nil
 }
 
 // ConnectSentinel uses go-redis's failover client, which re-resolves the named master
@@ -110,7 +114,27 @@ func ConnectSentinel(masterName string, sentinelAddrs []string, password string,
 		return nil, errors.New("headgate: sentinel master name and at least one address are required")
 	}
 	client := redis.NewFailoverClient(&redis.FailoverOptions{MasterName: masterName, SentinelAddrs: sentinelAddrs, Password: password, DB: db})
-	return New(client, prefix).WithWake(client), nil
+	store := New(client, prefix).WithWake(client)
+	store.owned = true
+	return store, nil
+}
+
+// Close stops pub/sub wakeups and closes clients created by Connect/ConnectSentinel.
+// New and WithWake continue to treat caller-supplied clients as caller-owned.
+func (s *RedisStore) Close() error {
+	if s == nil {
+		return nil
+	}
+	if s.wake != nil {
+		s.wake.close()
+		if s.ownedWake {
+			_ = s.wake.rdb.Close()
+		}
+	}
+	if s.owned {
+		return s.rdb.Close()
+	}
+	return nil
 }
 
 // ConnectCluster requires one explicit Redis hash tag in the installation prefix.
@@ -140,58 +164,12 @@ func (s *RedisStore) key(parts ...string) string {
 	return s.prefix + ":" + strings.Join(parts, ":")
 }
 
-// ---------- checkpoint <-> JSON, same field names as the other three adapters ----------
-
 func encodeCheckpoint(cp headgate.Checkpoint) string {
-	m := map[string]any{}
-	if len(cp.CompletedSteps) > 0 {
-		m["completed"] = cp.CompletedSteps
-	}
-	if cp.InProgressStep != "" {
-		m["in_progress"] = cp.InProgressStep
-	}
-	if cp.CursorStep != "" {
-		m["cursor_step"] = cp.CursorStep
-	}
-	if cp.SchemaVersion != 0 {
-		m["version"] = cp.SchemaVersion
-	}
-	if cp.StepSetHash != "" {
-		m["hash"] = cp.StepSetHash
-	}
-	if len(cp.CrashesByStep) > 0 {
-		m["crashes"] = cp.CrashesByStep
-	}
-	b, _ := json.Marshal(m)
-	return string(b)
+	return string(headgateshared.EncodeCheckpoint(cp))
 }
 
 func decodeCheckpoint(raw string, cursor []byte) headgate.Checkpoint {
-	cp := headgate.Checkpoint{Cursor: cursor}
-	if raw == "" {
-		return cp
-	}
-	var m struct {
-		Completed  []string          `json:"completed"`
-		InProgress string            `json:"in_progress"`
-		CursorStep string            `json:"cursor_step"`
-		Version    uint32            `json:"version"`
-		Hash       string            `json:"hash"`
-		Crashes    map[string]uint32 `json:"crashes"`
-	}
-	if json.Unmarshal([]byte(raw), &m) != nil {
-		return cp
-	}
-	cp.CompletedSteps = m.Completed
-	if n := len(m.Completed); n > 0 {
-		cp.LastCompletedStep = m.Completed[n-1]
-	}
-	cp.InProgressStep = m.InProgress
-	cp.CursorStep = m.CursorStep
-	cp.SchemaVersion = m.Version
-	cp.StepSetHash = m.Hash
-	cp.CrashesByStep = m.Crashes
-	return cp
+	return headgateshared.DecodeCheckpoint([]byte(raw), cursor)
 }
 
 // parseTagged maps the scripts' {'OK',...}|{'DUP',id}|{'QUAR',fp}|{'REJ'}|{'ERR',msg}
@@ -249,11 +227,10 @@ func hnum(h map[string]string, k string) int64 {
 // ---------- Store ----------
 
 func (s *RedisStore) Admit(ctx context.Context, req headgate.AdmitRequest) ([]headgate.AdmissionUnit, error) {
-	slices.Sort(req.Queues)
-	req.Queues = slices.Compact(req.Queues)
-	leaseMs := req.Lease.Milliseconds()
-	if leaseMs <= 0 {
-		return nil, errors.New("headgate: lease must be >= 1ms")
+	var err error
+	req, leaseMs, err := headgate.NormalizeAdmitRequest(req)
+	if err != nil {
+		return nil, err
 	}
 	ids, err := admitLua.Run(ctx, s.rdb, []string{s.prefix},
 		strings.Join(req.Queues, ","), req.Capacity, 0 /* UNUSED (was now_ms) */, leaseMs,
@@ -323,38 +300,19 @@ func (s *RedisStore) AckAttempt(ctx context.Context, lease headgate.LeaseRef, ou
 }
 
 func (s *RedisStore) AckAttemptWithActualWeight(ctx context.Context, lease headgate.LeaseRef, outcome headgate.Outcome, errMsg string, delayMs int64, logs []string, actualWeight *uint32) error {
-	var name string
-	switch outcome {
-	case headgate.OutcomeSuccess:
-		name = "success"
-	case headgate.OutcomeRetry:
-		name = "retry"
-	case headgate.OutcomeSkip:
-		name = "skip"
-	case headgate.OutcomeRevoke:
-		name = "revoke"
-	case headgate.OutcomeSnooze:
-		name = "snooze"
-	case headgate.OutcomeUndecodable:
-		name = "undecodable"
-	case headgate.OutcomeRateLimited:
-		name = "rate_limited"
-	case headgate.OutcomeLeaseLost:
-		return errors.New("headgate: lease_lost is applied by the reclaimer, not acked")
-	default:
-		return fmt.Errorf("headgate: unknown outcome %v", outcome)
+	if err := headgate.ValidateAckRequest(outcome, delayMs); err != nil {
+		return err
 	}
-	if outcome == headgate.OutcomeSnooze && delayMs <= 0 {
-		return errors.New("headgate: snooze requires delayMs > 0")
+	name := outcome.String()
+	if name == "unknown" {
+		return fmt.Errorf("headgate: unknown outcome %v", outcome)
 	}
 	if delayMs <= 0 {
 		delayMs = -1 // the scripts' "use the default backoff" sentinel
 	}
 	logsJSON := "" // attempt-log contract per-attempt logs; '' = none (ARGV[9])
 	if len(logs) > 0 {
-		if b, e := json.Marshal(logs); e == nil {
-			logsJSON = string(b)
-		}
+		logsJSON = headgateshared.EncodeStringList(logs)
 	}
 	actual := ""
 	if actualWeight != nil {
@@ -377,20 +335,12 @@ func (s *RedisStore) AckAttemptWithActualWeight(ctx context.Context, lease headg
 }
 
 func (s *RedisStore) AckSuccessWithResult(ctx context.Context, lease headgate.LeaseRef, logs []string, actualWeight *uint32, result headgate.JobResult) error {
-	if result.SchemaVersion == 0 {
-		return &headgate.InvalidError{Msg: "result schema_version must be greater than zero"}
-	}
-	if result.SchemaVersion > headgate.MaxOpaqueSchemaVersion {
-		return &headgate.InvalidError{Msg: "result schema_version exceeds the portable signed-integer limit"}
-	}
-	if len(result.Bytes) > 32*1024*1024 {
-		return &headgate.InvalidError{Msg: "result bytes exceed the 32 MiB limit"}
+	if err := headgate.ValidateOpaqueValue("result", result); err != nil {
+		return err
 	}
 	logsJSON := ""
 	if len(logs) > 0 {
-		if b, err := json.Marshal(logs); err == nil {
-			logsJSON = string(b)
-		}
+		logsJSON = headgateshared.EncodeStringList(logs)
 	}
 	actual := ""
 	if actualWeight != nil {
@@ -418,14 +368,8 @@ func (s *RedisStore) WriteJobOutput(
 	lease headgate.LeaseRef,
 	output headgate.JobResult,
 ) (*headgate.JobOutput, error) {
-	if output.SchemaVersion == 0 {
-		return nil, &headgate.InvalidError{Msg: "output schema_version must be greater than zero"}
-	}
-	if output.SchemaVersion > headgate.MaxOpaqueSchemaVersion {
-		return nil, &headgate.InvalidError{Msg: "output schema_version exceeds the portable signed-integer limit"}
-	}
-	if len(output.Bytes) > 32*1024*1024 {
-		return nil, &headgate.InvalidError{Msg: "output bytes exceed the 32 MiB limit"}
+	if err := headgate.ValidateOpaqueValue("output", output); err != nil {
+		return nil, err
 	}
 	res, err := outputLua.Run(ctx, s.rdb, []string{s.prefix},
 		lease.JobID, lease.LeaseID, lease.Fence, output.SchemaVersion, output.Bytes).Result()
@@ -525,18 +469,9 @@ func (s *RedisStore) Enqueue(ctx context.Context, batch []headgate.Envelope) err
 	args := make([]any, 0, 1+19*len(batch))
 	args = append(args, len(batch))
 	for _, e := range batch {
-		sv := e.SchemaVersion
-		if sv == 0 {
-			sv = 1
-		}
-		queue := e.Queue
-		if queue == "" {
-			queue = "default"
-		}
-		ma := e.MaxAttempts
-		if ma == 0 {
-			ma = 25
-		}
+		sv := headgate.EffectiveSchemaVersion(e.SchemaVersion)
+		queue := headgate.EnqueueQueue(e)
+		ma := headgate.EffectiveMaxAttempts(e.MaxAttempts)
 		args = append(args,
 			e.ID, e.Kind, sv, string(e.Payload), queue, e.PartitionKey, e.RateClass,
 			e.Fingerprint, e.Priority, ma, e.ScheduledAtMs, e.TimeoutMs, e.DeadlineMs,
@@ -576,8 +511,7 @@ func (s *RedisStore) Enqueue(ctx context.Context, batch []headgate.Envelope) err
 		if canonicalTags == nil {
 			canonicalTags = []string{}
 		}
-		encoded, _ := json.Marshal(canonicalTags)
-		args = append(args, string(encoded))
+		args = append(args, headgateshared.EncodeStringList(canonicalTags))
 	}
 	for _, e := range batch {
 		args = append(args, e.StickyWorker)

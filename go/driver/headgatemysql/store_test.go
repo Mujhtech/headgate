@@ -24,6 +24,11 @@ import (
 	"github.com/mujhtech/headgate/go/headgatetest"
 )
 
+func TestStructuredAttemptLogsSurviveAck(t *testing.T) {
+	store, _ := testStore(t)
+	headgatetest.RequireStructuredAttemptLogs(t, store, "go-my-logs-"+strconv.FormatInt(time.Now().UnixNano(), 10))
+}
+
 func TestEnqueueBackpressureHotPathUsesConstantSizeCounters(t *testing.T) {
 	sql := strings.ToLower(enqueueBackpressureDepthSQL(2))
 	if !strings.Contains(sql, "headgate_enqueue_policy") || strings.Count(sql, "headgate_enqueue_counter") != 2 {
@@ -193,7 +198,7 @@ func TestEnqueueClassifiesAnUnreachableMysqlWithoutMaskingInputErrors(t *testing
 	if err != nil {
 		t.Fatalf("construct lazy database handle: %v", err)
 	}
-	defer store.db.Close()
+	defer func() { _ = store.db.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 

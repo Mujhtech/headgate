@@ -14,6 +14,22 @@ use headgate_redis::{RedisStore, RedisStoreOptions};
 
 const PREFIX: &str = "rins";
 
+#[tokio::test]
+async fn structured_attempt_logs_survive_ack() {
+    let queue = format!(
+        "rust-redis-logs-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let Some(store) = store_p(&queue).await else {
+        return;
+    };
+    headgate_testkit::assert_structured_attempt_logs(store.as_ref(), &queue).await;
+}
+
 /// Each test gets its OWN prefix and cleans only that — tests in one binary run
 /// concurrently, and a shared-prefix wipe mid-flight is the flake that teaches this.
 async fn store_p(prefix: &str) -> Option<Arc<RedisStore>> {
@@ -248,6 +264,22 @@ async fn the_inspect_surface_answers_over_redis() {
     assert!(matches!(
         insp.operator_cancel("nope").await,
         Err(StoreError::NotFound(_))
+    ));
+    insp.operator_retry("ri-3").await.unwrap();
+    assert_eq!(
+        insp.get_job("ri-3", false).await.unwrap().unwrap().state,
+        "available"
+    );
+    let mut unique_old = env("ri-u-old", "ri", "k.unique");
+    unique_old.unique_key = Some(b"same-key".to_vec());
+    s.enqueue(&[unique_old.clone()]).await.unwrap();
+    insp.operator_cancel("ri-u-old").await.unwrap();
+    let mut unique_new = unique_old;
+    unique_new.id = "ri-u-new".into();
+    s.enqueue(&[unique_new]).await.unwrap();
+    assert!(matches!(
+        insp.operator_retry("ri-u-old").await,
+        Err(StoreError::Duplicate { existing_id, .. }) if existing_id == "ri-u-new"
     ));
 
     insp.operator_retry("ri-2").await.unwrap();
@@ -501,6 +533,9 @@ async fn the_inspect_surface_answers_over_redis() {
         inflight: 3,
         polls: 10,
         empty_polls: 4,
+        status: "running".into(),
+        duties_active: true,
+        pending_command: None,
     };
     assert_eq!(insp.heartbeat_worker(&w).await.unwrap(), None);
     insp.signal_worker("ri-w", Some("quiet")).await.unwrap();

@@ -78,14 +78,16 @@ Install the runtime and one backend:
 
 ```toml
 [dependencies]
-headgate = "0.1"
-headgate-postgres = "0.1" # or headgate-mysql / headgate-redis
+headgate = "0.1.7"
+headgate-postgres = "0.1.7" # or headgate-mysql / headgate-redis
 ```
 
 See the [Rust SDK guide](https://headgate.mintlify.app/docs/sdk/rust/overview) for client,
 worker, and enqueue setup.
 
 ### Go
+
+Requires Go 1.25 or newer.
 
 ```go
 type WelcomeEmail struct {
@@ -154,6 +156,16 @@ Then open `http://127.0.0.1:8080`. For production mounting and security guidance
 
 See the [feature index](https://headgate.mintlify.app/docs/reference/feature-index) for the
 full list and the documented boundaries of each backend.
+
+## Agent skill
+
+The [Headgate skill](skills/headgate/SKILL.md) helps coding agents integrate producers,
+workers, workflows, and operational tooling in Go and Rust applications.
+Install it with the [Skills CLI](https://skills.sh/docs/cli):
+
+```bash
+npx skills add Mujhtech/headgate
+```
 
 ## License
 

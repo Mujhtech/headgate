@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	headgate "github.com/mujhtech/headgate/go"
@@ -15,6 +16,9 @@ import (
 const (
 	CoordinatorKind  = "headgate:workflow"
 	defaultRetention = int64((7 * 24 * time.Hour) / time.Millisecond)
+	maxWorkflowNodes = headgate.MaxEnqueueBatchSize - 1
+	maxWorkflowEdges = 10_000
+	workflowWorkers  = 16
 )
 
 type draftNode struct {
@@ -50,7 +54,7 @@ func (w *Workflow) Retention(d time.Duration) error {
 }
 
 func (w *Workflow) Add(name string, env headgate.Envelope, deps ...string) *Workflow {
-	w.nodes = append(w.nodes, draftNode{name: name, env: env, deps: append([]string(nil), deps...)})
+	w.nodes = append(w.nodes, draftNode{name: name, env: env, deps: append([]string{}, deps...)})
 	return w
 }
 
@@ -71,7 +75,7 @@ func (w *Workflow) Prepare() ([]headgate.Envelope, error) {
 		if env.ID == "" {
 			env.ID = w.id + ":" + node.name
 		}
-		if env.RetentionMs == 0 {
+		if env.RetentionMs < w.retentionMs {
 			env.RetentionMs = w.retentionMs
 		}
 		env.Pending = true
@@ -100,7 +104,11 @@ func (w *Workflow) Prepare() ([]headgate.Envelope, error) {
 }
 
 func validateGraph(nodes []draftNode) error {
+	if len(nodes) > maxWorkflowNodes {
+		return fmt.Errorf("headgate workflow: must contain at most %d tasks", maxWorkflowNodes)
+	}
 	names := make(map[string]struct{}, len(nodes))
+	edges := 0
 	for _, node := range nodes {
 		if node.name == "" {
 			return errors.New("headgate workflow: task names must not be empty")
@@ -108,7 +116,14 @@ func validateGraph(nodes []draftNode) error {
 		if _, exists := names[node.name]; exists {
 			return fmt.Errorf("headgate workflow: task name %q is repeated", node.name)
 		}
+		if len(node.name) > 128 {
+			return fmt.Errorf("headgate workflow: task name %q exceeds 128 bytes", node.name)
+		}
+		edges += len(node.deps)
 		names[node.name] = struct{}{}
+	}
+	if edges > maxWorkflowEdges {
+		return fmt.Errorf("headgate workflow: must contain at most %d dependency edges", maxWorkflowEdges)
 	}
 	degree := make(map[string]int, len(nodes))
 	outgoing := make(map[string][]string)
@@ -170,19 +185,28 @@ func RegisterCoordinator(registry *headgate.Registry, inspect headgate.InspectSt
 		return errors.New("headgate workflow: poll interval must be at least 1ms")
 	}
 	return headgate.RegisterFunc[CoordinatorArgs](registry, func(ctx context.Context, job *headgate.Job[CoordinatorArgs]) error {
-		result, err := tick(ctx, inspect, job.Args)
-		if err != nil {
-			return err
-		}
-		switch result {
-		case tickWaiting:
-			return headgate.Snooze(poll)
-		case tickFailed:
-			return headgate.ErrSkipJob
-		default:
-			return nil
-		}
+		return headgate.StepCursor(ctx, "headgate:workflow-state", func(ctx context.Context, cursor workflowCursor) error {
+			completed := completedSet(job.Args, cursor.Completed)
+			result, err := tickWithEvidence(ctx, inspect, job.Args, completed, func(cursor workflowCursor) error {
+				return headgate.SetCursor(ctx, cursor)
+			})
+			if err != nil {
+				return err
+			}
+			switch result {
+			case tickWaiting:
+				return headgate.Snooze(poll)
+			case tickFailed:
+				return headgate.ErrSkipJob
+			default:
+				return nil
+			}
+		})
 	})
+}
+
+type workflowCursor struct {
+	Completed []string `json:"completed"`
 }
 
 type tickResult uint8
@@ -194,24 +218,94 @@ const (
 )
 
 func tick(ctx context.Context, inspect headgate.InspectStore, workflow CoordinatorArgs) (tickResult, error) {
+	return tickWithEvidence(ctx, inspect, workflow, make(map[string]struct{}), nil)
+}
+
+func tickWithEvidence(
+	ctx context.Context,
+	inspect headgate.InspectStore,
+	workflow CoordinatorArgs,
+	completed map[string]struct{},
+	persist func(workflowCursor) error,
+) (tickResult, error) {
+	if err := validateCoordinator(workflow); err != nil {
+		return tickWaiting, err
+	}
 	state := make(map[string]*headgate.JobSummary, len(workflow.Nodes))
-	for _, node := range workflow.Nodes {
-		job, err := inspect.GetJob(ctx, node.JobID, false)
-		if err != nil {
-			return tickWaiting, err
+	type readResult struct {
+		name string
+		job  *headgate.JobSummary
+		err  error
+	}
+	readCtx, cancelReads := context.WithCancel(ctx)
+	defer cancelReads()
+	work := make(chan nodeSpec)
+	results := make(chan readResult, len(workflow.Nodes))
+	workers := min(workflowWorkers, len(workflow.Nodes))
+	var reads sync.WaitGroup
+	reads.Add(workers)
+	for range workers {
+		go func() {
+			defer reads.Done()
+			for node := range work {
+				job, err := inspect.GetJob(readCtx, node.JobID, false)
+				select {
+				case results <- readResult{name: node.Name, job: job, err: err}:
+				case <-readCtx.Done():
+					return
+				}
+				if err != nil {
+					cancelReads()
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(work)
+		for _, node := range workflow.Nodes {
+			select {
+			case work <- node:
+			case <-readCtx.Done():
+				return
+			}
 		}
-		state[node.Name] = job
+	}()
+	go func() { reads.Wait(); close(results) }()
+	for result := range results {
+		if result.err != nil {
+			return tickWaiting, result.err
+		}
+		state[result.name] = result.job
 	}
 	changed := false
 	for _, node := range workflow.Nodes {
-		job := state[node.Name]
+		if job := state[node.Name]; job != nil && job.State == "completed" {
+			if _, exists := completed[node.Name]; !exists {
+				completed[node.Name] = struct{}{}
+				changed = true
+			}
+		}
+	}
+	if changed && persist != nil {
+		if err := persist(workflowCursor{Completed: completedNames(workflow, completed)}); err != nil {
+			return tickWaiting, err
+		}
+	}
+	type mutation struct {
+		jobID  string
+		delete bool
+	}
+	mutations := make([]mutation, 0)
+	for _, node := range workflow.Nodes {
+		job := effectiveJob(state[node.Name], node.Name, completed)
 		if job == nil || job.State != "pending" {
 			continue
 		}
 		depFailed := false
 		depsComplete := true
 		for _, dep := range node.Deps {
-			upstream := state[dep]
+			upstream := effectiveJob(state[dep], dep, completed)
 			if upstream == nil || isFailed(upstream.State) {
 				depFailed = true
 			}
@@ -220,23 +314,58 @@ func tick(ctx context.Context, inspect headgate.InspectStore, workflow Coordinat
 			}
 		}
 		if depFailed {
-			if err := inspect.DeleteJob(ctx, node.JobID); err != nil {
-				return tickWaiting, err
-			}
-			changed = true
+			mutations = append(mutations, mutation{jobID: node.JobID, delete: true})
 		} else if depsComplete {
-			if err := inspect.PromoteJob(ctx, node.JobID); err != nil {
-				return tickWaiting, err
-			}
-			changed = true
+			mutations = append(mutations, mutation{jobID: node.JobID})
 		}
 	}
-	if changed {
+	if len(mutations) > 0 {
+		mutationWork := make(chan mutation)
+		mutationErrors := make(chan error, len(mutations))
+		mutationCtx, cancelMutations := context.WithCancel(ctx)
+		defer cancelMutations()
+		workers = min(workflowWorkers, len(mutations))
+		var writes sync.WaitGroup
+		writes.Add(workers)
+		for range workers {
+			go func() {
+				defer writes.Done()
+				for mutation := range mutationWork {
+					var err error
+					if mutation.delete {
+						err = inspect.DeleteJob(mutationCtx, mutation.jobID)
+					} else {
+						err = inspect.PromoteJob(mutationCtx, mutation.jobID)
+					}
+					if err != nil {
+						mutationErrors <- err
+						cancelMutations()
+						return
+					}
+				}
+			}()
+		}
+		go func() {
+			defer close(mutationWork)
+			for _, mutation := range mutations {
+				select {
+				case mutationWork <- mutation:
+				case <-mutationCtx.Done():
+					return
+				}
+			}
+		}()
+		writes.Wait()
+		select {
+		case err := <-mutationErrors:
+			return tickWaiting, err
+		default:
+		}
 		return tickWaiting, nil
 	}
 	failed := false
 	for _, node := range workflow.Nodes {
-		job := state[node.Name]
+		job := effectiveJob(state[node.Name], node.Name, completed)
 		if job == nil || isFailed(job.State) {
 			failed = true
 			continue
@@ -249,6 +378,72 @@ func tick(ctx context.Context, inspect headgate.InspectStore, workflow Coordinat
 		return tickFailed, nil
 	}
 	return tickSucceeded, nil
+}
+
+func completedSet(workflow CoordinatorArgs, names []string) map[string]struct{} {
+	valid := make(map[string]struct{}, len(workflow.Nodes))
+	for _, node := range workflow.Nodes {
+		valid[node.Name] = struct{}{}
+	}
+	completed := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if _, ok := valid[name]; ok {
+			completed[name] = struct{}{}
+		}
+	}
+	return completed
+}
+
+func completedNames(workflow CoordinatorArgs, completed map[string]struct{}) []string {
+	names := make([]string, 0, len(completed))
+	for _, node := range workflow.Nodes {
+		if _, ok := completed[node.Name]; ok {
+			names = append(names, node.Name)
+		}
+	}
+	return names
+}
+
+func effectiveJob(job *headgate.JobSummary, name string, completed map[string]struct{}) *headgate.JobSummary {
+	if job != nil {
+		return job
+	}
+	if _, ok := completed[name]; ok {
+		return &headgate.JobSummary{State: "completed"}
+	}
+	return nil
+}
+
+func validateCoordinator(workflow CoordinatorArgs) error {
+	if workflow.WorkflowID == "" {
+		return errors.New("headgate workflow: coordinator workflow id must not be empty")
+	}
+	if len(workflow.Nodes) == 0 || len(workflow.Nodes) > maxWorkflowNodes {
+		return fmt.Errorf("headgate workflow: coordinator must contain 1-%d tasks", maxWorkflowNodes)
+	}
+	names := make(map[string]struct{}, len(workflow.Nodes))
+	edges := 0
+	for _, node := range workflow.Nodes {
+		if node.Name == "" || node.JobID == "" || len(node.Name) > 128 || len(node.JobID) > headgate.MaxJobIdentifierLen {
+			return errors.New("headgate workflow: coordinator contains an invalid task")
+		}
+		if _, exists := names[node.Name]; exists {
+			return errors.New("headgate workflow: coordinator repeats a task name")
+		}
+		names[node.Name] = struct{}{}
+		edges += len(node.Deps)
+	}
+	if edges > maxWorkflowEdges {
+		return fmt.Errorf("headgate workflow: coordinator must contain at most %d dependency edges", maxWorkflowEdges)
+	}
+	for _, node := range workflow.Nodes {
+		for _, dep := range node.Deps {
+			if _, exists := names[dep]; !exists {
+				return errors.New("headgate workflow: coordinator contains a missing dependency")
+			}
+		}
+	}
+	return nil
 }
 
 func isFailed(state string) bool {

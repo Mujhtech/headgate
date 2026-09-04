@@ -135,16 +135,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         "ack" => {
-            let outcome = match get(&kv, "outcome") {
-                "success" => Outcome::Success,
-                "retry" => Outcome::Retry,
-                "skip" => Outcome::Skip,
-                "revoke" => Outcome::Revoke,
-                "snooze" => Outcome::Snooze,
-                "undecodable" => Outcome::Undecodable,
-                "rate_limited" => Outcome::RateLimited,
-                other => return Err(format!("unknown outcome `{other}`").into()),
-            };
+            let raw_outcome = get(&kv, "outcome");
+            let outcome = Outcome::parse(raw_outcome)
+                .ok_or_else(|| format!("unknown outcome `{raw_outcome}`"))?;
             let lease = LeaseRef {
                 job_id: get(&kv, "job").into(),
                 lease_id: get(&kv, "lease").into(),

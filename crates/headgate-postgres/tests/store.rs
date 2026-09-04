@@ -9,6 +9,23 @@ use headgate_core::{AdmitRequest, Caps, Envelope, Outcome, Store, StoreError};
 use headgate_postgres::PgStore;
 
 #[tokio::test]
+async fn structured_attempt_logs_survive_ack() {
+    let Ok(conninfo) = std::env::var("HG_TEST_PG") else {
+        return;
+    };
+    let store = PgStore::connect(&conninfo, 4).unwrap();
+    let queue = format!(
+        "rust-pg-logs-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    headgate_testkit::assert_structured_attempt_logs(&store, &queue).await;
+}
+
+#[tokio::test]
 async fn sticky_routing_is_strict_bounded_and_survives_requeue() {
     let Ok(conninfo) = std::env::var("HG_TEST_PG") else {
         eprintln!("HG_TEST_PG not set; skipping Postgres sticky-routing proof");

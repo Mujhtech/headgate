@@ -85,7 +85,7 @@ func TestExplicitSchemasIsolateStoreDutiesAndMigrationsOnOnePool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close(ctx)
+	defer func() { _ = admin.Close(ctx) }()
 	if _, err := headgatemigrate.MigratePostgresInSchema(
 		ctx, admin, leftDB.Schema, headgatemigrate.Down, headgatemigrate.Options{},
 	); err != nil {

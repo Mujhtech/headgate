@@ -22,7 +22,7 @@ type client struct {
 	http        *http.Client
 }
 
-func (c client) call(method, path string, body any) error {
+func (c client) call(method, path string, body any) (callErr error) {
 	var r io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -48,7 +48,7 @@ func (c client) call(method, path string, body any) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { callErr = errors.Join(callErr, resp.Body.Close()) }()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
 		return err
@@ -68,8 +68,15 @@ func (c client) call(method, path string, body any) error {
 
 func main() {
 	var base, token string
-	c := client{http: &http.Client{Timeout: 30 * time.Second}}
-	root := &cobra.Command{Use: "headgatectl", Short: "Operate a Headgate fleet through its bounded control API", SilenceUsage: true, RunE: func(*cobra.Command, []string) error { return errors.New("choose jobs, queues, or operations") }}
+	c := client{
+		http: &http.Client{Timeout: 30 * time.Second},
+	}
+	root := &cobra.Command{
+		Use:          "headgatectl",
+		Short:        "Operate a Headgate fleet through its bounded control API",
+		SilenceUsage: true,
+		RunE:         func(*cobra.Command, []string) error { return errors.New("choose jobs, queues, or operations") },
+	}
 	root.PersistentFlags().StringVar(&base, "api", env("HEADGATE_API", "http://127.0.0.1:8080"), "control API origin")
 	root.PersistentFlags().StringVar(&token, "token", os.Getenv("HEADGATE_TOKEN"), "bearer token (or HEADGATE_TOKEN)")
 	root.PersistentPreRun = func(*cobra.Command, []string) { c.base, c.token = base, token }

@@ -285,7 +285,9 @@ chk0 "trap 0: a bucket emptied at STORE now refills ~nothing — a 60s-fast work
      "$($PSQL -c "SELECT count(*) FROM headgate_job WHERE state='available' AND rate_class='t0rc';")"
 
 reset_pg
-$H enqueue count=5000 prefix=n queue=default partition=noisy fp=fp sched=1000 >/dev/null
+for batch in 0 1 2 3 4; do
+  $H enqueue count=1000 prefix=n$batch- queue=default partition=noisy fp=fp sched=1000 >/dev/null
+done
 $H enqueue count=3    prefix=a queue=default partition=A     fp=fp sched=1000 >/dev/null
 $H enqueue count=3    prefix=b queue=default partition=B     fp=fp sched=1000 >/dev/null
 r=$($H admit queues=default capacity=9 lease_ms=30000 worker=w1 lease=L1 quantum=3 | cut -d'|' -f4 | sort -u | wc -l | tr -d ' ')
@@ -1610,7 +1612,9 @@ chk "Redis priority: ...and the independently stored value is the ordering input
     "$($RED hget hg:job:pb1 priority)" "9"
 
 $RED flushall >/dev/null
-$HR enqueue count=5000 prefix=n queue=default partition=noisy fp=fp sched=1000 >/dev/null
+for batch in 0 1 2 3 4; do
+  $HR enqueue count=1000 prefix=n$batch- queue=default partition=noisy fp=fp sched=1000 >/dev/null
+done
 $HR enqueue count=3    prefix=a queue=default partition=A     fp=fp sched=1000 >/dev/null
 $HR enqueue count=3    prefix=b queue=default partition=B     fp=fp sched=1000 >/dev/null
 r=$($HR admit queues=default capacity=9 lease_ms=30000 worker=w1 lease=L1 quantum=3 | cut -d'|' -f4 | sort -u | wc -l)
@@ -3109,6 +3113,7 @@ result_contract(){ # backend harness label
   local fail_before=$fail
   local suffix="${backend}-${label//[^A-Za-z0-9]/}-$$"
   local queue="result-$suffix" base="result-$suffix-" claim job lease fence stale before
+  local decoy_job decoy_lease decoy_fence rest sweep evicted evicted_total=0 eviction_status=bounded
   case "$backend" in
     pg) reset_pg ;;
     redis) $RED flushall >/dev/null ;;
@@ -3147,6 +3152,18 @@ result_contract(){ # backend harness label
        "$($tool get_result job="$job")" "none" \
        "Job results $label: ...witness: the ephemeral result ack committed" "$before"
 
+  # Eviction is store-wide, even though enqueue/admit are queue-scoped. Keep an
+  # expired backlog in another queue so an exact-one-row assumption cannot recur.
+  $tool enqueue count=11 prefix="${base}unrelated" queue="${queue}-unrelated" \
+        fp="result-unrelated-$suffix" sched=1000 retention=1 >/dev/null
+  claim=$($tool admit queues="${queue}-unrelated" capacity=11 lease_ms=600000 worker=w \
+        lease="RESULT-U-$suffix" quantum=1000)
+  chk "Job results $label: unrelated expiry backlog exceeds one sweep batch" \
+      "$(printf '%s\n' "$claim" | wc -l)" "11"
+  while IFS='|' read -r decoy_job decoy_lease decoy_fence rest; do
+    $tool ack job="$decoy_job" lease="$decoy_lease" fence="$decoy_fence" outcome=success >/dev/null
+  done <<< "$claim"
+
   $tool enqueue count=1 prefix="${base}evict" queue="$queue" fp="result-evict-$suffix" \
         sched=1000 retention=1 >/dev/null
   claim=$($tool admit queues="$queue" capacity=1 lease_ms=600000 worker=w \
@@ -3155,9 +3172,22 @@ result_contract(){ # backend harness label
   $tool ack_result job="$job" lease="$lease" fence="$fence" version=9 bytes=evict-me >/dev/null
   before=$($tool get_result job="$job")
   sleep 0.02
-  evicted=$($tool evict limit=10)
+  # Drain bounded batches until this fixture disappears, not until an assumed
+  # global count is reached. Other tests may have left additional expired rows.
+  for sweep in {1..100}; do
+    evicted=$($tool evict limit=10)
+    case "$evicted" in
+      [0-9]|10) evicted_total=$((evicted_total+evicted)) ;;
+      *) eviction_status="invalid-count:$evicted"; break ;;
+    esac
+    [ "$($tool get_result job="$job")" = none ] && break
+    sleep 0.02
+  done
+  [ "$evicted_total" -ge 12 ] || eviction_status="incomplete:$evicted_total"
   chk "Job results $label: eviction removes the retained result with its job" \
-      "$before|$evicted|$($tool get_result job="$job")" "9|evict-me|1|none"
+      "$before|$eviction_status|$($tool get_result job="$job")" "9|evict-me|bounded|none"
+  chk "Job results $label: an unexpired retained result survives the global sweep" \
+      "$($tool get_result job="${base}kept1")" "7|result-value"
   [ "$fail" = "$fail_before" ] && result_cells=$((result_cells+1))
 }
 
@@ -4016,7 +4046,8 @@ $PSQL -c "DELETE FROM headgate_job WHERE queue='inv16q'; DELETE FROM headgate_ac
 # (Postgres only. The Redis and MySQL paths share the same POSITION_LIMIT by construction
 # but are NOT separately seeded here — see the round 32i note in CAPABILITY_REGISTER.md.)
 $PSQL -c "INSERT INTO headgate_rate_bucket VALUES ('inv6rc',5,5,5,1000,1000000);" >/dev/null
-$H enqueue count=1200 prefix=i6 queue=inv6q rate=inv6rc fp=fp sched=1000 >/dev/null
+$H enqueue count=600 prefix=i6a- queue=inv6q rate=inv6rc fp=fp sched=1000 >/dev/null
+$H enqueue count=600 prefix=i6b- queue=inv6q rate=inv6rc fp=fp sched=1000 >/dev/null
 chk "invariant 6: ...the fixture really is deeper than the cap (1200 available on the class)" \
     "$($PSQL -c "SELECT count(*) FROM headgate_job WHERE state='available' AND rate_class='inv6rc';")" "1200"
 for p in "8091 PG rust" "8092 PG go"; do

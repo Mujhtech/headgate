@@ -20,21 +20,34 @@ recovery paths are different.
 
 ![Headgate jobs list with state filters, structured search, and bulk actions](/docs/assets/console-jobs.png)
 
-![Headgate jobs list with a running job detail sheet showing progress, admission, timeline, and actions](/docs/assets/console-job-detail.jpg)
+![Headgate running-job detail sheet showing payload, progress, a resumable checkpoint, and sticky actions](/docs/assets/console-job-detail.jpg)
 
 The sheet shows the task identity, a Created → Scheduled → Wait → Running → terminal
 lifecycle, queue and partition, rate class, attempts and crash attempts, orphan provenance,
 fingerprint, schedule, progress, current admission decision, attempt history, payload,
-metadata, output, and permitted actions.
+metadata, output, resumable-step checkpoint, and permitted actions.
+The admission section distinguishes an actual policy block from lifecycle state: pending
+jobs wait for promotion, running jobs are already admitted, and terminal jobs no longer
+participate in admission. A missing `blocked_by` value is never presented as an invented
+“unknown policy.”
 Wait and Running durations advance once per second while their stage is live. Waiting,
 active, completed, failed, and pending stages use distinct colors; nodes and connectors
 enter progressively, with motion disabled when the operating system requests reduced motion.
 Opening the sheet explicitly requests the selected job's payload; list and search
 responses remain payload-free.
+Checkpoint inspection is also explicit: opening job detail requests the dedicated
+`/jobs/{id}/checkpoint` endpoint. The resumable section shows completed/current steps,
+cursor state, step-set identity, and per-step crashes; ordinary list and job responses do
+not carry cursor bytes.
 
 Encrypted payloads are detected from Headgate's versioned envelope header. The console
 shows the encryption version, key ID, and copyable ciphertext, but never receives a key or
 decrypts the payload in the browser.
+
+Periodic schedule event selection is URL-backed as `?events=<schedule-id>`, so an event
+view can be shared, refreshed, and traversed with browser history. Missed-run policies use
+operator-facing labels and explanations rather than exposing only the wire enum. **Enqueue
+now** creates one extra job without moving the schedule's normal next-run time.
 
 ## Workflows show live execution state
 
@@ -49,6 +62,7 @@ The console currently covers:
 
 | View | Operational questions it answers |
 | --- | --- |
+| Overview | Is the fleet healthy, which queue is falling behind, and why is admission blocked? |
 | Queues | How quickly is backlog draining, and which partitions are waiting? |
 | Jobs | What is running, retrying, scheduled, quarantined, or undecodable? |
 | Workflows | Which tasks completed, which task is running, and what is blocked? |
@@ -56,6 +70,23 @@ The console currently covers:
 | Quarantine | Which fingerprints repeatedly crash and can be released? |
 | Periodic | Which schedules are enabled, and when will they run next? |
 | Workers | Which workers are live, what they serve, and which control signal is pending? |
+
+## Worker controls are state-aware
+
+The worker row separates a command waiting in the store from the state acknowledged by
+the worker heartbeat. While a command is pending, conflicting controls remain disabled.
+After acknowledgement:
+
+- **Quiet** stops new admission while current jobs finish; only **Resume** becomes available.
+- **Resume** returns a quiet worker to admission; **Quiet** becomes available again.
+- **Rolling restart** releases singleton duties, drains without the ordinary shutdown
+  deadline, and exits for the process supervisor to replace.
+- **Resign duties** releases scheduler, reclaimer, quarantine, retention, and operations
+  leases without stopping ordinary job processing. It stays disabled until process restart.
+- **Terminate** releases duties and performs the configured bounded graceful shutdown.
+
+Restarting and terminating workers expose those states in the row and accept no further
+commands. A disabled control includes a browser tooltip explaining why it is unavailable.
 
 ## Data architecture
 

@@ -8,20 +8,24 @@
 //! word-for-word: the API surface must read identically whichever store answers.
 
 use headgate_core::{
-    AdmissionExplain, BlockedBy, BulkRequest, ConcurrencyLimitConfig, HistoryBucket, Inspect,
-    JobFilter, JobOutput, JobPage, JobProgress, JobResult, JobSummary, MissedPolicy,
-    OperationStatus, OutputInspect, PartitionState, ProgressInspect, QuarantineEntry, QueueStats,
-    QuietGroupMetrics, RateClassConfig, RateClassState, ResultInspect, SCHEDULE_EVENT_LIMIT,
-    SaturationStrategy, Schedule, ScheduleEvent, ScheduleEventOutcome, StateCounts, StoreError,
-    WorkerMeta, noisy_partition_keys,
+    AdmissionExplain, BulkRequest, Checkpoint, CheckpointInspect, ConcurrencyLimitConfig,
+    HistoryBucket, Inspect, JobFilter, JobOutput, JobPage, JobProgress, JobResult, JobSummary,
+    MissedPolicy, OperationStatus, OutputInspect, PartitionState, ProgressInspect, QuarantineEntry,
+    QueueStats, QuietGroupMetrics, RateClassConfig, RateClassState, ResultInspect,
+    SCHEDULE_EVENT_LIMIT, SaturationStrategy, Schedule, ScheduleEvent, ScheduleEventOutcome,
+    StateCounts, StoreError, WorkerMeta, noisy_partition_keys,
 };
 
 use crate::{JobHash, RedisStore, decode_headers, hn, hs, map_redis_err};
 
 /// Queue-position/sampled lookups cap here; "position >= 1000" is answer enough.
-const POSITION_LIMIT: isize = 1_000;
-const QUIET_PARTITION_LIMIT: isize = 1_000;
-const MAX_PAGE: u32 = 200;
+use headgate_shared::inspection::{
+    MAX_PAGE, MEMORY_SAMPLE_LIMIT, POSITION_LIMIT as SHARED_POSITION_LIMIT,
+    QUIET_PARTITION_LIMIT as SHARED_QUIET_PARTITION_LIMIT,
+};
+
+const POSITION_LIMIT: isize = SHARED_POSITION_LIMIT as isize;
+const QUIET_PARTITION_LIMIT: isize = SHARED_QUIET_PARTITION_LIMIT as isize;
 /// Offset pagination walks zsets; past this depth the cursor is refused (bounded).
 const LIST_DEEP_LIMIT: usize = 10_000;
 /// Post-filtered listings hydrate at most this many candidates per call.
@@ -41,6 +45,7 @@ const STATES: [&str; 10] = [
     "undecodable",
     "quarantined",
 ];
+const CONTROL_SCAN_LIMIT: usize = 10_000;
 
 impl RedisStore {
     fn idx(&self, queue: &str, state: &str) -> String {
@@ -56,13 +61,30 @@ impl RedisStore {
         Ok(secs * 1000 + micros / 1000)
     }
 
-    async fn queues(&self) -> Result<Vec<String>, StoreError> {
+    async fn scan_set(&self, key: String) -> Result<Vec<String>, StoreError> {
         let mut conn = self.conn.clone();
-        let mut qs: Vec<String> = redis::cmd("SMEMBERS")
-            .arg(format!("{}:queues", self.prefix))
-            .query_async(&mut conn)
-            .await
-            .map_err(map_redis_err)?;
+        let mut members = Vec::with_capacity(256);
+        let mut cursor = 0u64;
+        loop {
+            let (next, mut batch): (u64, Vec<String>) = redis::cmd("SSCAN")
+                .arg(&key)
+                .arg(cursor)
+                .arg("COUNT")
+                .arg(256)
+                .query_async(&mut conn)
+                .await
+                .map_err(map_redis_err)?;
+            batch.truncate(CONTROL_SCAN_LIMIT.saturating_sub(members.len()));
+            members.extend(batch);
+            if next == 0 || members.len() == CONTROL_SCAN_LIMIT {
+                return Ok(members);
+            }
+            cursor = next;
+        }
+    }
+
+    async fn queues(&self) -> Result<Vec<String>, StoreError> {
+        let mut qs = self.scan_set(format!("{}:queues", self.prefix)).await?;
         qs.sort();
         Ok(qs)
     }
@@ -134,14 +156,13 @@ fn job_from_hash(id: &str, h: &JobHash, include_payload: bool) -> JobSummary {
                 e.to_string()
             }
         },
-        tags: serde_json::from_str(hs(h, "tags")).unwrap_or_default(),
+        tags: headgate_shared::codec::decode_string_list(hs(h, "tags")),
     }
 }
 
 fn matches_filter(h: &JobHash, f: &JobFilter) -> bool {
     let tags: std::collections::BTreeSet<String> =
-        serde_json::from_str::<Vec<String>>(hs(h, "tags"))
-            .unwrap_or_default()
+        headgate_shared::codec::decode_string_list(hs(h, "tags"))
             .into_iter()
             .collect();
     if !f.tags_all.iter().all(|tag| tags.contains(tag)) {
@@ -206,21 +227,7 @@ fn schedule_from_hash(id: &str, h: &JobHash) -> Schedule {
 /// Which states each bulk action may touch — the transition table's rows, nothing more.
 /// The same rows as the Postgres backend's `action_states`.
 fn action_states(action: &str) -> Option<&'static [&'static str]> {
-    match action {
-        "retry" => Some(&["archived"]),
-        "cancel" => Some(&["scheduled", "available", "running"]),
-        "delete" => Some(&[
-            "scheduled",
-            "available",
-            "retryable",
-            "completed",
-            "archived",
-            "cancelled",
-            "quarantined",
-            "undecodable",
-        ]),
-        _ => None,
-    }
+    headgate_core::bulk_action_states(action)
 }
 
 fn op_states(req: &BulkRequest, allowed: &'static [&'static str]) -> Vec<String> {
@@ -247,6 +254,10 @@ impl Inspect for RedisStore {
     }
 
     fn as_progress_inspect(&self) -> Option<&dyn ProgressInspect> {
+        Some(self)
+    }
+
+    fn as_checkpoint_inspect(&self) -> Option<&dyn CheckpointInspect> {
         Some(self)
     }
 
@@ -411,11 +422,7 @@ impl Inspect for RedisStore {
         let cur_bucket = now - now % 60_000;
         let mut conn = self.conn.clone();
         let mut queues = self.queues().await?;
-        let paused_set: Vec<String> = redis::cmd("SMEMBERS")
-            .arg(format!("{}:paused", self.prefix))
-            .query_async(&mut conn)
-            .await
-            .map_err(map_redis_err)?;
+        let paused_set = self.scan_set(format!("{}:paused", self.prefix)).await?;
         for q in &paused_set {
             if !queues.contains(q) {
                 queues.push(q.clone());
@@ -537,12 +544,12 @@ impl Inspect for RedisStore {
             let quiet_groups = QuietGroupMetrics {
                 arrival_rate: quiet_arrival,
                 drain_rate: quiet_drain,
-                time_to_drain_ms: if quiet_drain > quiet_arrival && quiet_drain > 0.0 {
-                    Some((quiet_backlog as f64 / (quiet_drain - quiet_arrival) * 1000.0) as i64)
-                } else {
-                    None
-                },
-                oldest_available_ms: quiet_oldest_at.map(|at| (now - at).max(0)),
+                time_to_drain_ms: headgate_core::time_to_drain_ms(
+                    quiet_backlog,
+                    quiet_arrival,
+                    quiet_drain,
+                ),
+                oldest_available_ms: quiet_oldest_at.map(|at| headgate_core::age_ms(now, at)),
                 noisy_partitions: noisy.len() as u32,
                 approximate: part_count > QUIET_PARTITION_LIMIT as i64,
             };
@@ -573,11 +580,7 @@ impl Inspect for RedisStore {
                 .map(|(_, n)| n)
                 .sum();
             // backlog metrics time-to-drain: null when arrival >= drain — the alert condition.
-            let ttd = if drain > arrival && drain > 0.0 {
-                Some(((backlog as f64) / (drain - arrival) * 1000.0) as i64)
-            } else {
-                None
-            };
+            let ttd = headgate_core::time_to_drain_ms(backlog, arrival, drain);
             out.push(QueueStats {
                 queue: q.clone(),
                 weight: weight.unwrap_or(1),
@@ -657,11 +660,9 @@ impl Inspect for RedisStore {
     async fn rate_classes(&self) -> Result<Vec<RateClassState>, StoreError> {
         let now = self.store_now_ms().await?;
         let mut conn = self.conn.clone();
-        let mut names: Vec<String> = redis::cmd("SMEMBERS")
-            .arg(format!("{}:rate_classes", self.prefix))
-            .query_async(&mut conn)
-            .await
-            .map_err(map_redis_err)?;
+        let mut names = self
+            .scan_set(format!("{}:rate_classes", self.prefix))
+            .await?;
         names.sort();
         if names.is_empty() {
             return Ok(Vec::new());
@@ -733,14 +734,7 @@ impl Inspect for RedisStore {
     }
 
     async fn upsert_rate_class(&self, cfg: &RateClassConfig) -> Result<(), StoreError> {
-        if cfg.window_ms < 1 {
-            return Err(StoreError::Invalid("window_ms must be >= 1".into()));
-        }
-        if cfg.limit < 0 || cfg.burst < 1 {
-            return Err(StoreError::Invalid(
-                "limit must be >= 0 and burst >= 1".into(),
-            ));
-        }
+        headgate_core::validate_rate_class_config(cfg)?;
         let mut conn = self.conn.clone();
         let _: i64 = self
             .admin
@@ -796,14 +790,7 @@ impl Inspect for RedisStore {
         &self,
         cfg: &ConcurrencyLimitConfig,
     ) -> Result<(), StoreError> {
-        if cfg.name.is_empty() || cfg.queue.is_empty() {
-            return Err(StoreError::Invalid(
-                "name and queue must not be empty".into(),
-            ));
-        }
-        if cfg.max_concurrent == 0 {
-            return Err(StoreError::Invalid("max_concurrent must be >= 1".into()));
-        }
+        headgate_core::validate_concurrency_limit(cfg)?;
         let encoded = serde_json::to_string(&serde_json::json!({
             "queue": cfg.queue,
             "max_concurrent": cfg.max_concurrent,
@@ -827,11 +814,9 @@ impl Inspect for RedisStore {
     async fn partitions(&self, queue: &str) -> Result<Vec<PartitionState>, StoreError> {
         let now = self.store_now_ms().await?;
         let mut conn = self.conn.clone();
-        let active: Vec<String> = redis::cmd("SMEMBERS")
-            .arg(format!("{}:parts:{queue}", self.prefix))
-            .query_async(&mut conn)
-            .await
-            .map_err(map_redis_err)?;
+        let active = self
+            .scan_set(format!("{}:parts:{queue}", self.prefix))
+            .await?;
         let deficits: JobHash = redis::cmd("HGETALL")
             .arg(format!("{}:deficit:{queue}", self.prefix))
             .query_async(&mut conn)
@@ -868,12 +853,7 @@ impl Inspect for RedisStore {
     }
 
     async fn quarantine_list(&self) -> Result<Vec<QuarantineEntry>, StoreError> {
-        let mut conn = self.conn.clone();
-        let fps: Vec<String> = redis::cmd("SMEMBERS")
-            .arg(format!("{}:quarantine", self.prefix))
-            .query_async(&mut conn)
-            .await
-            .map_err(map_redis_err)?;
+        let fps = self.scan_set(format!("{}:quarantine", self.prefix)).await?;
         let keys: Vec<String> = fps
             .iter()
             .map(|f| format!("{}:qmeta:{f}", self.prefix))
@@ -909,8 +889,12 @@ impl Inspect for RedisStore {
         match res.first().map(String::as_str) {
             Some("OK") => Ok(()),
             Some("NF") => Err(StoreError::NotFound(format!("job {id}"))),
+            Some("DUP") => Err(StoreError::Duplicate {
+                existing_id: res.get(1).cloned().unwrap_or_default(),
+                replaced: false,
+            }),
             _ => Err(StoreError::Invalid(format!(
-                "operator_retry is only defined from archived; job {id} is {}",
+                "operator_retry is only defined from archived or cancelled; job {id} is {}",
                 res.get(1).map(String::as_str).unwrap_or("?")
             ))),
         }
@@ -1219,11 +1203,7 @@ impl Inspect for RedisStore {
         before_event_id: Option<u64>,
         limit: u32,
     ) -> Result<Vec<ScheduleEvent>, StoreError> {
-        if limit == 0 || limit > SCHEDULE_EVENT_LIMIT {
-            return Err(StoreError::Invalid(
-                "schedule event limit must be between 1 and 100".into(),
-            ));
-        }
+        headgate_core::validate_schedule_event_limit(limit)?;
         let mut conn = self.conn.clone();
         let max = before_event_id
             .map(|id| format!("({id}"))
@@ -1263,6 +1243,11 @@ impl Inspect for RedisStore {
 
     async fn heartbeat_worker(&self, w: &WorkerMeta) -> Result<Option<String>, StoreError> {
         let mut conn = self.conn.clone();
+        let status = if w.status.is_empty() {
+            "running"
+        } else {
+            &w.status
+        };
         let cmd: String = self
             .worker
             .key(&self.prefix)
@@ -1277,6 +1262,8 @@ impl Inspect for RedisStore {
             .arg(w.inflight)
             .arg(w.polls)
             .arg(w.empty_polls)
+            .arg(status)
+            .arg(w.duties_active)
             .invoke_async(&mut conn)
             .await
             .map_err(map_redis_err)?;
@@ -1286,11 +1273,7 @@ impl Inspect for RedisStore {
     async fn list_workers(&self, stale_after_ms: i64) -> Result<Vec<WorkerMeta>, StoreError> {
         let now = self.store_now_ms().await?;
         let mut conn = self.conn.clone();
-        let mut ids: Vec<String> = redis::cmd("SMEMBERS")
-            .arg(format!("{}:workers", self.prefix))
-            .query_async(&mut conn)
-            .await
-            .map_err(map_redis_err)?;
+        let mut ids = self.scan_set(format!("{}:workers", self.prefix)).await?;
         ids.sort();
         let keys: Vec<String> = ids
             .iter()
@@ -1330,6 +1313,13 @@ impl Inspect for RedisStore {
                 inflight: hn(h, "inflight") as u32,
                 polls: hn(h, "polls") as u64,
                 empty_polls: hn(h, "empty_polls") as u64,
+                status: hs(h, "status").to_string(),
+                // Older worker hashes predate this level and did run duties.
+                duties_active: hs(h, "duties_active").is_empty() || hn(h, "duties_active") != 0,
+                pending_command: {
+                    let command = hs(h, "command");
+                    (!command.is_empty()).then(|| command.to_string())
+                },
             });
         }
         Ok(out)
@@ -1341,7 +1331,7 @@ impl Inspect for RedisStore {
         command: Option<&str>,
     ) -> Result<(), StoreError> {
         if let Some(cmd) = command {
-            if !matches!(cmd, "quiet" | "resume" | "restart" | "terminate" | "resign") {
+            if !headgate_core::valid_worker_command(cmd) {
                 return Err(StoreError::Invalid(
                     "command must be quiet, resume, restart, terminate, or resign".into(),
                 ));
@@ -1400,12 +1390,7 @@ impl Inspect for RedisStore {
     }
 
     async fn create_operation(&self, req: &BulkRequest) -> Result<(), StoreError> {
-        if req.queue.is_none()
-            && req.state.is_none()
-            && req.kind.is_none()
-            && req.partition_key.is_none()
-            && req.older_than_ms.is_none()
-        {
+        if !req.has_selector() {
             // control API contract no accidental delete-everything.
             return Err(StoreError::Invalid("empty selector is rejected".into()));
         }
@@ -1655,7 +1640,7 @@ impl Inspect for RedisStore {
     }
 
     async fn sample_queue_memory(&self, limit: u32) -> Result<u32, StoreError> {
-        let limit = limit.clamp(1, 1_000) as isize;
+        let limit = limit.clamp(1, MEMORY_SAMPLE_LIMIT) as isize;
         let queues = self.queues().await?;
         let states = [
             "pending",
@@ -1781,139 +1766,41 @@ impl ProgressInspect for RedisStore {
     }
 }
 
+#[async_trait::async_trait]
+impl CheckpointInspect for RedisStore {
+    async fn get_job_checkpoint(&self, id: &str) -> Result<Option<Checkpoint>, StoreError> {
+        let h = &self.hashes(&[format!("{}:job:{id}", self.prefix)]).await?[0];
+        if h.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(crate::decode_checkpoint(
+            h.get("checkpoint").map(Vec::as_slice),
+            h.get("cp_cursor").cloned(),
+        )))
+    }
+}
+
 /// THIS gate's evaluation order (admit.lua), replayed read-only. An unconfigured rate
 /// class is unlimited and therefore never blocking.
 fn assemble_explain(get: &dyn Fn(&str) -> String, num: &dyn Fn(&str) -> i64) -> AdmissionExplain {
-    let state = get("state");
-    let now = num("now");
-    let mut detail: Vec<(String, String)> = vec![("state".into(), state.clone())];
-
-    match state.as_str() {
-        "running" => {
-            return AdmissionExplain {
-                state,
-                admissible: true,
-                blocked_by: None,
-                detail,
-                estimated_admission_ms: Some(0),
-            };
-        }
-        "scheduled" | "retryable" => {
-            let at = num("scheduled_at_ms");
-            detail.push(("scheduled_at_ms".into(), at.to_string()));
-            return AdmissionExplain {
-                state,
-                admissible: false,
-                blocked_by: Some(BlockedBy::Schedule),
-                detail,
-                estimated_admission_ms: Some((at - now).max(0)),
-            };
-        }
-        "quarantined" => {
-            return AdmissionExplain {
-                state,
-                admissible: false,
-                blocked_by: Some(BlockedBy::Quarantine),
-                detail,
-                estimated_admission_ms: None, // will not clear on its own
-            };
-        }
-        "available" => {}
-        _terminal => {
-            return AdmissionExplain {
-                state,
-                admissible: false,
-                blocked_by: None,
-                detail,
-                estimated_admission_ms: None,
-            };
-        }
-    }
-
-    if num("paused") == 1 {
-        return AdmissionExplain {
-            state,
-            admissible: false,
-            blocked_by: Some(BlockedBy::QueuePaused),
-            detail,
-            estimated_admission_ms: None,
-        };
-    }
-    let scheduled_at = num("scheduled_at_ms");
-    if scheduled_at > now {
-        detail.push(("scheduled_at_ms".into(), scheduled_at.to_string()));
-        return AdmissionExplain {
-            state,
-            admissible: false,
-            blocked_by: Some(BlockedBy::Schedule),
-            detail,
-            estimated_admission_ms: Some(scheduled_at - now),
-        };
-    }
-    if num("quarantined") == 1 {
-        detail.push(("fingerprint".into(), get("fingerprint")));
-        return AdmissionExplain {
-            state,
-            admissible: false,
-            blocked_by: Some(BlockedBy::Quarantine),
-            detail,
-            estimated_admission_ms: None,
-        };
-    }
-    let rate_class = get("rate_class");
-    if !rate_class.is_empty() && num("rate_configured") == 1 {
-        let avail = num("tokens_available");
-        let cost = num("weight").max(1);
-        detail.push(("rate_class".into(), rate_class));
-        detail.push(("tokens_available".into(), avail.to_string()));
-        detail.push(("weight".into(), cost.to_string()));
-        if avail < cost {
-            let (limit, window) = (num("rate_limit"), num("rate_window"));
-            let est = if limit > 0 {
-                Some(((cost - avail).max(1)) * window / limit)
-            } else {
-                None // paused class: will not clear on its own
-            };
-            return AdmissionExplain {
-                state,
-                admissible: false,
-                blocked_by: Some(BlockedBy::RateClass),
-                detail,
-                estimated_admission_ms: est,
-            };
-        }
-    }
-    // Fairness never blocks outright (invariant 11); position says when.
-    detail.push((
-        "position_in_partition".into(),
-        num("position_in_partition").to_string(),
-    ));
-    detail.push((
-        "partition_deficit".into(),
-        num("partition_deficit").to_string(),
-    ));
-    if num("concurrency_configured") == 1 {
-        let max = num("max_concurrent");
-        let inflight = num("inflight");
-        let strategy = get("on_saturated");
-        detail.push(("max_concurrent".into(), max.to_string()));
-        detail.push(("inflight".into(), inflight.to_string()));
-        detail.push(("on_saturated".into(), strategy.clone()));
-        if inflight >= max && strategy != "cancel_running" {
-            return AdmissionExplain {
-                state,
-                admissible: false,
-                blocked_by: Some(BlockedBy::ConcurrencyLimit),
-                detail,
-                estimated_admission_ms: None,
-            };
-        }
-    }
-    AdmissionExplain {
-        state,
-        admissible: true,
-        blocked_by: None,
-        detail,
-        estimated_admission_ms: Some(0),
-    }
+    let optional = |configured, value| (num(configured) == 1).then(|| num(value));
+    headgate_core::evaluate_admission(&headgate_shared::AdmissionFacts {
+        state: get("state"),
+        now_ms: num("now"),
+        scheduled_at_ms: num("scheduled_at_ms"),
+        queue_paused: num("paused") == 1,
+        quarantined: num("quarantined") == 1,
+        fingerprint: get("fingerprint"),
+        rate_class: get("rate_class"),
+        weight: num("weight"),
+        tokens_available: optional("rate_configured", "tokens_available"),
+        tokens_ahead: 0,
+        limit_per_window: num("rate_limit"),
+        window_ms: num("rate_window"),
+        max_concurrent: optional("concurrency_configured", "max_concurrent"),
+        inflight: num("inflight"),
+        saturation: get("on_saturated"),
+        position: num("position_in_partition"),
+        deficit: num("partition_deficit"),
+    })
 }

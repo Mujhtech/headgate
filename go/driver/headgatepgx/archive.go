@@ -49,7 +49,7 @@ func (s *PgxStore) PruneArchiveMonth(ctx context.Context, month string) (int64, 
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	var count, unsafeRows int64
 	var closed bool
 	err = tx.QueryRow(ctx, `

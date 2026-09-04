@@ -26,6 +26,26 @@ return headgate.Step(ctx, "publish", publish)
 
 </CodeGroup>
 
+## Inspect a checkpoint
+
+Checkpoint and cursor state is intentionally absent from ordinary job/list responses.
+Cursor bytes can contain application data, so operators request it explicitly:
+
+```http
+GET /api/v1/jobs/{job_id}/checkpoint
+```
+
+The response contains the ordered completed steps, the step checkpointed before its side
+effects, cursor step and base64 cursor bytes, step schema/hash, and crash counts by step.
+An existing job that has never used resumable steps returns an empty checkpoint; `404`
+means the job itself is missing.
+
+The console loads this endpoint only when job detail is opened. Its **Resumable execution**
+section shows completed and current steps, renders JSON/text cursors when possible, keeps
+binary cursors in base64, and makes per-step crash attribution visible. It cannot show
+future handler steps because those definitions live in worker code and are not persisted
+with the job.
+
 ## Cursor steps
 
 Cursor steps resume a loop from durable application progress. Each cursor update is

@@ -344,6 +344,36 @@ PAIRS = [
         "crates/headgate-migrate/migrations/mysql/0011_partitioned_archive.down.sql",
         "go/headgatemigrate/migrations/mysql/0011_partitioned_archive.down.sql",
     ),
+    (
+        "Postgres driver ↔ Rust migrator up v12",
+        "crates/headgate-postgres/migrations/0012_worker_control_state.sql",
+        "crates/headgate-migrate/migrations/postgres/0012_worker_control_state.up.sql",
+    ),
+    (
+        "MySQL driver ↔ Rust migrator up v12",
+        "crates/headgate-mysql/migrations/0012_worker_control_state.sql",
+        "crates/headgate-migrate/migrations/mysql/0012_worker_control_state.up.sql",
+    ),
+    (
+        "Postgres Rust ↔ Go up v12",
+        "crates/headgate-migrate/migrations/postgres/0012_worker_control_state.up.sql",
+        "go/headgatemigrate/migrations/postgres/0012_worker_control_state.up.sql",
+    ),
+    (
+        "Postgres Rust ↔ Go down v12",
+        "crates/headgate-migrate/migrations/postgres/0012_worker_control_state.down.sql",
+        "go/headgatemigrate/migrations/postgres/0012_worker_control_state.down.sql",
+    ),
+    (
+        "MySQL Rust ↔ Go up v12",
+        "crates/headgate-migrate/migrations/mysql/0012_worker_control_state.up.sql",
+        "go/headgatemigrate/migrations/mysql/0012_worker_control_state.up.sql",
+    ),
+    (
+        "MySQL Rust ↔ Go down v12",
+        "crates/headgate-migrate/migrations/mysql/0012_worker_control_state.down.sql",
+        "go/headgatemigrate/migrations/mysql/0012_worker_control_state.down.sql",
+    ),
 ]
 
 

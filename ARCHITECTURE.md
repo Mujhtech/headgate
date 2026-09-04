@@ -1377,7 +1377,7 @@ lifecycle uniqueness. Migration 11 instead adds an optional per-queue terminal a
 the bounded retention transaction copies a logically evicted audit body into a monthly
 range partition before deleting the hot row. Closed partitions truncate only after every
 row's captured archive retention expires. Active admission and every fenced write remain
-on the globally unique hot table. See `docs/table-partitioning.md`.
+on the globally unique hot table. See `docs/operations/archive-partitioning.mdx`.
 
 **Enqueue when the store is unreachable.** A web request calls `enqueue` and Postgres is
 down. Round 32s makes the answer executable rather than aspirational: every Rust and Go

@@ -622,7 +622,21 @@ NOTE: both runtime tests assert the row's claim exactly (available, `(attempt, c
 - sh: per-attempt logs land inside the attempt's entry
 - go: driver/headgatepgx/runtime_test.go::TestGoRuntimeDrainStepsAndPanics
 - go-mysql: driver/headgatemysql/store_test.go::TestTheGoRuntimeRunsUnchangedOverGoMysql
-NOTE: the row claims "all five stores"; the shell label ran on PG and Redis and its MySQL twin did not, so three of five. The CAPTURE side is Go-only — Rust's `JobCtx::log` has no test call site, and the shell assertions feed logs through the harness's ack flag rather than through the runtime API.
+- go: log_test.go::TestLoggerLevelsAndFields
+- go: log_test.go::TestLoggerBoundedConcurrentCapture
+- go: log_test.go::TestLoggerWithGroupsAndIsolation
+- go: log_test.go::TestLoggerAttributeBudget
+- go: headgatetest/log_test.go::TestStructuredLoggerRunsThroughRunner
+- go: driver/headgatepgx/store_test.go::TestStructuredAttemptLogsSurviveAck
+- go: driver/headgateredis/store_test.go::TestStructuredAttemptLogsSurviveAck
+- go-mysql: driver/headgatemysql/store_test.go::TestStructuredAttemptLogsSurviveAck
+- rust: crates/headgate/tests/log.rs::structured_logs_persist_without_failing_successful_job
+- rust: crates/headgate/src/log.rs::bounded_concurrent_logs_close_with_attempt
+- rust: crates/headgate-shared/src/log.rs::log_wire_compatibility
+- rust: crates/headgate-postgres/tests/store.rs::structured_attempt_logs_survive_ack
+- rust: crates/headgate-redis/tests/inspect.rs::structured_attempt_logs_survive_ack
+- rust-mysql: crates/headgate-mysql/tests/store.rs::structured_attempt_logs_survive_ack
+NOTE: structured logging adds four levels, diagnostic worker timestamps, bounded scalar fields, and UI filters without changing the string-array store port. Both real runtimes capture plain and structured entries, and error-level records leave a successful outcome unchanged. On 2026-09-03 the dedicated durable tests ran against isolated Postgres 17, Redis 7.4, and MySQL 8.4 instances in BOTH languages: success/retry/skip/undecodable preserve literal and structured entries, while stale-fence acknowledgements fail. UI parser/component tests verify legacy/malformed fallback and level filtering. This does not claim live streaming, encryption of logs, or retention on snooze/rate_limited/revoke.
 
 ### Sandboxed / isolated execution
 - rust: crates/headgate/src/isolated.rs::executes_versioned_request_with_sanitized_environment
@@ -672,11 +686,15 @@ NOTE: round 32ab. The graceful tests drive the real admission loop, hold a child
 ### Workflows / DAG dependencies
 - rust: crates/headgate-workflow/src/lib.rs::prepare_builds_one_coordinator_and_pending_fan_out_fan_in
 - rust: crates/headgate-workflow/src/lib.rs::prepare_rejects_missing_dependencies_and_cycles
+- rust: crates/headgate-workflow/src/lib.rs::prepare_raises_short_child_retention_to_workflow_retention
+- rust: crates/headgate-workflow/src/lib.rs::retained_completion_survives_a_missing_job_row
 - rust: crates/headgate-workflow/tests/live.rs::live_postgres_dag_promotes_fan_out_then_fan_in
 - go: headgateworkflow/workflow_test.go::TestPrepareBuildsCoordinatorAndPendingFanOutFanIn
 - go: headgateworkflow/workflow_test.go::TestPrepareRejectsMissingDependenciesAndCycles
+- go: headgateworkflow/workflow_test.go::TestPrepareRaisesShortChildRetentionToWorkflowRetention
 - go: headgateworkflow/workflow_test.go::TestCoordinatorPromotesFanOutThenFanInAndPropagatesFailure
-NOTE: round 32u. Both builders pin the durable batch shape and reject missing dependencies and cycles. The Rust live test enqueues one real coordinator plus four pending application jobs into Postgres, repeatedly runs the ordinary worker runtime, and requires `extract` first, `join` last, and both fan-out branches exactly once between them. Go independently drives the resolver through root promotion, two-way fan-out, and an archived branch; the still-pending join is deleted before execution and the workflow settles failed. The graph is static and bounded by coordinator payload size. Signals, timers, CEL waits, dynamic graph mutation, workflow retry, and graph UI are not claimed.
+- go: headgateworkflow/workflow_test.go::TestCoordinatorUsesDurableCompletionEvidenceAfterRetention
+NOTE: round 32u plus workflow-aware retention hardening. Both builders pin the durable batch shape and reject missing dependencies and cycles. They clamp short child retention to the workflow retention. The coordinator records observed completions in a fenced cursor before promoting descendants; both languages prove retained evidence still resolves a dependency after its ordinary job row disappears, while an unrecorded missing dependency remains a failure. The Rust live test enqueues one real coordinator plus four pending application jobs into Postgres, repeatedly runs the ordinary worker runtime, and requires `extract` first, `join` last, and both fan-out branches exactly once between them. Go independently drives the resolver through root promotion, two-way fan-out, and an archived branch; the still-pending join is deleted before execution and the workflow settles failed. The graph is static and bounded by coordinator payload size. Signals, timers, CEL waits, dynamic graph mutation, workflow retry, and graph UI are not claimed.
 
 ### Death handler
 - rust: crates/headgate/tests/death_handler.rs::death_handler_runs_once_only_after_the_archive_is_durable
@@ -1004,7 +1022,7 @@ NOTE: round 32l closed the BACKOFF half the old NOTE recorded as absent. Replaci
 - go: driver/headgateredis/inspect_test.go::TestTheInspectSurfaceAnswersOverGoRedis
 - rust-mysql: crates/headgate-mysql/tests/inspect.rs::the_inspect_surface_answers_over_mysql
 - rust: crates/headgate-api/tests/api.rs::control_api_end_to_end
-NOTE: round 32l corrected this NOTE rather than the code. Making `operator_retry` report success while moving nothing — in BOTH languages, so the §10.1 parity byte-diff stays equal and cannot see it — WAS caught, by `control_api_end_to_end`, which exercises the Postgres success path through the API. So the old claim that "Postgres has no success-path redrive test in either language" was wrong about Rust; what was actually missing was the CITATION, now added. Two things remain true: the Go-on-Postgres success path is proven only by agreeing with Rust in the byte-diff, and the row's "§10 bulk retry" is still touched only as a ghost-id ERROR path.
+NOTE: round 32l corrected this NOTE rather than the code. Making `operator_retry` report success while moving nothing — in BOTH languages, so the §10.1 parity byte-diff stays equal and cannot see it — WAS caught, by `control_api_end_to_end`, which exercises the Postgres success path through the API. So the old claim that "Postgres has no success-path redrive test in either language" was wrong about Rust; what was actually missing was the CITATION, now added. The same test now cancels a job, explicitly retries it, and reads `available`, proving cancelled-job revival through the control API. Two things remain true: the Go-on-Postgres success path is proven only by agreeing with Rust in the byte-diff, and the row's "§10 bulk retry" is still touched only as a ghost-id ERROR path.
 
 ### Rate-limited is not a failure
 - sh: invariant 10: rate_limited re-queues consuming NO attempt, NO crash, and writing NO failure

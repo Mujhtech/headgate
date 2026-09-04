@@ -48,7 +48,8 @@ var commonColumns = map[string][]string{
 	},
 	"headgate_worker": {
 		"worker_id", "host", "pid", "queues", "concurrency", "started_at_ms",
-		"heartbeat_at_ms", "command", "inflight", "polls", "empty_polls",
+		"heartbeat_at_ms", "command", "inflight", "polls", "empty_polls", "status",
+		"duties_active",
 	},
 	"headgate_operation": {
 		"id", "action", "selector", "status", "affected", "total_estimated",

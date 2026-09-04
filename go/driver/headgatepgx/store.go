@@ -10,7 +10,6 @@ package headgatepgx
 import (
 	"context"
 	_ "embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -22,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	headgate "github.com/mujhtech/headgate/go"
+	"github.com/mujhtech/headgate/go/headgateshared"
 )
 
 //go:embed admit.sql
@@ -95,6 +95,7 @@ type PgxStore struct {
 	pool                *schemaPool
 	opts                Options
 	listen              *listener // push wakeups push wakeup; nil = poll-only (and Caps say so)
+	ownedPool           bool
 	directProbeCooldown atomic.Uint32
 }
 
@@ -198,7 +199,9 @@ func Connect(ctx context.Context, conninfo string) (*PgxStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return New(pool).WithListen(conninfo), nil
+	store := New(pool).WithListen(conninfo)
+	store.ownedPool = true
+	return store, nil
 }
 
 func ConnectInSchema(ctx context.Context, conninfo, schema string) (*PgxStore, error) {
@@ -211,7 +214,23 @@ func ConnectInSchema(ctx context.Context, conninfo, schema string) (*PgxStore, e
 		pool.Close()
 		return nil, err
 	}
-	return store.WithListen(conninfo), nil
+	store.WithListen(conninfo)
+	store.ownedPool = true
+	return store, nil
+}
+
+// Close stops the dedicated LISTEN lifecycle. Stores created by Connect also own and
+// close their command pool; stores wrapping a caller-supplied pool leave it untouched.
+func (s *PgxStore) Close() {
+	if s == nil {
+		return
+	}
+	if s.listen != nil {
+		s.listen.close()
+	}
+	if s.ownedPool {
+		s.pool.raw.Close()
+	}
 }
 
 func (s *PgxStore) Caps() headgate.Caps {
@@ -225,11 +244,10 @@ func (s *PgxStore) Caps() headgate.Caps {
 // ---------- admit ----------
 
 func (s *PgxStore) Admit(ctx context.Context, req headgate.AdmitRequest) ([]headgate.AdmissionUnit, error) {
-	slices.Sort(req.Queues)
-	req.Queues = slices.Compact(req.Queues)
-	leaseMs := req.Lease.Milliseconds()
-	if leaseMs <= 0 {
-		return nil, errors.New("headgate: lease must be >= 1ms (boundary validation)")
+	var err error
+	req, leaseMs, err := headgate.NormalizeAdmitRequest(req)
+	if err != nil {
+		return nil, err
 	}
 	// adaptive admission compact no-policy/single-partition claim. A true sentinel means the statement
 	// made no write and the complete gate below must decide; an empty result is a handled
@@ -376,6 +394,9 @@ func (s *PgxStore) reconcileActualWeightPgx(ctx context.Context, q querier, leas
 }
 
 func (s *PgxStore) ackAttemptOn(ctx context.Context, q querier, lease headgate.LeaseRef, outcome headgate.Outcome, errMsg string, delayMs int64, logs []string, result *headgate.JobResult) error {
+	if err := headgate.ValidateAckRequest(outcome, delayMs); err != nil {
+		return err
+	}
 	q = s.pool.scope(q)
 	var n int64
 	var err error
@@ -387,9 +408,7 @@ func (s *PgxStore) ackAttemptOn(ctx context.Context, q querier, lease headgate.L
 	// attempt-log contract per-attempt logs, folded into the entry each arm writes. NULL = none.
 	var logsJSON any
 	if len(logs) > 0 {
-		if b, e := json.Marshal(logs); e == nil {
-			logsJSON = string(b)
-		}
+		logsJSON = headgateshared.EncodeStringList(logs)
 	}
 	switch outcome {
 	case headgate.OutcomeSuccess:
@@ -542,14 +561,8 @@ func (s *PgxStore) ackAttemptOn(ctx context.Context, q querier, lease headgate.L
 }
 
 func (s *PgxStore) AckSuccessWithResult(ctx context.Context, lease headgate.LeaseRef, logs []string, actualWeight *uint32, result headgate.JobResult) error {
-	if result.SchemaVersion == 0 {
-		return &headgate.InvalidError{Msg: "result schema_version must be greater than zero"}
-	}
-	if result.SchemaVersion > headgate.MaxOpaqueSchemaVersion {
-		return &headgate.InvalidError{Msg: "result schema_version exceeds the portable signed-integer limit"}
-	}
-	if len(result.Bytes) > 32*1024*1024 {
-		return &headgate.InvalidError{Msg: "result bytes exceed the 32 MiB limit"}
+	if err := headgate.ValidateOpaqueValue("result", result); err != nil {
+		return err
 	}
 	resultBytes := make([]byte, len(result.Bytes))
 	copy(resultBytes, result.Bytes)
@@ -576,14 +589,8 @@ func (s *PgxStore) WriteJobOutput(
 	lease headgate.LeaseRef,
 	output headgate.JobResult,
 ) (*headgate.JobOutput, error) {
-	if output.SchemaVersion == 0 {
-		return nil, &headgate.InvalidError{Msg: "output schema_version must be greater than zero"}
-	}
-	if output.SchemaVersion > headgate.MaxOpaqueSchemaVersion {
-		return nil, &headgate.InvalidError{Msg: "output schema_version exceeds the portable signed-integer limit"}
-	}
-	if len(output.Bytes) > 32*1024*1024 {
-		return nil, &headgate.InvalidError{Msg: "output bytes exceed the 32 MiB limit"}
+	if err := headgate.ValidateOpaqueValue("output", output); err != nil {
+		return nil, err
 	}
 	storedBytes := make([]byte, len(output.Bytes))
 	copy(storedBytes, output.Bytes)
@@ -833,21 +840,12 @@ func (s *PgxStore) enqueueOn(ctx context.Context, q querier, batch []headgate.En
 	stickyWorkers := make([]string, n)
 	for i, e := range batch {
 		ulids[i], kinds[i], payloads[i] = e.ID, e.Kind, e.Payload
-		versions[i] = int32(e.SchemaVersion)
-		if versions[i] == 0 {
-			versions[i] = 1
-		}
-		queues[i] = e.Queue
-		if queues[i] == "" {
-			queues[i] = "default"
-		}
+		versions[i] = int32(headgate.EffectiveSchemaVersion(e.SchemaVersion))
+		queues[i] = headgate.EnqueueQueue(e)
 		partitions[i], rateClasses[i], fingerprints[i] = e.PartitionKey, e.RateClass, e.Fingerprint
 		weights[i] = int32(headgate.EffectiveWeight(e.Weight))
 		priorities[i] = e.Priority
-		maxAttempts[i] = int32(e.MaxAttempts)
-		if maxAttempts[i] == 0 {
-			maxAttempts[i] = 25
-		}
+		maxAttempts[i] = int32(headgate.EffectiveMaxAttempts(e.MaxAttempts))
 		scheduled[i], timeouts[i], deadlines[i] = e.ScheduledAtMs, e.TimeoutMs, e.DeadlineMs
 		uniqueKeys[i] = e.UniqueKey
 		uniqueStates[i] = int32(e.UniqueStates)
@@ -866,8 +864,7 @@ func (s *PgxStore) enqueueOn(ctx context.Context, q querier, batch []headgate.En
 		if canonicalTags == nil {
 			canonicalTags = []string{}
 		}
-		tagBytes, _ := json.Marshal(canonicalTags)
-		tagsJSON[i] = string(tagBytes)
+		tagsJSON[i] = headgateshared.EncodeStringList(canonicalTags)
 		stickyWorkers[i] = e.StickyWorker
 	}
 
@@ -890,11 +887,7 @@ func (s *PgxStore) enqueueOn(ctx context.Context, q querier, batch []headgate.En
 	// Store/Transactional entry point supplies one.
 	demand := map[string]int64{}
 	for _, e := range batch {
-		queue := e.Queue
-		if queue == "" {
-			queue = "default"
-		}
-		demand[queue]++
+		demand[headgate.EnqueueQueue(e)]++
 	}
 	demandQueues := make([]string, 0, len(demand))
 	for queue := range demand {
@@ -1562,52 +1555,12 @@ func (s *PgxStore) CompleteTxWithActualWeight(ctx context.Context, tx headgate.T
 	return nil
 }
 
-// ---------- checkpoint JSON, same field names as the other adapters ----------
-
-type cpJSON struct {
-	Completed  []string          `json:"completed,omitempty"`
-	InProgress string            `json:"in_progress,omitempty"`
-	CursorStep string            `json:"cursor_step,omitempty"`
-	Version    uint32            `json:"version,omitempty"`
-	Hash       string            `json:"hash,omitempty"`
-	Crashes    map[string]uint32 `json:"crashes,omitempty"`
-}
-
 func encodeCheckpoint(cp headgate.Checkpoint) []byte {
-	j := cpJSON{
-		Completed:  cp.CompletedSteps,
-		InProgress: cp.InProgressStep,
-		CursorStep: cp.CursorStep,
-		Version:    cp.SchemaVersion,
-		Hash:       cp.StepSetHash,
-		Crashes:    cp.CrashesByStep,
-	}
-	b, err := json.Marshal(j)
-	if err != nil {
-		return []byte("{}")
-	}
-	return b
+	return headgateshared.EncodeCheckpoint(cp)
 }
 
 func decodeCheckpoint(raw, cursor []byte) headgate.Checkpoint {
-	cp := headgate.Checkpoint{Cursor: cursor}
-	if len(raw) == 0 {
-		return cp
-	}
-	var j cpJSON
-	if json.Unmarshal(raw, &j) != nil {
-		return cp
-	}
-	cp.CompletedSteps = j.Completed
-	if len(j.Completed) > 0 {
-		cp.LastCompletedStep = j.Completed[len(j.Completed)-1]
-	}
-	cp.InProgressStep = j.InProgress
-	cp.CursorStep = j.CursorStep
-	cp.SchemaVersion = j.Version
-	cp.StepSetHash = j.Hash
-	cp.CrashesByStep = j.Crashes
-	return cp
+	return headgateshared.DecodeCheckpoint(raw, cursor)
 }
 
 // ---------- the dyn transactional path (transactional API) + transactional effects effect keys ----------

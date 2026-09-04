@@ -21,6 +21,9 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
+mod log;
+pub use log::assert_structured_attempt_logs;
+
 use headgate_core::{
     AdmissionUnit, AdmitRequest, Caps, Checkpoint, Claim, Envelope, Inspect, LeaseRef, Outcome,
     Reclaimed, Store, StoreError,

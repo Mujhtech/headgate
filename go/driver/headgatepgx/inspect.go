@@ -15,13 +15,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	headgate "github.com/mujhtech/headgate/go"
+	"github.com/mujhtech/headgate/go/headgateshared"
 )
 
 const (
-	sampleLimit         = int64(50_000)
-	positionLimit       = int64(1_000)
-	quietPartitionLimit = int64(1_000)
-	maxPage             = uint32(200)
+	sampleLimit         = int64(headgateshared.InspectionSampleLimit)
+	positionLimit       = int64(headgateshared.InspectionPositionLimit)
+	quietPartitionLimit = int64(headgateshared.InspectionQuietPartitionLimit)
+	maxPage             = uint32(headgateshared.InspectionMaxPage)
 )
 
 type quietPartMetric struct {
@@ -31,8 +32,7 @@ type quietPartMetric struct {
 	oldestAt           *int64
 }
 
-func (s *PgxStore) quietGroupMetrics(ctx context.Context, queue string, nowMs int64) (headgate.QuietGroupMetrics, error) {
-	rows, err := s.pool.Query(ctx, `
+const quietPartsSQL = `
 		WITH names AS (
 		  SELECT partition_key FROM headgate_active_partition WHERE queue = $1
 		  UNION SELECT partition_key FROM headgate_inflight WHERE queue = $1 AND n > 0
@@ -53,22 +53,17 @@ func (s *PgxStore) quietGroupMetrics(ctx context.Context, queue string, nowMs in
 		FROM names n
 		LEFT JOIN headgate_inflight i ON i.queue = $1 AND i.partition_key = n.partition_key
 		LEFT JOIN rates r ON r.partition_key = n.partition_key
-		ORDER BY n.partition_key`, queue, nowMs/60_000*60_000-60_000, quietPartitionLimit+1)
-	if err != nil {
-		return headgate.QuietGroupMetrics{}, err
-	}
-	defer rows.Close()
-	parts := make([]quietPartMetric, 0)
-	for rows.Next() {
-		var p quietPartMetric
-		if err := rows.Scan(&p.partition, &p.inflight, &p.arrived, &p.completed, &p.oldestAt); err != nil {
-			return headgate.QuietGroupMetrics{}, err
-		}
-		parts = append(parts, p)
-	}
-	if err := rows.Err(); err != nil {
-		return headgate.QuietGroupMetrics{}, err
-	}
+		ORDER BY n.partition_key`
+
+const quietBacklogSQL = `
+	SELECT count(*)::bigint FROM (
+	  SELECT 1 FROM headgate_job
+	  WHERE queue = $1 AND partition_key = ANY($2)
+	    AND state = ANY(ARRAY['pending','scheduled','available','running','retryable']::headgate_state[])
+	  LIMIT $3
+	) bounded`
+
+func summarizeQuietParts(parts []quietPartMetric, nowMs int64) (headgate.QuietGroupMetrics, []string) {
 	approx := int64(len(parts)) > quietPartitionLimit
 	if approx {
 		parts = parts[:quietPartitionLimit]
@@ -93,38 +88,96 @@ func (s *PgxStore) quietGroupMetrics(ctx context.Context, queue string, nowMs in
 			oldestAt = &v
 		}
 	}
-	var backlog int64
-	if len(quietParts) > 0 {
-		err = s.pool.QueryRow(ctx, `
-			SELECT count(*)::bigint FROM (
-			  SELECT 1 FROM headgate_job
-			  WHERE queue = $1 AND partition_key = ANY($2)
-			    AND state = ANY(ARRAY['pending','scheduled','available','running','retryable']::headgate_state[])
-			  LIMIT $3
-			) bounded`, queue, quietParts, sampleLimit).Scan(&backlog)
-		if err != nil {
-			return headgate.QuietGroupMetrics{}, err
-		}
-	}
 	q := headgate.QuietGroupMetrics{
 		ArrivalRate: float64(arrived) / 60.0, DrainRate: float64(completed) / 60.0,
-		NoisyPartitions: uint32(len(noisy)), Approximate: approx || backlog >= sampleLimit,
-	}
-	if q.DrainRate > q.ArrivalRate && q.DrainRate > 0 {
-		ttd := int64(float64(backlog) / (q.DrainRate - q.ArrivalRate) * 1000.0)
-		q.TimeToDrainMs = &ttd
+		NoisyPartitions: uint32(len(noisy)), Approximate: approx,
 	}
 	if oldestAt != nil {
-		age := max(nowMs-*oldestAt, 0)
+		age := headgate.AgeMillis(nowMs, *oldestAt)
 		q.OldestAvailableMs = &age
 	}
-	return q, nil
+	return q, quietParts
+}
+
+func finishQuietBacklog(q *headgate.QuietGroupMetrics, backlog int64) {
+	q.Approximate = q.Approximate || backlog >= sampleLimit
+	q.TimeToDrainMs = headgate.TimeToDrainMillis(backlog, q.ArrivalRate, q.DrainRate)
+}
+
+// quietGroupMetricsBatch pipelines the two bounded quiet-group query phases over one
+// connection each. QueueStats therefore uses a constant number of network round trips
+// instead of two additional pool acquisitions per queue.
+func (s *PgxStore) quietGroupMetricsBatch(ctx context.Context, queues []string, nowMs []int64) ([]headgate.QuietGroupMetrics, error) {
+	metrics := make([]headgate.QuietGroupMetrics, len(queues))
+	if len(queues) == 0 {
+		return metrics, nil
+	}
+	quietParts := make([][]string, len(queues))
+	first := &pgx.Batch{}
+	for i, queue := range queues {
+		first.Queue(s.pool.namespace.render(quietPartsSQL), queue, nowMs[i]/60_000*60_000-60_000, quietPartitionLimit+1)
+	}
+	results := s.pool.raw.SendBatch(ctx, first)
+	for i := range queues {
+		rows, err := results.Query()
+		if err != nil {
+			_ = results.Close()
+			return nil, err
+		}
+		parts := make([]quietPartMetric, 0)
+		for rows.Next() {
+			var part quietPartMetric
+			if err := rows.Scan(&part.partition, &part.inflight, &part.arrived, &part.completed, &part.oldestAt); err != nil {
+				rows.Close()
+				_ = results.Close()
+				return nil, err
+			}
+			parts = append(parts, part)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			_ = results.Close()
+			return nil, err
+		}
+		rows.Close()
+		metrics[i], quietParts[i] = summarizeQuietParts(parts, nowMs[i])
+	}
+	if err := results.Close(); err != nil {
+		return nil, err
+	}
+
+	second := &pgx.Batch{}
+	indices := make([]int, 0, len(queues))
+	for i, parts := range quietParts {
+		if len(parts) == 0 {
+			continue
+		}
+		indices = append(indices, i)
+		second.Queue(s.pool.namespace.render(quietBacklogSQL), queues[i], parts, sampleLimit)
+	}
+	if len(indices) == 0 {
+		return metrics, nil
+	}
+	results = s.pool.raw.SendBatch(ctx, second)
+	for _, index := range indices {
+		var backlog int64
+		if err := results.QueryRow().Scan(&backlog); err != nil {
+			_ = results.Close()
+			return nil, err
+		}
+		finishQuietBacklog(&metrics[index], backlog)
+	}
+	if err := results.Close(); err != nil {
+		return nil, err
+	}
+	return metrics, nil
 }
 
 var _ headgate.InspectStore = (*PgxStore)(nil) // transactional API's compile-time capability check
 var _ headgate.ResultInspectStore = (*PgxStore)(nil)
 var _ headgate.OutputInspectStore = (*PgxStore)(nil)
 var _ headgate.ProgressInspectStore = (*PgxStore)(nil)
+var _ headgate.CheckpointInspectStore = (*PgxStore)(nil)
 
 const jobCols = `j.ulid, j.kind, j.queue, j.state::text, j.schema_version, j.priority,
 	j.attempt, j.crash_attempt, j.max_attempts, j.partition_key, j.rate_class, j.sticky_worker,
@@ -221,6 +274,21 @@ func (s *PgxStore) GetJobProgress(ctx context.Context, id string) (*headgate.Job
 		progress.Message = *message
 	}
 	return progress, nil
+}
+
+func (s *PgxStore) GetJobCheckpoint(ctx context.Context, id string) (*headgate.Checkpoint, error) {
+	var raw, cursor []byte
+	err := s.pool.QueryRow(ctx,
+		`SELECT checkpoint, cp_cursor FROM headgate_job WHERE ulid = $1`, id).
+		Scan(&raw, &cursor)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	checkpoint := decodeCheckpoint(raw, cursor)
+	return &checkpoint, nil
 }
 
 func (s *PgxStore) ListJobs(ctx context.Context, f headgate.JobFilter, cursor string, limit uint32) (headgate.JobPage, error) {
@@ -384,12 +452,13 @@ func (s *PgxStore) QueueStats(ctx context.Context) ([]headgate.QueueStatsView, e
 		LEFT JOIN headgate_enqueue_counter ext
 		  ON ext.queue = n.queue AND ext.counter_kind = 'exited'
 		LEFT JOIN headgate_queue_sample qsamp ON qsamp.queue = n.queue
-		ORDER BY n.queue`, sampleLimit)
+		ORDER BY n.queue LIMIT 10000`, sampleLimit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []headgate.QueueStatsView
+	var quietNow []int64
 	for rows.Next() {
 		var v headgate.QueueStatsView
 		var statesJSON string
@@ -402,7 +471,7 @@ func (s *PgxStore) QueueStats(ctx context.Context) ([]headgate.QueueStatsView, e
 			return nil, err
 		}
 		if oldestAt != nil {
-			age := max(nowMs-*oldestAt, 0)
+			age := headgate.AgeMillis(nowMs, *oldestAt)
 			v.OldestAvailableMs = &age
 		}
 		var pairs [][2]any
@@ -419,17 +488,31 @@ func (s *PgxStore) QueueStats(ctx context.Context) ([]headgate.QueueStatsView, e
 			v.ByState[st] = int64(n)
 		}
 		// backlog metrics time-to-drain: nil when arrival >= drain — the alert condition.
-		if v.DrainRate > v.ArrivalRate && v.DrainRate > 0 {
-			ttd := int64(float64(v.UnfinishedJobs) / (v.DrainRate - v.ArrivalRate) * 1000.0)
-			v.TimeToDrainMs = &ttd
-		}
-		v.QuietGroups, err = s.quietGroupMetrics(ctx, v.Queue, nowMs)
-		if err != nil {
-			return nil, err
-		}
+		v.TimeToDrainMs = headgate.TimeToDrainMillis(
+			int64(v.UnfinishedJobs), v.ArrivalRate, v.DrainRate,
+		)
 		out = append(out, v)
+		quietNow = append(quietNow, nowMs)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Release the query's pool connection before issuing quiet-group follow-ups. Holding
+	// rows open here deadlocked a one-connection pool and could exhaust larger pools when
+	// several /queues or /cluster requests arrived together.
+	rows.Close()
+	queues := make([]string, len(out))
+	for i := range out {
+		queues[i] = out[i].Queue
+	}
+	quiet, err := s.quietGroupMetricsBatch(ctx, queues, quietNow)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].QuietGroups = quiet[i]
+	}
+	return out, nil
 }
 
 func (s *PgxStore) SetQueuePaused(ctx context.Context, queue string, paused bool) error {
@@ -498,13 +581,8 @@ func (s *PgxStore) RateClasses(ctx context.Context) ([]headgate.RateClassState, 
 }
 
 func (s *PgxStore) UpsertRateClass(ctx context.Context, cfg headgate.RateClassConfig) error {
-	if cfg.WindowMs < 1 {
-		// boundary validation, and it divides the refill. Text matches the Rust store word-for-word
-		// (the mutation diff asserts error-message parity).
-		return &headgate.InvalidError{Msg: "window_ms must be >= 1"}
-	}
-	if cfg.Limit < 0 || cfg.Burst < 1 {
-		return &headgate.InvalidError{Msg: "limit must be >= 0 and burst >= 1"}
+	if err := headgate.ValidateRateClassConfig(cfg); err != nil {
+		return err
 	}
 	limit, tokensInsert := cfg.Limit, cfg.Burst
 	if cfg.Paused {
@@ -548,14 +626,8 @@ func (s *PgxStore) ConcurrencyLimits(ctx context.Context) ([]headgate.Concurrenc
 }
 
 func (s *PgxStore) UpsertConcurrencyLimit(ctx context.Context, cfg headgate.ConcurrencyLimit) error {
-	if cfg.Name == "" || cfg.Queue == "" {
-		return &headgate.InvalidError{Msg: "name and queue must not be empty"}
-	}
-	if cfg.MaxConcurrent == 0 {
-		return &headgate.InvalidError{Msg: "max_concurrent must be >= 1"}
-	}
-	if !cfg.OnSaturated.Valid() {
-		return &headgate.InvalidError{Msg: fmt.Sprintf("unknown saturation strategy `%s`", cfg.OnSaturated)}
+	if err := headgate.ValidateConcurrencyLimit(cfg); err != nil {
+		return err
 	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO headgate_concurrency_limit
@@ -585,7 +657,7 @@ func (s *PgxStore) Partitions(ctx context.Context, queue string) ([]headgate.Par
 		FULL OUTER JOIN headgate_partition_deficit d
 		  ON d.queue = $1 AND d.partition_key = w.partition_key
 		WHERE d.queue IS NULL OR d.queue = $1
-		ORDER BY 1`, queue, sampleLimit)
+		ORDER BY 1 LIMIT 10000`, queue, sampleLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -674,7 +746,7 @@ func (s *PgxStore) OperatorRetry(ctx context.Context, id string) error {
 		WITH upd AS (
 		  UPDATE headgate_job SET state = 'available', scheduled_at_ms = `+nowMS+`,
 		         finalized_at_ms = NULL
-		  WHERE ulid = $1 AND state = 'archived'
+		  WHERE ulid = $1 AND state IN ('archived', 'cancelled')
 		  RETURNING queue, partition_key
 		),
 		-- tenant fairness/adaptive admission retry-now makes the row available; list its partition here.
@@ -697,7 +769,7 @@ func (s *PgxStore) OperatorRetry(ctx context.Context, id string) error {
 	if !found {
 		return headgate.NotFoundf("job %s", id)
 	}
-	return headgate.Invalidf("operator_retry is only defined from archived; job %s is %s", id, st)
+	return headgate.Invalidf("operator_retry is only defined from archived or cancelled; job %s is %s", id, st)
 }
 
 func (s *PgxStore) OperatorCancel(ctx context.Context, id string) error {
@@ -919,86 +991,24 @@ func (s *PgxStore) ExplainAdmission(ctx context.Context, id string) (*headgate.A
 		return nil, err
 	}
 
-	ex := &headgate.AdmissionExplain{State: state, Detail: map[string]string{"state": state}}
-	block := func(by string, eta *int64) *headgate.AdmissionExplain {
-		ex.Admissible, ex.BlockedBy, ex.EstimatedAdmissionMs = false, by, eta
-		return ex
-	}
-	zero := int64(0)
-	switch state {
-	case "running":
-		ex.Admissible, ex.EstimatedAdmissionMs = true, &zero
-		return ex, nil
-	case "scheduled", "retryable":
-		ex.Detail["scheduled_at_ms"] = fmt.Sprint(scheduledAt)
-		eta := max64(scheduledAt-nowMs, 0)
-		return block("schedule", &eta), nil
-	case "quarantined":
-		return block("quarantine", nil), nil // will not clear on its own
-	case "available":
-	default: // terminal
-		ex.Admissible = false
-		return ex, nil
-	}
-	// Available: the gate's clauses in the gate's order.
-	if paused {
-		return block("queue_paused", nil), nil
-	}
-	if scheduledAt > nowMs {
-		ex.Detail["scheduled_at_ms"] = fmt.Sprint(scheduledAt)
-		eta := scheduledAt - nowMs
-		return block("schedule", &eta), nil
-	}
-	if quarantined {
-		ex.Detail["fingerprint"] = fingerprint
-		return block("quarantine", nil), nil
-	}
-	if rateClass != "" {
-		required := aheadInClass + max64(weight, 1)
-		ex.Detail["rate_class"] = rateClass
-		ex.Detail["weight"] = fmt.Sprint(max64(weight, 1))
-		ex.Detail["tokens_ahead_in_class"] = fmt.Sprint(aheadInClass)
-		if avail == nil {
-			// an unconfigured class is UNLIMITED, not blocking — the gate's
-			// `b.name IS NULL OR ...` fail-open arm. Still reported, because "you named a
-			// rate class that does not exist" is worth seeing even when nothing stalls.
-			ex.Detail["tokens_available"] = "unlimited (no such rate class)"
-		} else {
-			ex.Detail["tokens_available"] = fmt.Sprint(*avail)
-			if *avail < required {
-				var eta *int64
-				if limitPerWindow != nil && *limitPerWindow > 0 && windowMs != nil {
-					e := max64(required-*avail, 1) * *windowMs / *limitPerWindow
-					eta = &e
-				}
-				return block("rate_class", eta), nil
-			}
+	valueOrZero := func(value *int64) int64 {
+		if value == nil {
+			return 0
 		}
+		return *value
 	}
-	if maxConc != nil {
-		ex.Detail["max_concurrent"] = fmt.Sprint(*maxConc)
-		ex.Detail["inflight"] = fmt.Sprint(inflight)
-		strategy := string(headgate.SaturateQueue)
-		if onSaturated != nil {
-			strategy = *onSaturated
-		}
-		ex.Detail["on_saturated"] = strategy
-		if inflight >= *maxConc && strategy != string(headgate.SaturateCancelRunning) {
-			return block("concurrency_limit", nil), nil // clears when something finishes
-		}
+	strategy := ""
+	if onSaturated != nil {
+		strategy = *onSaturated
 	}
-	// Fairness never blocks outright — it is work-conserving (invariant 11).
-	ex.Detail["position_in_partition"] = fmt.Sprint(aheadInPartition)
-	ex.Detail["partition_deficit"] = fmt.Sprint(deficit)
-	ex.Admissible, ex.EstimatedAdmissionMs = true, &zero
-	return ex, nil
-}
-
-func max64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
+	return headgate.EvaluateAdmission(headgateshared.AdmissionFacts{
+		State: state, NowMs: nowMs, ScheduledAtMs: scheduledAt,
+		QueuePaused: paused, Quarantined: quarantined, Fingerprint: fingerprint,
+		RateClass: rateClass, Weight: weight, TokensAvailable: avail,
+		TokensAhead: aheadInClass, LimitPerWindow: valueOrZero(limitPerWindow),
+		WindowMs: valueOrZero(windowMs), MaxConcurrent: maxConc, Inflight: inflight,
+		Saturation: strategy, Position: aheadInPartition, Deficit: deficit,
+	}), nil
 }
 
 // ---------- surveyed policy behavior periodic schedules ----------
@@ -1032,14 +1042,7 @@ func scanSchedule(row pgx.Row) (headgate.ScheduleEntry, error) {
 }
 
 func missedName(p headgate.MissedPolicy) string {
-	switch p {
-	case headgate.MissedRunOnce:
-		return "run_once"
-	case headgate.MissedBackfill:
-		return "backfill"
-	default:
-		return "skip"
-	}
+	return p.String()
 }
 
 func (s *PgxStore) UpsertSchedule(ctx context.Context, e headgate.ScheduleEntry) error {
@@ -1182,8 +1185,8 @@ func (s *PgxStore) RecordScheduleEvent(ctx context.Context, event headgate.Sched
 }
 
 func (s *PgxStore) ListScheduleEvents(ctx context.Context, scheduleID string, beforeEventID uint64, limit uint32) ([]headgate.ScheduleEvent, error) {
-	if limit == 0 || limit > headgate.ScheduleEventLimit {
-		return nil, headgate.Invalidf("schedule event limit must be between 1 and 100")
+	if err := headgate.ValidateScheduleEventLimit(limit); err != nil {
+		return nil, err
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, schedule_id, tick_ms, job_id, outcome, reason, recorded_at_ms
@@ -1211,12 +1214,16 @@ func (s *PgxStore) ListScheduleEvents(ctx context.Context, scheduleID string, be
 // ---------- worker registry + surveyed policy behavior control channel ----------
 
 func (s *PgxStore) HeartbeatWorker(ctx context.Context, w headgate.WorkerMeta) (string, error) {
+	status := w.Status
+	if status == "" {
+		status = "running"
+	}
 	var cmd *string
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO headgate_worker
 		       (worker_id, host, pid, queues, concurrency, started_at_ms, heartbeat_at_ms,
-		        inflight, polls, empty_polls)
-		SELECT $1, $2, $3, $4, $5, $6, `+nowMS+`, $7, $8, $9
+		        inflight, polls, empty_polls, status, duties_active)
+		SELECT $1, $2, $3, $4, $5, $6, `+nowMS+`, $7, $8, $9, $10, $11
 		ON CONFLICT (worker_id) DO UPDATE SET
 		  queues = EXCLUDED.queues, concurrency = EXCLUDED.concurrency,
 		  heartbeat_at_ms = EXCLUDED.heartbeat_at_ms,
@@ -1224,10 +1231,11 @@ func (s *PgxStore) HeartbeatWorker(ctx context.Context, w headgate.WorkerMeta) (
 		  -- beat overwrites them rather than accumulating. A worker that stops beating
 		  -- keeps its last reported level and ages out as stale.
 		  inflight = EXCLUDED.inflight, polls = EXCLUDED.polls,
-		  empty_polls = EXCLUDED.empty_polls
+		  empty_polls = EXCLUDED.empty_polls, status = EXCLUDED.status,
+		  duties_active = EXCLUDED.duties_active
 		RETURNING command`,
 		w.WorkerID, w.Host, w.PID, w.Queues, int32(w.Concurrency), w.StartedAtMs,
-		int32(w.Inflight), int64(w.Polls), int64(w.EmptyPolls)).Scan(&cmd)
+		int32(w.Inflight), int64(w.Polls), int64(w.EmptyPolls), status, w.DutiesActive).Scan(&cmd)
 	if err != nil {
 		return "", err
 	}
@@ -1240,7 +1248,7 @@ func (s *PgxStore) HeartbeatWorker(ctx context.Context, w headgate.WorkerMeta) (
 func (s *PgxStore) ListWorkers(ctx context.Context, staleAfterMs int64) ([]headgate.WorkerMeta, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT worker_id, host, pid, queues, concurrency, started_at_ms, heartbeat_at_ms,
-		       inflight, polls, empty_polls
+		       inflight, polls, empty_polls, status, duties_active, command
 		FROM headgate_worker
 		WHERE heartbeat_at_ms >= `+nowMS+` - $1
 		ORDER BY worker_id LIMIT 10000`, staleAfterMs)
@@ -1253,9 +1261,14 @@ func (s *PgxStore) ListWorkers(ctx context.Context, staleAfterMs int64) ([]headg
 		var w headgate.WorkerMeta
 		var conc, inflight int32
 		var polls, emptyPolls int64
+		var command *string
 		if err := rows.Scan(&w.WorkerID, &w.Host, &w.PID, &w.Queues, &conc,
-			&w.StartedAtMs, &w.HeartbeatAtMs, &inflight, &polls, &emptyPolls); err != nil {
+			&w.StartedAtMs, &w.HeartbeatAtMs, &inflight, &polls, &emptyPolls,
+			&w.Status, &w.DutiesActive, &command); err != nil {
 			return nil, err
+		}
+		if command != nil {
+			w.PendingCommand = *command
 		}
 		w.Concurrency = uint32(conc)
 		w.Inflight, w.Polls, w.EmptyPolls = uint32(inflight), uint64(polls), uint64(emptyPolls)
@@ -1267,12 +1280,10 @@ func (s *PgxStore) ListWorkers(ctx context.Context, staleAfterMs int64) ([]headg
 func (s *PgxStore) SignalWorker(ctx context.Context, workerID, command string) error {
 	var cmd any
 	if command != "" {
-		switch command {
-		case "quiet", "resume", "restart", "terminate", "resign":
-			cmd = command
-		default:
+		if !headgate.ValidWorkerCommand(command) {
 			return &headgate.InvalidError{Msg: "command must be quiet, resume, restart, terminate, or resign"}
 		}
+		cmd = command
 	}
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE headgate_worker SET command = $2 WHERE worker_id = $1`, workerID, cmd)
@@ -1310,15 +1321,11 @@ func (s *PgxStore) DistinctKinds(ctx context.Context, limit int64) ([]string, er
 // ---------- control API contract async bulk operations ----------
 
 func actionStates(action string) (string, bool) {
-	switch action {
-	case "retry":
-		return "('archived')", true
-	case "cancel":
-		return "('scheduled', 'available', 'running')", true
-	case "delete":
-		return "('scheduled', 'available', 'retryable', 'completed', 'archived', 'cancelled', 'quarantined', 'undecodable')", true
+	states, ok := headgate.BulkActionStates(action)
+	if !ok {
+		return "", false
 	}
-	return "", false
+	return "('" + strings.Join(states, "', '") + "')", true
 }
 
 func selectorWhere(req headgate.BulkOp, allowed string, firstParam int) (string, []any) {
@@ -1347,8 +1354,7 @@ func selectorWhere(req headgate.BulkOp, allowed string, firstParam int) (string,
 }
 
 func (s *PgxStore) CreateOperation(ctx context.Context, req headgate.BulkOp) error {
-	if req.Queue == "" && req.State == "" && req.Kind == "" && req.PartitionKey == "" &&
-		req.OlderThanMs == nil {
+	if !req.HasSelector() {
 		return &headgate.InvalidError{Msg: "empty selector is rejected"} // control API contract
 	}
 	allowed, ok := actionStates(req.Action)
@@ -1541,8 +1547,8 @@ func (s *PgxStore) SampleQueueMemory(ctx context.Context, limit uint32) (uint32,
 	if limit < 1 {
 		limit = 1
 	}
-	if limit > 1000 {
-		limit = 1000
+	if limit > headgateshared.InspectionMemorySampleLimit {
+		limit = headgateshared.InspectionMemorySampleLimit
 	}
 	rows, err := s.pool.Query(ctx, `WITH queues AS (SELECT queue FROM headgate_queue_state ORDER BY queue LIMIT 200), samples AS (
 		SELECT q.queue,COALESCE(sum(pg_column_size(j.*)),0)::bigint bytes,count(*)::int n FROM queues q

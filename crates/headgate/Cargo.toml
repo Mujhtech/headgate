@@ -16,6 +16,7 @@ license.workspace = true
 # telemetry facade; concrete exporters live in opt-in crates.
 [dependencies]
 headgate-core = { workspace = true }
+headgate-shared = { workspace = true }
 headgate-macros = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process", "io-util"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }

@@ -19,6 +19,7 @@ license.workspace = true
 # transaction whose policy step is queries/eligible.sql (see its header).
 [dependencies]
 headgate-core = { workspace = true }
+headgate-shared = { workspace = true }
 async-trait = { workspace = true }
 mysql_async = { version = "0.35", default-features = false, features = ["minimal"] }
 serde_json = "1"

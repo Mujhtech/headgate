@@ -33,7 +33,7 @@ operator responses:
 | --- | --- | --- |
 | `quarantined` | Repeated crashes identify a possible poison-pill fingerprint | Diagnose the crash and release the fingerprint from Quarantine |
 | `undecodable` | The payload version or resumable-step definition is incompatible | Deploy an upcaster or compatible handler, or repair the payload |
-| `cancelled` | An operator intentionally stopped the job | Keep it for audit or enqueue replacement work |
+| `cancelled` | An operator intentionally stopped the job | Keep it for audit or explicitly retry the same job after the cause is resolved |
 | deleted | A handler returned `revoke`, or terminal retention removed the row | It cannot be redriven from Headgate |
 
 Returned errors increment `attempt`; process loss and expired leases increment
@@ -64,10 +64,12 @@ your application needs a narrower role.
 
 ## Redrive after fixing the cause
 
-Retry is defined only for `archived → available`. It preserves the job's identity,
-attempt counters, errors, and other history, clears finalization, and makes the job
-eligible for admission immediately. Because history is preserved, another returned
-failure can archive it again; redrive is not a way to erase an exhausted retry budget.
+Retry is an explicit operator transition from either `archived` or `cancelled` to
+`available`. It preserves the job's identity, attempt counters, errors, and other
+history, clears finalization, and makes the job eligible for admission immediately.
+Cancellation remains terminal for automatic processing; only an operator retry revives
+it. Because history is preserved, another returned failure can archive it again;
+redrive is not a way to erase an exhausted retry budget.
 
 For one job, use the Retry action in its console sheet, the CLI, or the control API:
 

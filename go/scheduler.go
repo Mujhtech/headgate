@@ -113,7 +113,7 @@ func fireSchedule(
 			ScheduledAtMs:      0, // due immediately — the tick time is in the id/key
 			PeriodicScheduleID: s.ID,
 			PeriodicTickMs:     tick,
-			UniqueKey:          []byte(fmt.Sprintf("sched:%s:%d", s.ID, tick)),
+			UniqueKey:          fmt.Appendf(nil, "sched:%s:%d", s.ID, tick),
 		}
 		attempt := newPeriodicEnqueueAttempt(s, tick, env)
 		for _, hook := range hooks {

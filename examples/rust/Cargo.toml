@@ -10,6 +10,7 @@ headgate-crypto = { path = "../../crates/headgate-crypto" }
 headgate-testkit = { path = "../../crates/headgate-testkit" }
 headgate-workflow = { path = "../../crates/headgate-workflow" }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [[bin]]

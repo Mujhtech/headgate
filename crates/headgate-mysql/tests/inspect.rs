@@ -187,6 +187,11 @@ async fn the_inspect_surface_answers_over_mysql() {
         insp.operator_cancel("mi-3").await,
         Err(StoreError::Invalid(_))
     ));
+    insp.operator_retry("mi-3").await.unwrap();
+    assert_eq!(
+        insp.get_job("mi-3", false).await.unwrap().unwrap().state,
+        "available"
+    );
     insp.operator_retry("mi-2").await.unwrap();
     let ex = insp.explain_admission("mi-2").await.unwrap().unwrap();
     assert!(ex.admissible && ex.blocked_by.is_none());
@@ -407,6 +412,9 @@ async fn the_inspect_surface_answers_over_mysql() {
         inflight: 1,
         polls: 8,
         empty_polls: 2,
+        status: "running".into(),
+        duties_active: true,
+        pending_command: None,
     };
     assert_eq!(insp.heartbeat_worker(&w).await.unwrap(), None);
     insp.signal_worker("mi-w", Some("quiet")).await.unwrap();

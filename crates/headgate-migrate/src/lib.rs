@@ -170,6 +170,13 @@ const POSTGRES_MIGRATIONS: &[Migration] = &[
         down_sql: include_str!("../migrations/postgres/0011_partitioned_archive.down.sql"),
         online_safe: true,
     },
+    Migration {
+        version: 12,
+        name: "worker_control_state",
+        up_sql: include_str!("../migrations/postgres/0012_worker_control_state.up.sql"),
+        down_sql: include_str!("../migrations/postgres/0012_worker_control_state.down.sql"),
+        online_safe: true,
+    },
 ];
 
 const MYSQL_MIGRATIONS: &[Migration] = &[
@@ -248,6 +255,13 @@ const MYSQL_MIGRATIONS: &[Migration] = &[
         name: "partitioned_archive",
         up_sql: include_str!("../migrations/mysql/0011_partitioned_archive.up.sql"),
         down_sql: include_str!("../migrations/mysql/0011_partitioned_archive.down.sql"),
+        online_safe: false,
+    },
+    Migration {
+        version: 12,
+        name: "worker_control_state",
+        up_sql: include_str!("../migrations/mysql/0012_worker_control_state.up.sql"),
+        down_sql: include_str!("../migrations/mysql/0012_worker_control_state.down.sql"),
         online_safe: false,
     },
 ];
@@ -498,7 +512,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             up.iter().map(|s| s.migration.version).collect::<Vec<_>>(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
 
         let current = [
@@ -513,6 +527,7 @@ mod tests {
             applied(9),
             applied(10),
             applied(11),
+            applied(12),
         ];
         assert!(
             plan(
@@ -533,7 +548,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             down.iter().map(|s| s.migration.version).collect::<Vec<_>>(),
-            [11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+            [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
         );
     }
 
@@ -587,7 +602,7 @@ mod tests {
                 &[],
                 Direction::Up,
                 MigrateOptions {
-                    target_version: Some(12),
+                    target_version: Some(13),
                     ..MigrateOptions::default()
                 }
             ),

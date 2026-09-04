@@ -16,6 +16,23 @@ use headgate_mysql::{MysqlStore, MysqlStoreOptions};
 // queue-local cleanup cannot isolate a global reclaim or policy mutation.
 static MYSQL_STORE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+#[tokio::test]
+async fn structured_attempt_logs_survive_ack() {
+    let _guard = MYSQL_STORE_TEST_LOCK.lock().await;
+    let Some(store) = store() else {
+        return;
+    };
+    let queue = format!(
+        "rust-my-logs-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    headgate_testkit::assert_structured_attempt_logs(store.as_ref(), &queue).await;
+}
+
 fn store() -> Option<Arc<MysqlStore>> {
     let Ok(url) = std::env::var("HG_TEST_MYSQL") else {
         eprintln!("HG_TEST_MYSQL not set; skipping mysql tests");

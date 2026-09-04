@@ -58,6 +58,7 @@
     "tabs": [
       {
         "tab": "Documentation",
+        "icon": "book-open-text",
         "groups": [
           {
             "group": "Get started",
@@ -82,6 +83,7 @@
             "group": "Guides",
             "pages": [
               "docs/guides/handlers",
+              "docs/guides/task-versioning",
               "docs/guides/handler-context",
               "docs/guides/enqueueing",
               "docs/guides/transactions-and-orms",
@@ -111,6 +113,7 @@
               "docs/operations/connection-budget",
               "docs/operations/multi-instance",
               "docs/operations/queue-and-runtime-management",
+              "docs/operations/archive-partitioning",
               "docs/operations/console"
             ]
           }
@@ -118,6 +121,7 @@
       },
       {
         "tab": "SDKs",
+        "icon": "package",
         "groups": [
           {
             "group": "Rust SDK",
@@ -147,6 +151,7 @@
       },
       {
         "tab": "Examples",
+        "icon": "code",
         "groups": [
           {
             "group": "Runnable examples",
@@ -162,10 +167,12 @@
       },
       {
         "tab": "API Reference",
+        "icon": "library",
         "openapi": "api/headgate.openapi.yaml"
       },
       {
         "tab": "Project",
+        "icon": "projector",
         "groups": [
           {
             "group": "Reference",

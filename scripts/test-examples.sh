@@ -14,6 +14,8 @@ cargo run --quiet --manifest-path examples/rust/Cargo.toml --bin progress
 cargo run --quiet --manifest-path examples/rust/Cargo.toml --bin snooze
 cargo run --quiet --manifest-path examples/rust/Cargo.toml --bin workflow
 cargo run --quiet --manifest-path examples/rust/Cargo.toml --bin encryption
+cargo run --quiet --manifest-path examples/rust/Cargo.toml --bin versioning
+cargo test --quiet --manifest-path examples/rust/Cargo.toml --bin versioning
 
 echo "== Go examples =="
 unformatted=$(find examples/go -name '*.go' -print0 | xargs -0 gofmt -l)
@@ -31,4 +33,5 @@ test -z "$unformatted" || { printf '%s\n' "$unformatted"; exit 1; }
   GOWORK=off go run ./sticky_routing
   GOWORK=off go run ./workflow
   GOWORK=off go run ./encryption
+  GOWORK=off go run ./versioning
 )

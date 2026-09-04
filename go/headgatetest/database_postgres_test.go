@@ -47,10 +47,16 @@ func TestPostgresTestDatabasesMigrateIsolateParallelTestsAndCleanup(t *testing.T
 	}
 	rightConn, err := right.Connect(ctx)
 	if err != nil {
-		leftConn.Close(ctx)
+		if closeErr := leftConn.Close(ctx); closeErr != nil {
+			t.Errorf("close left connection: %v", closeErr)
+		}
 		t.Fatal(err)
 	}
-	defer rightConn.Close(context.Background())
+	defer func() {
+		if err := rightConn.Close(context.Background()); err != nil {
+			t.Errorf("close right connection: %v", err)
+		}
+	}()
 
 	var leftInstalled, rightInstalled bool
 	if err := leftConn.QueryRow(ctx, "SELECT to_regclass('headgate_job') IS NOT NULL").Scan(&leftInstalled); err != nil {
@@ -73,7 +79,9 @@ func TestPostgresTestDatabasesMigrateIsolateParallelTestsAndCleanup(t *testing.T
 		t.Fatalf("parallel schemas leaked data: right count = %d", rightCount)
 	}
 
-	leftConn.Close(ctx)
+	if err := leftConn.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if err := left.Cleanup(ctx); err != nil {
 		t.Fatal(err)
 	}

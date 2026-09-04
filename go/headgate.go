@@ -10,7 +10,6 @@ package headgate
 import (
 	"context"
 	"database/sql/driver"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -21,6 +20,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/mujhtech/headgate/go/headgateshared"
 )
 
 // ---------- task identity ----------
@@ -121,42 +122,30 @@ type Worker[T Args] interface {
 	Work(ctx context.Context, job *Job[T]) error
 }
 
-type Checkpoint struct {
-	LastCompletedStep string
-	// CompletedSteps is the completed steps IN ORDER. Replay compares positionally: the
-	// step at index i of the new attempt must match CompletedSteps[i], or the step set
-	// changed under the checkpoint and the job goes to undecodable — never a silent
-	// restart.
-	CompletedSteps []string
-	// InProgressStep is the step that was running when the checkpoint was last written
-	// (written BEFORE the step's side effects); the reclaimer attributes a crash to it.
-	InProgressStep string
-	CursorStep     string
-	Cursor         []byte
-	// payload versioning × step replay — the step set this was written against. A resumed job whose step set
-	// no longer matches goes to Undecodable rather than silently restarting from step one.
-	SchemaVersion uint32
-	StepSetHash   string
-	// crash quarantine — crash counts per step. "Always dies at transcode" beats "dies".
-	CrashesByStep map[string]uint32
-}
+// Checkpoint remains available from the core package for compatibility. Its definition
+// lives in headgateshared so drivers and optional packages share one representation.
+type Checkpoint = headgateshared.Checkpoint
 
 // ---------- outcomes ----------
 
-type Outcome int
+type Outcome = headgateshared.Outcome
 
 const (
-	OutcomeSuccess     Outcome = iota
-	OutcomeRetry               // handler returned an error
-	OutcomeSkip                // stop retrying, archive
-	OutcomeRevoke              // drop entirely
-	OutcomeSnooze              // reschedule without consuming an attempt
-	OutcomeLeaseLost           // crash quarantine crash-attributed
-	OutcomeUndecodable         // payload versioning
+	OutcomeSuccess     = headgateshared.OutcomeSuccess
+	OutcomeRetry       = headgateshared.OutcomeRetry // handler returned an error
+	OutcomeSkip        = headgateshared.OutcomeSkip  // stop retrying, archive
+	OutcomeRevoke      = headgateshared.OutcomeRevoke
+	OutcomeSnooze      = headgateshared.OutcomeSnooze
+	OutcomeLeaseLost   = headgateshared.OutcomeLeaseLost
+	OutcomeUndecodable = headgateshared.OutcomeUndecodable
 	// OutcomeRateLimited is NOT a failure: the job returns to available and `Attempt`
 	// is not incremented. surveyed policy behavior — BullMQ and Sidekiq both treat it this way.
-	OutcomeRateLimited
+	OutcomeRateLimited = headgateshared.OutcomeRateLimited
 )
+
+func ParseOutcome(value string) (Outcome, bool) {
+	return headgateshared.ParseOutcome(value)
+}
 
 func (o ScheduleEventOutcome) Valid() bool {
 	switch o {
@@ -174,7 +163,7 @@ type JobResult struct {
 
 // MaxOpaqueSchemaVersion is the largest result/output schema version portable across
 // every backend, including PostgreSQL's signed integer columns.
-const MaxOpaqueSchemaVersion uint32 = 1<<31 - 1
+const MaxOpaqueSchemaVersion = headgateshared.MaxOpaqueSchema
 
 // JobOutput is the latest opaque output persisted by a running fenced attempt. Fence
 // identifies the attempt that wrote it; UpdatedAtMs comes from the store clock.
@@ -461,10 +450,15 @@ type Envelope struct {
 // documented default cost of one. HTTP APIs reject an explicitly supplied zero; the
 // store accepts zero only as the compatibility sentinel.
 func EffectiveWeight(weight uint32) uint32 {
-	if weight == 0 {
-		return 1
-	}
-	return weight
+	return headgateshared.EffectiveWeight(weight)
+}
+
+func EffectiveSchemaVersion(version uint32) uint32 {
+	return headgateshared.EffectiveSchemaVersion(version)
+}
+
+func EffectiveMaxAttempts(maxAttempts uint32) uint32 {
+	return headgateshared.EffectiveMaxAttempts(maxAttempts)
 }
 
 // EffectiveUniqueKey returns the versioned store key. Kind is included by default;
@@ -545,7 +539,9 @@ func isLowerHex(s string, n int) bool {
 	}
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if !(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f') {
+		isDigit := c >= '0' && c <= '9'
+		isLowerHexLetter := c >= 'a' && c <= 'f'
+		if !isDigit && !isLowerHexLetter {
 			return false
 		}
 	}
@@ -606,40 +602,14 @@ func ParseTraceparent(value string) (TraceContext, bool) {
 // so a header value containing one would have diffed. Empty renders as "" so the Redis
 // adapter can omit the field entirely rather than writing "{}".
 func EncodeHeaders(h map[string]string) string {
-	if len(h) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	enc := json.NewEncoder(&b)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(h); err != nil { // map[string]string cannot fail
-		return ""
-	}
-	return strings.TrimSuffix(b.String(), "\n")
+	return headgateshared.EncodeHeaders(h)
 }
 
 // DecodeHeaders parses that JSON back. Non-string values are DROPPED rather than
 // stringified: the envelope's header map is string->string, and silently coercing
 // {"a":1} into "1" would make a round trip lossy in a way nothing else here is.
 func DecodeHeaders(b []byte) map[string]string {
-	if len(b) == 0 {
-		return nil
-	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(b, &raw); err != nil {
-		return nil
-	}
-	out := make(map[string]string, len(raw))
-	for k, v := range raw {
-		var s string
-		if json.Unmarshal(v, &s) == nil {
-			out[k] = s
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
+	return headgateshared.DecodeHeaders(b)
 }
 
 // TraceContextOf is the dispatch-time read: pull TraceparentHeader out of an envelope's
@@ -697,10 +667,7 @@ func ValidateKind(kind string) error {
 // empty queue to "default" on write, so the idempotent enqueue identity id comparison must normalize the same
 // way or a replay that omitted the queue would read as a conflict against its own row.
 func EnqueueQueue(e Envelope) string {
-	if e.Queue == "" {
-		return "default"
-	}
-	return e.Queue
+	return headgateshared.EffectiveQueue(e.Queue)
 }
 
 // SameJobContent answers idempotent enqueue identity's question: does the row that already owns this id hold
@@ -714,6 +681,16 @@ func SameJobContent(e Envelope, kind, fingerprint, queue string) bool {
 	return e.Kind == kind && e.Fingerprint == fingerprint && EnqueueQueue(e) == queue
 }
 
+const (
+	MaxEnqueueBatchSize = 1_000
+	MaxJobPayloadBytes  = 1 << 20
+	MaxJobHeadersBytes  = 64 << 10
+	MaxJobHeaderCount   = 128
+	MaxJobIdentifierLen = 255
+	MaxUniqueKeyBytes   = 1 << 10
+	MaxEnqueueBytes     = 16 << 20
+)
+
 // ValidateEnqueue is the boundary validation every backend's Enqueue runs before it
 // writes anything — ONE function so the rule cannot drift between four adapters, and the
 // layer is the store because the API and the harnesses call Store.Enqueue directly, never
@@ -721,13 +698,63 @@ func SameJobContent(e Envelope, kind, fingerprint, queue string) bool {
 // on every backend rather than a constraint error from whichever row the database
 // reached first.
 func ValidateEnqueue(batch []Envelope) error {
+	if len(batch) > MaxEnqueueBatchSize {
+		return &InvalidError{Msg: "enqueue batch must contain at most 1000 jobs"}
+	}
 	seen := make(map[string]bool, len(batch))
+	totalBytes := 0
 	for _, e := range batch {
 		if e.ID == "" {
 			return &InvalidError{Msg: "envelope id must not be empty"}
 		}
 		if err := ValidateKind(e.Kind); err != nil {
 			return err
+		}
+		identifiers := [...]struct {
+			name  string
+			value string
+		}{
+			{"envelope id", e.ID},
+			{"queue", e.Queue},
+			{"partition_key", e.PartitionKey},
+			{"rate_class", e.RateClass},
+			{"fingerprint", e.Fingerprint},
+			{"periodic_schedule_id", e.PeriodicScheduleID},
+		}
+		for _, identifier := range identifiers {
+			if len(identifier.value) > MaxJobIdentifierLen {
+				return &InvalidError{Msg: identifier.name + " must be at most 255 bytes"}
+			}
+		}
+		if len(e.Payload) > MaxJobPayloadBytes {
+			return &InvalidError{Msg: "payload must be at most 1048576 bytes"}
+		}
+		if len(e.UniqueKey) > MaxUniqueKeyBytes {
+			return &InvalidError{Msg: "unique_key must be at most 1024 bytes"}
+		}
+		if len(e.Headers) > MaxJobHeaderCount {
+			return &InvalidError{Msg: "headers must contain at most 128 values"}
+		}
+		headerBytes := 0
+		for key, value := range e.Headers {
+			headerBytes += len(key) + len(value)
+		}
+		if headerBytes > MaxJobHeadersBytes {
+			return &InvalidError{Msg: "headers must total at most 65536 bytes"}
+		}
+		totalBytes += len(e.Payload) + headerBytes + len(e.ID) + len(e.Kind) + len(e.Queue) +
+			len(e.PartitionKey) + len(e.RateClass) + len(e.Fingerprint) + len(e.UniqueKey)
+		if totalBytes > MaxEnqueueBytes {
+			return &InvalidError{Msg: "enqueue batch data must total at most 16777216 bytes"}
+		}
+		if e.TimeoutMs < 0 {
+			return &InvalidError{Msg: "timeout_ms must be >= 0"}
+		}
+		if e.DeadlineMs < 0 {
+			return &InvalidError{Msg: "deadline_ms must be >= 0"}
+		}
+		if e.RetentionMs < 0 {
+			return &InvalidError{Msg: "retention_ms must be >= 0"}
 		}
 		if e.UniqueWindowMs < 0 {
 			return &InvalidError{Msg: "unique_window_ms must be >= 0"}
@@ -756,6 +783,11 @@ func ValidateEnqueue(batch []Envelope) error {
 				return &InvalidError{Msg: "tags must not contain duplicates"}
 			}
 			tags[tag] = struct{}{}
+			totalBytes += len(tag)
+		}
+		totalBytes += len(e.StickyWorker) + len(e.PeriodicScheduleID)
+		if totalBytes > MaxEnqueueBytes {
+			return &InvalidError{Msg: "enqueue batch data must total at most 16777216 bytes"}
 		}
 		if e.Pending && e.ScheduledAtMs != 0 {
 			return &InvalidError{Msg: "pending jobs cannot also set scheduled_at_ms"}
@@ -797,6 +829,45 @@ type AdmitRequest struct {
 	Capacity int
 	Lease    time.Duration
 	Quantum  int64 // tenant fairness per-partition fair share for this call
+}
+
+// NormalizeAdmitRequest applies the portable admission boundary shared by every store.
+func NormalizeAdmitRequest(req AdmitRequest) (AdmitRequest, int64, error) {
+	req.Queues = headgateshared.NormalizeQueues(req.Queues)
+	leaseMs, ok := headgateshared.DurationMillis(req.Lease)
+	if !ok {
+		return req, 0, &InvalidError{Msg: "lease must be >= 1ms"}
+	}
+	return req, leaseMs, nil
+}
+
+// ValidateAckRequest rejects outcomes that only the lease reclaimer may apply and
+// enforces snooze's positive delay at the common store boundary.
+func ValidateAckRequest(outcome Outcome, delayMs int64) error {
+	switch headgateshared.ValidateAck(outcome, delayMs) {
+	case headgateshared.AckLeaseLost:
+		return &InvalidError{Msg: "lease_lost is applied by the reclaimer, not acked"}
+	case headgateshared.AckSnoozeDelayRequired:
+		return &InvalidError{Msg: "snooze requires delayMs > 0"}
+	default:
+		return nil
+	}
+}
+
+const MaxOpaqueBytes = 32 * 1024 * 1024
+
+// ValidateOpaqueValue applies the common result/output storage boundary.
+func ValidateOpaqueValue(subject string, value JobResult) error {
+	switch headgateshared.ValidateOpaqueSchema(value.SchemaVersion) {
+	case headgateshared.OpaqueSchemaZero:
+		return &InvalidError{Msg: subject + " schema_version must be greater than zero"}
+	case headgateshared.OpaqueSchemaTooLarge:
+		return &InvalidError{Msg: subject + " schema_version exceeds the portable signed-integer limit"}
+	}
+	if len(value.Bytes) > MaxOpaqueBytes {
+		return &InvalidError{Msg: subject + " bytes exceed the 32 MiB limit"}
+	}
+	return nil
 }
 
 type Claim struct {
@@ -946,6 +1017,14 @@ type ProgressStore interface {
 
 type ProgressInspectStore interface {
 	GetJobProgress(ctx context.Context, id string) (*JobProgress, error)
+}
+
+// CheckpointInspectStore explicitly exposes resumable-step state. Cursor bytes may carry
+// application data, so ordinary job/list reads never include them.
+type CheckpointInspectStore interface {
+	// A nil checkpoint means the job does not exist. Existing jobs with no resumable
+	// progress return an empty Checkpoint.
+	GetJobCheckpoint(ctx context.Context, id string) (*Checkpoint, error)
 }
 
 // Tx is a caller-owned store transaction. Drivers wrap their concrete handle and
@@ -1102,6 +1181,14 @@ type QuietGroupMetrics struct {
 	Approximate       bool
 }
 
+func AgeMillis(nowMs, atMs int64) int64 {
+	return headgateshared.AgeMillis(nowMs, atMs)
+}
+
+func TimeToDrainMillis(backlog int64, arrivalRate, drainRate float64) *int64 {
+	return headgateshared.TimeToDrainMillis(backlog, arrivalRate, drainRate)
+}
+
 // NoisyPartitionKeys classifies noisy neighbours from observed in-flight skew (tenant fairness/backlog metrics).
 // A partition needs at least two in-flight jobs and more than twice the mean load of all
 // peers. A lone partition is never noisy. Integer 128-bit products keep the threshold
@@ -1149,6 +1236,16 @@ type RateClassConfig struct {
 	Paused bool
 }
 
+func ValidateRateClassConfig(cfg RateClassConfig) error {
+	if cfg.WindowMs < 1 {
+		return &InvalidError{Msg: "window_ms must be >= 1"}
+	}
+	if cfg.Limit < 0 || cfg.Burst < 1 {
+		return &InvalidError{Msg: "limit must be >= 0 and burst >= 1"}
+	}
+	return nil
+}
+
 type RateClassState struct {
 	Name            string
 	TokensAvailable int64
@@ -1180,6 +1277,15 @@ type AdmissionExplain struct {
 	Detail    map[string]string
 	// EstimatedAdmissionMs is nil when the block will not clear on its own.
 	EstimatedAdmissionMs *int64
+}
+
+func EvaluateAdmission(facts headgateshared.AdmissionFacts) *AdmissionExplain {
+	evaluation := headgateshared.EvaluateAdmission(facts)
+	return &AdmissionExplain{
+		State: facts.State, Admissible: evaluation.Admissible,
+		BlockedBy: evaluation.BlockedBy, Detail: evaluation.Detail,
+		EstimatedAdmissionMs: evaluation.ETA,
+	}
 }
 
 type HistoryBucket struct {
@@ -1232,6 +1338,13 @@ type WorkerMeta struct {
 	// signal; the two counters ride the wire instead of a float so the aggregate is
 	// exact and so neither language has to agree with the other about float formatting.
 	EmptyPolls uint64
+
+	// Status is the worker-acknowledged control state: running, quiet, restarting,
+	// or terminating. PendingCommand is the store mailbox and is populated only by
+	// inspection reads; workers never write it in a heartbeat.
+	Status         string
+	DutiesActive   bool
+	PendingCommand string
 }
 
 // Utilization is backlog metrics's Inflight / Concurrency. 0 when capacity is 0 — never a division
@@ -1260,6 +1373,22 @@ type BulkOp struct {
 	PartitionKey       string
 	OlderThanMs        *int64
 	DryRun             bool
+}
+
+func (op BulkOp) HasSelector() bool {
+	return op.Queue != "" || op.State != "" || op.Kind != "" || op.PartitionKey != "" || op.OlderThanMs != nil
+}
+
+func BulkActionStates(action string) ([]string, bool) {
+	return headgateshared.BulkActionStates(action)
+}
+
+func ValidWorkerCommand(command string) bool {
+	return headgateshared.ValidWorkerCommand(command)
+}
+
+func FormatGeneratedID(nowMs int64, processID int, sequence uint64) string {
+	return headgateshared.FormatGeneratedID(nowMs, processID, sequence)
 }
 
 type OperationStatus struct {
@@ -1338,7 +1467,8 @@ type InspectStore interface {
 	// "" = none.
 	HeartbeatWorker(ctx context.Context, w WorkerMeta) (command string, err error)
 	ListWorkers(ctx context.Context, staleAfterMs int64) ([]WorkerMeta, error)
-	// SignalWorker sets (or clears, with "") a worker's pending command.
+	// SignalWorker sets (or clears, with "") a worker's pending command. Runtimes
+	// clear every command after applying it, then publish the acknowledged state.
 	SignalWorker(ctx context.Context, workerID, command string) error
 	// DistinctKinds: kinds present among waiting jobs (bounded sample), for typed dispatch's
 	// startup warning about kinds no registered handler answers.
@@ -1552,32 +1682,43 @@ type ConcurrencyLimit struct {
 	OnSaturated SaturationStrategy
 }
 
+func ValidateConcurrencyLimit(cfg ConcurrencyLimit) error {
+	if cfg.Name == "" || cfg.Queue == "" {
+		return &InvalidError{Msg: "name and queue must not be empty"}
+	}
+	if cfg.MaxConcurrent == 0 {
+		return &InvalidError{Msg: "max_concurrent must be >= 1"}
+	}
+	if !cfg.OnSaturated.Valid() {
+		return &InvalidError{Msg: fmt.Sprintf("unknown saturation strategy `%s`", cfg.OnSaturated)}
+	}
+	return nil
+}
+
+func ValidateScheduleEventLimit(limit uint32) error {
+	if limit == 0 || limit > ScheduleEventLimit {
+		return &InvalidError{Msg: "schedule event limit must be between 1 and 100"}
+	}
+	return nil
+}
+
 // SaturationStrategy is the wire/storage spelling read by every atomic gate.
-type SaturationStrategy string
+type SaturationStrategy = headgateshared.SaturationStrategy
 
 const (
-	SaturateQueue          SaturationStrategy = "queue" // wait (default)
-	SaturateDiscard        SaturationStrategy = "discard"
-	SaturateCancelRunning  SaturationStrategy = "cancel_running"  // newest wins
-	SaturateCancelIncoming SaturationStrategy = "cancel_incoming" // oldest wins
+	SaturateQueue          = headgateshared.SaturateQueue // wait (default)
+	SaturateDiscard        = headgateshared.SaturateDiscard
+	SaturateCancelRunning  = headgateshared.SaturateCancelRunning
+	SaturateCancelIncoming = headgateshared.SaturateCancelIncoming
 )
-
-func (s SaturationStrategy) Valid() bool {
-	switch s {
-	case SaturateQueue, SaturateDiscard, SaturateCancelRunning, SaturateCancelIncoming:
-		return true
-	default:
-		return false
-	}
-}
 
 // MissedPolicy decides what happens to periodic runs missed during downtime.
 // surveyed policy behavior — NOTHING in the surveyed field backfills, including River, whose schedules live
 // in the leader's memory and can skip a tick entirely across an election.
-type MissedPolicy int
+type MissedPolicy = headgateshared.MissedPolicy
 
 const (
-	MissedSkip     MissedPolicy = iota // default, matches every other queue
-	MissedRunOnce                      // one catch-up run
-	MissedBackfill                     // up to N catch-up runs
+	MissedSkip     = headgateshared.MissedSkip // default, matches every other queue
+	MissedRunOnce  = headgateshared.MissedRunOnce
+	MissedBackfill = headgateshared.MissedBackfill
 )

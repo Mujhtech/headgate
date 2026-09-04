@@ -32,3 +32,9 @@ partition. Neither field overrides the other.
 `GET /jobs/{id}/admission` reports whether a job is admissible, which policy blocks it,
 and whether the condition is expected to clear. This is a first-class operational API,
 not a debug-only implementation detail.
+
+`blocked_by: null` does not mean an unknown policy. It means no admission policy is
+blocking the job. The job may already be running, may be pending explicit promotion, or
+may have reached a terminal state where admission no longer applies. Likewise,
+`estimated_admission_ms: null` means no time estimate is available; the blocking-policy
+name determines whether capacity can clear naturally or an operator must act.

@@ -18,6 +18,7 @@ readonly go_module_dirs=(
   go/headgateworkflow
 )
 readonly rust_crates=(
+  headgate-shared
   headgate-core
   headgate-macros
   headgate-proto
@@ -55,6 +56,13 @@ check_release() {
     python3 -c 'import json,sys; versions={p["version"] for p in json.load(sys.stdin)["packages"]}; print(next(iter(versions))) if len(versions)==1 else sys.exit("workspace crates do not share one version: "+", ".join(sorted(versions)))')
   if [[ $workspace_version != "$version" ]]; then
     echo "workspace version is $workspace_version, release version is $version" >&2
+    exit 1
+  fi
+
+  local go_version
+  go_version=$(sed -n 's/^const Version = "\([^"]*\)"$/\1/p' go/version.go)
+  if [[ $go_version != "$version" ]]; then
+    echo "Go version is $go_version, release version is $version" >&2
     exit 1
   fi
 

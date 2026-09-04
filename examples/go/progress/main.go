@@ -21,9 +21,14 @@ func run(ctx context.Context) error {
 	if err := headgate.RegisterFunc[renderVideo](
 		registry,
 		func(ctx context.Context, _ *headgate.Job[renderVideo]) error {
+			logger := headgate.Logger(ctx).With("video_id", "demo-1")
+			logger.Info("Decoding source")
 			if _, err := headgate.ReportProgress(ctx, 2, 10, "decoded source"); err != nil {
+				logger.Error("Could not report progress", "error", err)
 				return err
 			}
+			logger.Debug("Encoding frames", "frame", 700)
+			logger.Warn("Using software encoder", "reason", "GPU unavailable")
 			_, err := headgate.ReportProgress(ctx, 7, 10, "encoding frame 700")
 			return err
 		},

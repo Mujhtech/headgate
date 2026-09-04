@@ -82,6 +82,10 @@ fn operational_events_reach_bounded_metric_names() {
         queue: "default",
         count: 3,
     });
+    telemetry.on_event(Event::Completed {
+        kind: "mail.send",
+        ms: 12,
+    });
     telemetry.on_event(Event::WorkerMemory {
         worker: "worker-a",
         used_bytes: 90,
@@ -100,6 +104,7 @@ fn operational_events_reach_bounded_metric_names() {
         .map(|metric| metric.name())
         .collect();
     assert!(names.contains(&"headgate.jobs.admitted"));
+    assert!(names.contains(&"headgate.jobs.completed"));
     assert!(names.contains(&"headgate.worker.memory"));
     assert!(names.contains(&"headgate.worker.restarts"));
 }

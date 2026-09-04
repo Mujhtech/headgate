@@ -21,6 +21,12 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+func TestStructuredAttemptLogsSurviveAck(t *testing.T) {
+	queue := "go-redis-logs-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	store, _, _ := testStore(t, queue)
+	headgatetest.RequireStructuredAttemptLogs(t, store, queue)
+}
+
 func TestEnqueueBackpressureHotPathUsesConstantSizeCounters(t *testing.T) {
 	source, err := luaFS.ReadFile("lua/enqueue.lua")
 	if err != nil {
@@ -106,7 +112,7 @@ func TestEnqueueClassifiesAnUnreachableRedisWithoutMaskingInputErrors(t *testing
 	if err != nil {
 		t.Fatalf("construct lazy client: %v", err)
 	}
-	defer store.rdb.Close()
+	defer func() { _ = store.rdb.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 

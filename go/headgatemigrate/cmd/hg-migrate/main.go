@@ -65,6 +65,8 @@ MySQL instances are selected by the database in their URL.
 
 HG_DATABASE_URL and DATABASE_URL are used when --database-url is omitted.`
 
+var errUsage = errors.New("usage requested")
+
 func popValue(args *[]string, index int, flag string) (string, error) {
 	if index+1 >= len(*args) {
 		return "", fmt.Errorf("%s requires a value", flag)
@@ -102,7 +104,7 @@ func parseCLI(args []string, getenv func(string) string) (cli, error) {
 	}
 	for _, arg := range args {
 		if arg == "--help" || arg == "-h" {
-			return cli{}, errors.New(usage)
+			return cli{}, errUsage
 		}
 	}
 	var databaseURL string
@@ -268,12 +270,12 @@ func printSteps(result headgatemigrate.Result) {
 	}
 }
 
-func runPostgres(ctx context.Context, config cli) error {
+func runPostgres(ctx context.Context, config cli) (runErr error) {
 	conn, err := pgx.Connect(ctx, config.databaseURL)
 	if err != nil {
 		return err
 	}
-	defer conn.Close(ctx)
+	defer func() { runErr = errors.Join(runErr, conn.Close(ctx)) }()
 	switch config.command {
 	case up:
 		var result headgatemigrate.Result
@@ -371,7 +373,7 @@ func mysqlDSN(value string) (string, error) {
 		parsed.User.Username(), password, parsed.Host, database, query.Encode()), nil
 }
 
-func runMySQL(ctx context.Context, config cli) error {
+func runMySQL(ctx context.Context, config cli) (runErr error) {
 	dsn, err := mysqlDSN(config.databaseURL)
 	if err != nil {
 		return err
@@ -380,7 +382,7 @@ func runMySQL(ctx context.Context, config cli) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { runErr = errors.Join(runErr, db.Close()) }()
 	if err := db.PingContext(ctx); err != nil {
 		return err
 	}
@@ -464,7 +466,7 @@ func printList(backend headgatemigrate.Backend, applied []headgatemigrate.Applie
 func main() {
 	config, err := parseCLI(os.Args[1:], os.Getenv)
 	if err != nil {
-		if err.Error() == usage {
+		if errors.Is(err, errUsage) {
 			fmt.Println(usage)
 			return
 		}

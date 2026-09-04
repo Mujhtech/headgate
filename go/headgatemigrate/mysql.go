@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -86,7 +87,7 @@ SELECT version, name, checksum, applied_at_ms
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	result := make([]AppliedMigration, 0)
 	for rows.Next() {
 		var row AppliedMigration
@@ -141,16 +142,16 @@ SELECT table_name FROM information_schema.tables
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
-			rows.Close()
-			return nil, err
+			return nil, errors.Join(err, rows.Close())
 		}
 		tables[name] = true
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		return nil, errors.Join(err, rows.Close())
+	}
+	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	rows.Close()
 	for _, table := range requiredTables {
 		if !tables[table] {
 			missing = append(missing, "missing table "+table)
@@ -167,16 +168,16 @@ SELECT table_name, column_name FROM information_schema.columns
 	for rows.Next() {
 		var table, column string
 		if err := rows.Scan(&table, &column); err != nil {
-			rows.Close()
-			return nil, err
+			return nil, errors.Join(err, rows.Close())
 		}
 		columns[table+"."+column] = true
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		return nil, errors.Join(err, rows.Close())
+	}
+	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	rows.Close()
 	for _, column := range mysqlJobColumns {
 		if !columns["headgate_job."+column] {
 			missing = append(missing, "missing column headgate_job."+column)
@@ -205,16 +206,16 @@ SELECT DISTINCT index_name FROM information_schema.statistics
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		indexes[name] = true
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		_ = rows.Close()
 		return nil, err
 	}
-	rows.Close()
+	_ = rows.Close()
 	for _, index := range mysqlIndexes {
 		if !indexes[index] {
 			missing = append(missing, "missing index "+index)
@@ -231,16 +232,16 @@ SELECT trigger_name FROM information_schema.triggers
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		triggers[name] = true
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		_ = rows.Close()
 		return nil, err
 	}
-	rows.Close()
+	_ = rows.Close()
 	for _, trigger := range mysqlTriggers {
 		if !triggers[trigger] {
 			missing = append(missing, "missing trigger "+trigger)
@@ -356,7 +357,7 @@ func MigrateMySQLWithLockNamespace(
 	if err != nil {
 		return Result{}, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if _, err := conn.ExecContext(ctx, createMySQLHistory); err != nil {
 		return Result{}, err
 	}
@@ -448,7 +449,7 @@ func AdoptMySQLWithLockNamespace(
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if _, err := conn.ExecContext(ctx, createMySQLHistory); err != nil {
 		return nil, err
 	}
@@ -590,9 +591,10 @@ func splitMySQLStatements(sqlText string) ([]string, error) {
 		case state == single || state == double || state == backtick:
 			statement.WriteByte(ch)
 			quote := byte('\'')
-			if state == double {
+			switch state {
+			case double:
 				quote = '"'
-			} else if state == backtick {
+			case backtick:
 				quote = '`'
 			}
 			if ch == '\\' && index+1 < len(sqlText) {

@@ -44,7 +44,7 @@ func TestLiveMySQLMigrationLifecycleAndDriftRejection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close()
+	defer func() { _ = admin.Close() }()
 	database := fmt.Sprintf("hg_migrate_go_%d", os.Getpid())
 	var exists int
 	if err := admin.QueryRowContext(ctx, `
@@ -71,26 +71,26 @@ SELECT count(*) FROM information_schema.schemata WHERE schema_name = ?`, databas
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(2)
 	if err := db.PingContext(ctx); err != nil {
 		t.Fatal(err)
 	}
 
 	result, err := MigrateMySQL(ctx, db, Up, Options{})
-	if err != nil || len(result.Steps) != 11 || result.Steps[0].Migration.Version != 1 || result.Steps[10].Migration.Version != 11 {
+	if err != nil || len(result.Steps) != 12 || result.Steps[0].Migration.Version != 1 || result.Steps[11].Migration.Version != 12 {
 		t.Fatalf("fresh up = %#v, %v", result, err)
 	}
 	validation, err := ValidateMySQL(ctx, db)
-	if err != nil || !validation.OK() || validation.CurrentVersion != 11 {
+	if err != nil || !validation.OK() || validation.CurrentVersion != 12 {
 		t.Fatalf("fresh validation = %#v, %v", validation, err)
 	}
 	dry, err := MigrateMySQL(ctx, db, Down, Options{DryRun: true})
-	if err != nil || !dry.DryRun || len(dry.Steps) != 11 {
+	if err != nil || !dry.DryRun || len(dry.Steps) != 12 {
 		t.Fatalf("down dry-run = %#v, %v", dry, err)
 	}
 	downResult, err := MigrateMySQL(ctx, db, Down, Options{})
-	if err != nil || len(downResult.Steps) != 11 {
+	if err != nil || len(downResult.Steps) != 12 {
 		t.Fatalf("down = %#v, %v", downResult, err)
 	}
 	var jobExists, historyRows int
@@ -125,7 +125,7 @@ UPDATE headgate_schema_migration SET checksum = 'tampered' WHERE version = 1`); 
 		t.Fatalf("unversioned up error = %v", err)
 	}
 	adopted, err := AdoptMySQL(ctx, db)
-	if err != nil || len(adopted) != 11 || adopted[10].Version != 11 {
+	if err != nil || len(adopted) != 12 || adopted[11].Version != 12 {
 		t.Fatalf("adopted = %#v, %v", adopted, err)
 	}
 	validation, err = ValidateMySQL(ctx, db)
@@ -167,7 +167,7 @@ func TestLiveMySQLConfiguredLockNamespaceAvoidsAnApplicationLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close()
+	defer func() { _ = admin.Close() }()
 	database := fmt.Sprintf("hg_lock_go_%d", os.Getpid())
 	var exists int
 	if err := admin.QueryRowContext(ctx, `
@@ -190,7 +190,7 @@ SELECT count(*) FROM information_schema.schemata WHERE schema_name = ?`, databas
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer applicationConn.Close()
+	defer func() { _ = applicationConn.Close() }()
 	releaseAll := func() {
 		var released int
 		if err := applicationConn.QueryRowContext(ctx, "SELECT RELEASE_ALL_LOCKS()").Scan(&released); err != nil {
@@ -225,7 +225,7 @@ SELECT count(*) FROM information_schema.schemata WHERE schema_name = ?`, databas
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(2)
 	if err := db.PingContext(ctx); err != nil {
 		t.Fatal(err)
@@ -259,7 +259,7 @@ SELECT count(*) FROM information_schema.schemata WHERE schema_name = ?`, databas
 	}
 	select {
 	case migrated := <-done:
-		if migrated.err != nil || len(migrated.result.Steps) != 11 {
+		if migrated.err != nil || len(migrated.result.Steps) != 12 {
 			t.Fatalf("configured migration = %#v, %v", migrated.result, migrated.err)
 		}
 	case <-time.After(20 * time.Second):

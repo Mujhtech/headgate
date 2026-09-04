@@ -19,6 +19,9 @@ type listener struct {
 	connString string
 	channel    string
 	started    atomic.Bool
+	ctx        context.Context
+	cancel     context.CancelFunc
+	done       chan struct{}
 
 	mu   sync.Mutex
 	subs map[chan string]struct{}
@@ -27,11 +30,18 @@ type listener struct {
 // WithListen enables push wakeup on a pool-constructed store by supplying a connection
 // string for the dedicated LISTEN connection.
 func (s *PgxStore) WithListen(connString string) *PgxStore {
+	if s.listen != nil {
+		s.listen.close()
+	}
 	channel := "headgate_wakeup"
 	if s.pool.namespace.name() != "" {
 		channel = s.pool.namespace.wakeupChannel()
 	}
-	s.listen = &listener{connString: connString, channel: channel, subs: map[chan string]struct{}{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.listen = &listener{
+		connString: connString, channel: channel, ctx: ctx, cancel: cancel,
+		done: make(chan struct{}), subs: map[chan string]struct{}{},
+	}
 	return s
 }
 
@@ -88,20 +98,28 @@ func (l *listener) ensureStarted() {
 		return
 	}
 	go func() {
+		defer close(l.done)
 		for {
-			l.listenOnce()
-			time.Sleep(time.Second) // reconnect backoff; missed = latency, not loss
+			l.listenOnce(l.ctx)
+			timer := time.NewTimer(time.Second)
+			select {
+			case <-timer.C:
+			case <-l.ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return
+			}
 		}
 	}()
 }
 
-func (l *listener) listenOnce() {
-	ctx := context.Background()
+func (l *listener) listenOnce(ctx context.Context) {
 	conn, err := pgx.Connect(ctx, l.connString)
 	if err != nil {
 		return
 	}
-	defer conn.Close(context.Background())
+	defer func() { _ = conn.Close(context.Background()) }()
 	if _, err := conn.Exec(ctx, "LISTEN "+pgx.Identifier{l.channel}.Sanitize()); err != nil {
 		return
 	}
@@ -118,5 +136,15 @@ func (l *listener) listenOnce() {
 			}
 		}
 		l.mu.Unlock()
+	}
+}
+
+func (l *listener) close() {
+	if l == nil {
+		return
+	}
+	l.cancel()
+	if l.started.Load() {
+		<-l.done
 	}
 }

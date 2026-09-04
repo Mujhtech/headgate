@@ -27,6 +27,7 @@ paths:
   /queues:
     get:
       summary: List queues with backlog derivatives
+      parameters: [{$ref: '#/components/parameters/ControlLimit'}, {$ref: '#/components/parameters/ControlCursor'}]
       responses:
         '200':
           description: Queue backlog and throughput summaries.
@@ -169,13 +170,13 @@ paths:
               type: object
               required: [kind, payload]
               properties:
-                kind: {type: string}
+                kind: {type: string, maxLength: 128}
                 schema_version: {type: integer, default: 1}
-                payload: {type: string, contentEncoding: base64}
-                queue: {type: string, default: default}
+                payload: {type: string, contentEncoding: base64, maxLength: 1398104}
+                queue: {type: string, default: default, maxLength: 255}
                 priority: {type: integer}
-                partition_key: {type: string}
-                rate_class: {type: string}
+                partition_key: {type: string, maxLength: 255}
+                rate_class: {type: string, maxLength: 255}
                 weight:
                   type: integer
                   minimum: 1
@@ -206,18 +207,25 @@ paths:
     get:
       summary: Job detail — attempts timeline, errors, and per-attempt logs.
       description: |
-        River's detail view shows a timeline plus a per-attempt section with timing, the
-        error, and execution logs (its `riverlog` middleware persists them to the job).
-        Per-attempt logs are the difference between "it failed again" and knowing why, so
-        the envelope carries them rather than sending the operator to a log aggregator
-        with a job id and hope. `include_payload` applies here too.
+        Attempt history includes errors and logs saved at acknowledgement, not a live log stream.
+        Each attempt's logs property remains an array of strings. Plain strings are info-level
+        messages. Structured entries start with U+001E followed by "headgate-log-v1:" and a
+        JSON object: level (debug/info/warn/error), at_ms (worker capture time), message,
+        optional fields (scalar values), and optional truncated (boolean). Each encoded entry
+        is bounded to 2048 UTF-8 bytes. Unknown versions or malformed entries should display
+        as literal text. Log timestamps do not participate in store policy or lease decisions.
+        Logs may contain application data and are not encrypted by payload encryption.
+        `include_payload` applies to the job payload, not attempt logs.
       parameters:
         - {$ref: '#/components/parameters/Id'}
         - {name: include_payload, in: query, schema: {type: boolean, default: false}}
       responses: {'200': {description: OK}}
     delete: {parameters: [{$ref: '#/components/parameters/Id'}], responses: {'204': {description: Deleted}}}
   /jobs/{id}/retry:
-    post: {parameters: [{$ref: '#/components/parameters/Id'}], responses: {'204': {description: Moved to available}}}
+    post:
+      summary: Revive an archived or cancelled job and move it to available.
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses: {'204': {description: Moved to available}, '400': {description: Job is not archived or cancelled}}
   /jobs/{id}/promote:
     post:
       summary: Make an explicitly pending job available.
@@ -291,6 +299,36 @@ paths:
                   updated_at_ms: {type: integer, minimum: 1}
         '404': {description: Job missing or no progress was reported}
         '501': {description: Backend does not implement progress storage}
+  /jobs/{id}/checkpoint:
+    get:
+      summary: Inspect the durable resumable-step checkpoint for one job.
+      description: |
+        This is an explicit inspection endpoint because cursor bytes may contain
+        application data. Ordinary job detail and list responses never include checkpoint
+        or cursor state. An existing job that has not used resumable steps returns an
+        empty checkpoint; 404 means the job itself does not exist.
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200':
+          description: Current durable checkpoint, including an empty checkpoint.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [last_completed_step, completed_steps, in_progress_step, cursor_step, cursor, schema_version, step_set_hash, crashes_by_step]
+                properties:
+                  last_completed_step: {type: [string, 'null']}
+                  completed_steps: {type: array, items: {type: string}}
+                  in_progress_step: {type: [string, 'null']}
+                  cursor_step: {type: [string, 'null']}
+                  cursor: {type: [string, 'null'], contentEncoding: base64}
+                  schema_version: {type: integer, minimum: 0, maximum: 4294967295}
+                  step_set_hash: {type: string}
+                  crashes_by_step:
+                    type: object
+                    additionalProperties: {type: integer, minimum: 0, maximum: 4294967295}
+        '404': {description: Job missing}
+        '501': {description: Backend does not implement checkpoint inspection}
   /jobs/{id}/cancel:
     post:
       summary: Cancel a RUNNING job. apalis dropped this capability between 0.7.4 and 1.0-rc.
@@ -362,10 +400,13 @@ paths:
   /partitions:
     get:
       summary: Show which partitions are being throttled and by how much.
-      parameters: [{name: queue, in: query, required: true, schema: {type: string}}]
+      parameters: [{name: queue, in: query, required: true, schema: {type: string}}, {$ref: '#/components/parameters/ControlLimit'}, {$ref: '#/components/parameters/ControlCursor'}]
       responses: {'200': {description: OK}}
   /quarantine:
-    get: {summary: List fingerprints that have repeatedly crashed workers., responses: {'200': {description: OK}}}
+    get:
+      summary: List fingerprints that have repeatedly crashed workers.
+      parameters: [{$ref: '#/components/parameters/ControlLimit'}, {$ref: '#/components/parameters/ControlCursor'}]
+      responses: {'200': {description: OK}}
   /quarantine/{fingerprint}:
     delete:
       summary: Release a quarantined fingerprint. Deliberate operator action.
@@ -373,7 +414,31 @@ paths:
       responses: {'204': {description: Released}}
 
   /workers:
-    get: {responses: {'200': {description: OK}}}
+    get:
+      summary: List live workers and their acknowledged control state.
+      parameters: [{$ref: '#/components/parameters/ControlLimit'}, {$ref: '#/components/parameters/ControlCursor'}]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    worker_id: {type: string}
+                    host: {type: string}
+                    pid: {type: integer}
+                    queues: {type: array, items: {type: string}}
+                    concurrency: {type: integer}
+                    inflight: {type: integer}
+                    heartbeat_at_ms: {type: integer}
+                    status: {type: string, enum: [running, quiet, restarting, terminating]}
+                    duties_active: {type: boolean}
+                    pending_command:
+                      type: [string, "null"]
+                      enum: [quiet, resume, restart, terminate, resign, null]
   /cluster:
     get:
       summary: Show fleet capacity and queues with no live workers.
@@ -424,7 +489,8 @@ paths:
       summary: Send control to a worker on its next heartbeat.
       description: |
         Faktory's BEAT carries quiet/terminate; here it is one column on the worker row,
-        read back by the heartbeat upsert. `quiet` pauses admission (in-flight work
+        read back by the heartbeat upsert. The list endpoint separates the pending
+        command from the worker-acknowledged status. `quiet` pauses admission (in-flight work
         finishes), `resume` resumes, `terminate` shuts the worker down gracefully, and
         `resign` releases only this worker's singleton duty leases for immediate takeover. An
         operator drains a fleet without a deploy. null clears a pending signal.
@@ -515,14 +581,22 @@ paths:
                 properties:
                   admissible: {type: boolean}
                   blocked_by:
-                    type: string
-                    enum: [rate_class, concurrency_limit, fairness, quarantine, schedule, queue_paused]
+                    type: [string, "null"]
+                    enum: [rate_class, concurrency_limit, fairness, quarantine, schedule, queue_paused, null]
+                    description: |
+                      The policy currently preventing admission. Null means no policy is
+                      blocking the job: it may already be running, be pending promotion,
+                      or have reached a terminal state. Use `detail.state` to distinguish
+                      those lifecycle cases.
                   detail:
                     type: object
                     description: State of the blocking policy — tokens left, position in the partition queue, crash count.
                   estimated_admission_ms:
                     type: [integer, "null"]
-                    description: null when the block will not clear on its own (quarantine, paused queue).
+                    description: |
+                      Estimated wait when a time-based estimate can be calculated. Null
+                      means no estimate is available; it does not by itself mean the
+                      condition requires operator action.
 
   /jobs/actions:
     post:
@@ -637,6 +711,7 @@ paths:
   /periodic:
     get:
       summary: Registered periodic/cron entries.
+      parameters: [{$ref: '#/components/parameters/ControlLimit'}, {$ref: '#/components/parameters/ControlCursor'}]
       responses: {'200': {description: OK}}
   /periodic/{id}:
     put:
@@ -742,6 +817,15 @@ components:
     Queue: {name: queue, in: path, required: true, schema: {type: string}}
     Id:    {name: id,    in: path, required: true, schema: {type: string}}
     Name:  {name: name,  in: path, required: true, schema: {type: string}}
+    ControlLimit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 200, default: 200}
+    ControlCursor:
+      name: cursor
+      in: query
+      description: Zero-based offset returned in the x-next-cursor response header.
+      schema: {type: integer, minimum: 0, default: 0}
     IdempotencyKey:
       name: Idempotency-Key
       in: header

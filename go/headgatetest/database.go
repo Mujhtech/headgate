@@ -3,6 +3,7 @@ package headgatetest
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -34,7 +35,7 @@ type PostgresTestDatabase struct {
 	cleanupErr  error
 }
 
-func CreatePostgresTestDatabase(ctx context.Context, conninfo string) (*PostgresTestDatabase, error) {
+func CreatePostgresTestDatabase(ctx context.Context, conninfo string) (database *PostgresTestDatabase, resultErr error) {
 	adminConfig, err := pgx.ParseConfig(conninfo)
 	if err != nil {
 		return nil, fmt.Errorf("headgatetest: bad Postgres conninfo: %w", err)
@@ -43,7 +44,7 @@ func CreatePostgresTestDatabase(ctx context.Context, conninfo string) (*Postgres
 	if err != nil {
 		return nil, fmt.Errorf("headgatetest: Postgres connect: %w", err)
 	}
-	defer admin.Close(ctx)
+	defer func() { resultErr = errors.Join(resultErr, admin.Close(ctx)) }()
 	schema := uniqueName("pg")
 	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
 		return nil, fmt.Errorf("headgatetest: create schema %s: %w", schema, err)
@@ -76,7 +77,7 @@ func (d *PostgresTestDatabase) Cleanup(ctx context.Context) error {
 			d.cleanupErr = err
 			return
 		}
-		defer admin.Close(ctx)
+		defer func() { d.cleanupErr = errors.Join(d.cleanupErr, admin.Close(ctx)) }()
 		_, d.cleanupErr = admin.Exec(ctx, "DROP SCHEMA "+d.Schema+" CASCADE")
 	})
 	return d.cleanupErr
@@ -136,7 +137,7 @@ func mysqlConfig(value, database string) (*mysqlDriver.Config, error) {
 	}, nil
 }
 
-func CreateMySQLTestDatabase(ctx context.Context, value string) (*MySQLTestDatabase, error) {
+func CreateMySQLTestDatabase(ctx context.Context, value string) (databaseResult *MySQLTestDatabase, resultErr error) {
 	adminConfig, err := mysqlConfig(value, "")
 	if err != nil {
 		return nil, fmt.Errorf("headgatetest: bad MySQL URL/DSN: %w", err)
@@ -145,7 +146,7 @@ func CreateMySQLTestDatabase(ctx context.Context, value string) (*MySQLTestDatab
 	if err != nil {
 		return nil, err
 	}
-	defer admin.Close()
+	defer func() { resultErr = errors.Join(resultErr, admin.Close()) }()
 	database := uniqueName("mysql")
 	if _, err := admin.ExecContext(ctx, "CREATE DATABASE "+database); err != nil {
 		return nil, fmt.Errorf("headgatetest: create database %s: %w", database, err)
@@ -177,7 +178,7 @@ func (d *MySQLTestDatabase) Cleanup(ctx context.Context) error {
 			d.cleanupErr = err
 			return
 		}
-		defer admin.Close()
+		defer func() { d.cleanupErr = errors.Join(d.cleanupErr, admin.Close()) }()
 		_, d.cleanupErr = admin.ExecContext(ctx, "DROP DATABASE "+d.Database)
 	})
 	return d.cleanupErr

@@ -74,6 +74,63 @@ Roots are promoted first. A child becomes available only after every dependency 
 If an upstream job reaches a failed terminal state, descendants that never ran are deleted
 and the coordinator archives.
 
+## Retention during long workflows
+
+The builder raises every child retention value to at least the workflow retention. On each
+tick, the coordinator copies newly observed completions into its fenced checkpoint before
+it promotes dependent work. This makes completion evidence durable even when an early job
+row expires while a later task is still running or retrying.
+
+If operators must retain every child's full job detail, choose a workflow retention that
+covers the expected maximum workflow runtime plus the desired inspection window. Dependency
+correctness no longer depends on keeping every completed row for that entire time. A missing
+node without recorded completion evidence remains a workflow failure.
+
+## Long-running tasks and lease loss
+
+The runner renews leases while a handler is executing. A suspended laptop, stopped
+container, network partition, or overloaded process cannot renew, so the store eventually
+reclaims the expired lease and counts a crash. That is expected recovery behavior: the old
+attempt is fenced and a later attempt owns the job.
+
+Make long stages resumable instead of relying on one uninterrupted process lifetime. Use a
+named cursor step, persist the cursor after each safely repeatable unit, and stop promptly
+when the handler context is cancelled.
+
+<CodeGroup>
+
+```rust Rust
+let cursor_ctx = ctx.clone();
+ctx.step_cursor("import-pages", move |cursor| {
+    let ctx = cursor_ctx.clone();
+    async move {
+        let mut page = decode_page(cursor)?;
+        while page < total_pages {
+            import_page(page).await?;
+            page += 1;
+            ctx.set_cursor(serde_json::to_vec(&page)?).await?;
+        }
+        Ok(())
+    }
+}).await?;
+```
+
+```go Go
+err := headgate.StepCursor(ctx, "import-pages", func(ctx context.Context, cursor PageCursor) error {
+    for page := cursor.Page + 1; page <= totalPages; page++ {
+        if err := importPage(ctx, page); err != nil { return err }
+        if err := headgate.SetCursor(ctx, PageCursor{Page: page}); err != nil { return err }
+    }
+    return nil
+})
+```
+
+</CodeGroup>
+
+Cursor persistence is fence-verified. If the lease has already been reclaimed, the write
+fails and the stale attempt must stop; the new attempt resumes from the last cursor that
+the store accepted.
+
 <Info>
 This first workflow slice is immutable. Signals, timers, graph mutation, nested workflows,
 and workflow-level retry are not claimed yet.

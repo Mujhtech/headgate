@@ -101,7 +101,7 @@ impl Workflow {
             if envelope.id.is_empty() {
                 envelope.id = format!("{}:{}", self.id, node.name);
             }
-            if envelope.retention_ms == 0 {
+            if envelope.retention_ms < self.retention_ms {
                 envelope.retention_ms = self.retention_ms;
             }
             envelope.pending = true;
@@ -221,6 +221,11 @@ pub struct CoordinatorTask {
     nodes: Vec<NodeSpec>,
 }
 
+#[derive(Default, Serialize, Deserialize)]
+struct WorkflowCursor {
+    completed: Vec<String>,
+}
+
 impl Task for CoordinatorTask {
     const TYPE: &'static str = "headgate:workflow";
     fn encode(&self) -> Result<Vec<u8>, CodecError> {
@@ -241,14 +246,26 @@ pub fn register_coordinator(
     if poll_interval.as_millis() == 0 {
         return Err("workflow poll interval must be at least 1ms".into());
     }
-    registry.register::<CoordinatorTask, _, _>(move |_ctx: JobCtx, task: CoordinatorTask| {
+    registry.register::<CoordinatorTask, _, _>(move |ctx: JobCtx, task: CoordinatorTask| {
         let inspect = inspect.clone();
         async move {
-            match tick(inspect.as_ref(), &task).await? {
-                Tick::Waiting => Err(Control::Snooze(poll_interval).into()),
-                Tick::Succeeded => Ok(()),
-                Tick::Failed => Err(Control::Skip.into()),
-            }
+            let cursor_ctx = ctx.clone();
+            ctx.step_cursor("headgate:workflow-state", move |cursor| async move {
+                let cursor = cursor
+                    .map(|bytes| serde_json::from_slice::<WorkflowCursor>(&bytes))
+                    .transpose()
+                    .map_err(|error| -> JobError { Box::new(error) })?
+                    .unwrap_or_default();
+                let mut completed = completed_set(&task, &cursor.completed);
+                match tick_with_evidence(inspect.as_ref(), &task, &mut completed, Some(&cursor_ctx))
+                    .await?
+                {
+                    Tick::Waiting => Err(Control::Snooze(poll_interval).into()),
+                    Tick::Succeeded => Ok(()),
+                    Tick::Failed => Err(Control::Skip.into()),
+                }
+            })
+            .await
         }
     })
 }
@@ -260,7 +277,12 @@ enum Tick {
     Failed,
 }
 
-async fn tick(inspect: &dyn Inspect, workflow: &CoordinatorTask) -> Result<Tick, JobError> {
+async fn tick_with_evidence(
+    inspect: &dyn Inspect,
+    workflow: &CoordinatorTask,
+    completed: &mut HashSet<String>,
+    persist_ctx: Option<&JobCtx>,
+) -> Result<Tick, JobError> {
     validate_coordinator(workflow).map_err(|error| -> JobError { Box::new(error) })?;
     let reads: Vec<(String, String)> = workflow
         .nodes
@@ -275,33 +297,54 @@ async fn tick(inspect: &dyn Inspect, workflow: &CoordinatorTask) -> Result<Tick,
         .try_collect()
         .await?;
     let state: HashMap<String, Option<headgate_core::JobSummary>> = entries.into_iter().collect();
+    let mut changed = false;
+    for node in &workflow.nodes {
+        if state
+            .get(node.name.as_str())
+            .and_then(Option::as_ref)
+            .is_some_and(|job| job.state == "completed")
+            && completed.insert(node.name.clone())
+        {
+            changed = true;
+        }
+    }
+    if changed && let Some(ctx) = persist_ctx {
+        let cursor = WorkflowCursor {
+            completed: completed_names(workflow, completed),
+        };
+        let bytes = serde_json::to_vec(&cursor).map_err(|error| -> JobError { Box::new(error) })?;
+        ctx.set_cursor(bytes).await?;
+    }
     let mut mutations = Vec::new();
     for node in &workflow.nodes {
-        let Some(job) = state.get(node.name.as_str()).and_then(Option::as_ref) else {
-            continue;
-        };
-        if job.state != "pending" {
+        if effective_state(
+            state.get(node.name.as_str()).and_then(Option::as_ref),
+            node.name.as_str(),
+            completed,
+        ) != Some("pending")
+        {
             continue;
         }
-        let dep_failed =
-            node.deps.iter().any(
-                |dep| match state.get(dep.as_str()).and_then(Option::as_ref) {
-                    None => true,
-                    Some(j) => matches!(
-                        j.state.as_str(),
-                        "archived" | "cancelled" | "quarantined" | "undecodable"
-                    ),
-                },
-            );
+        let dep_failed = node.deps.iter().any(|dep| {
+            matches!(
+                effective_state(
+                    state.get(dep.as_str()).and_then(Option::as_ref),
+                    dep,
+                    completed,
+                ),
+                None | Some("archived" | "cancelled" | "quarantined" | "undecodable")
+            )
+        });
         if dep_failed {
             mutations.push((node.job_id.clone(), true));
             continue;
         }
         let deps_complete = node.deps.iter().all(|dep| {
-            state
-                .get(dep.as_str())
-                .and_then(Option::as_ref)
-                .is_some_and(|j| j.state == "completed")
+            effective_state(
+                state.get(dep.as_str()).and_then(Option::as_ref),
+                dep,
+                completed,
+            ) == Some("completed")
         });
         if deps_complete {
             mutations.push((node.job_id.clone(), false));
@@ -323,11 +366,11 @@ async fn tick(inspect: &dyn Inspect, workflow: &CoordinatorTask) -> Result<Tick,
     }
     let mut failed = false;
     for node in &workflow.nodes {
-        match state
-            .get(node.name.as_str())
-            .and_then(Option::as_ref)
-            .map(|j| j.state.as_str())
-        {
+        match effective_state(
+            state.get(node.name.as_str()).and_then(Option::as_ref),
+            node.name.as_str(),
+            completed,
+        ) {
             Some("completed") => {}
             None | Some("archived" | "cancelled" | "quarantined" | "undecodable") => failed = true,
             _ => return Ok(Tick::Waiting),
@@ -338,6 +381,37 @@ async fn tick(inspect: &dyn Inspect, workflow: &CoordinatorTask) -> Result<Tick,
     } else {
         Tick::Succeeded
     })
+}
+
+fn completed_set(workflow: &CoordinatorTask, names: &[String]) -> HashSet<String> {
+    let valid: HashSet<&str> = workflow
+        .nodes
+        .iter()
+        .map(|node| node.name.as_str())
+        .collect();
+    names
+        .iter()
+        .filter(|name| valid.contains(name.as_str()))
+        .cloned()
+        .collect()
+}
+
+fn completed_names(workflow: &CoordinatorTask, completed: &HashSet<String>) -> Vec<String> {
+    workflow
+        .nodes
+        .iter()
+        .filter(|node| completed.contains(node.name.as_str()))
+        .map(|node| node.name.clone())
+        .collect()
+}
+
+fn effective_state<'a>(
+    job: Option<&'a headgate_core::JobSummary>,
+    name: &str,
+    completed: &HashSet<String>,
+) -> Option<&'a str> {
+    job.map(|job| job.state.as_str())
+        .or_else(|| completed.contains(name).then_some("completed"))
 }
 
 fn validate_coordinator(workflow: &CoordinatorTask) -> Result<(), WorkflowError> {
@@ -412,6 +486,37 @@ mod tests {
         assert!(batch[1..].iter().all(|e| e.pending && e.retention_ms > 0));
         let task = CoordinatorTask::decode(&batch[0].payload).unwrap();
         assert_eq!(task.nodes[3].deps, ["left", "right"]);
+    }
+
+    #[test]
+    fn prepare_raises_short_child_retention_to_workflow_retention() {
+        let mut short = env("task:short-retention");
+        short.retention_ms = 1;
+        let batch = Workflow::new("wf-retention")
+            .retention(Duration::from_secs(3 * 60 * 60))
+            .unwrap()
+            .add("task", short, Vec::<String>::new())
+            .prepare()
+            .unwrap();
+        assert_eq!(batch[1].retention_ms, 3 * 60 * 60 * 1000);
+    }
+
+    #[test]
+    fn retained_completion_survives_a_missing_job_row() {
+        let task = CoordinatorTask {
+            workflow_id: "wf".into(),
+            nodes: vec![NodeSpec {
+                name: "prepare".into(),
+                job_id: "prepare".into(),
+                deps: Vec::new(),
+            }],
+        };
+        let completed = completed_set(&task, &["prepare".into()]);
+        assert_eq!(
+            effective_state(None, "prepare", &completed),
+            Some("completed")
+        );
+        assert_eq!(effective_state(None, "unknown", &completed), None);
     }
 
     #[test]

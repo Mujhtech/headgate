@@ -26,9 +26,25 @@ consuming an attempt. When all nodes complete it completes normally. If an upstr
 archives, is cancelled, quarantined, becomes undecodable, is revoked, or disappears, any
 still-pending descendants are deleted before they can run and the coordinator archives.
 
-Children with zero retention are raised to the workflow retention (seven days by
-default). This is required because a coordinator must distinguish successful completion
-from a deleted/missing dependency. Positive task-specific retention is preserved.
+Every child's retention is raised to at least the workflow retention (seven days by
+default). The coordinator also records observed completions in its own fenced checkpoint
+before promoting descendants. That completion evidence survives an early child's retention
+expiry, so a long retry cannot turn work that already succeeded into a missing dependency.
+An unrecorded missing child still fails the workflow because the coordinator has no durable
+proof that it completed.
+
+Retention is measured from each child's own finalization time, not from workflow completion.
+To keep every child detail visible after a long workflow finishes, configure at least the
+expected maximum workflow runtime plus the desired post-completion inspection window. The
+checkpoint evidence protects dependency correctness; it is not a replacement for the
+expired child's payload, logs, result, or attempt history.
+
+The runner renews the lease of a long-running child, but it cannot renew while its host is
+suspended or disconnected. Reclaiming that expired lease and incrementing the crash count
+is expected. Long stages should use `JobCtx::step_cursor` / `headgate.StepCursor` and save
+their cursor after each safely repeatable unit. Cursor writes are fence-verified, so the
+expired holder stops and the replacement attempt resumes from the last accepted cursor
+instead of restarting the full stage.
 
 ## Deliberate boundaries
 

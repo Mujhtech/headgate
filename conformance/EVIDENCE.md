@@ -686,11 +686,15 @@ NOTE: round 32ab. The graceful tests drive the real admission loop, hold a child
 ### Workflows / DAG dependencies
 - rust: crates/headgate-workflow/src/lib.rs::prepare_builds_one_coordinator_and_pending_fan_out_fan_in
 - rust: crates/headgate-workflow/src/lib.rs::prepare_rejects_missing_dependencies_and_cycles
+- rust: crates/headgate-workflow/src/lib.rs::prepare_raises_short_child_retention_to_workflow_retention
+- rust: crates/headgate-workflow/src/lib.rs::retained_completion_survives_a_missing_job_row
 - rust: crates/headgate-workflow/tests/live.rs::live_postgres_dag_promotes_fan_out_then_fan_in
 - go: headgateworkflow/workflow_test.go::TestPrepareBuildsCoordinatorAndPendingFanOutFanIn
 - go: headgateworkflow/workflow_test.go::TestPrepareRejectsMissingDependenciesAndCycles
+- go: headgateworkflow/workflow_test.go::TestPrepareRaisesShortChildRetentionToWorkflowRetention
 - go: headgateworkflow/workflow_test.go::TestCoordinatorPromotesFanOutThenFanInAndPropagatesFailure
-NOTE: round 32u. Both builders pin the durable batch shape and reject missing dependencies and cycles. The Rust live test enqueues one real coordinator plus four pending application jobs into Postgres, repeatedly runs the ordinary worker runtime, and requires `extract` first, `join` last, and both fan-out branches exactly once between them. Go independently drives the resolver through root promotion, two-way fan-out, and an archived branch; the still-pending join is deleted before execution and the workflow settles failed. The graph is static and bounded by coordinator payload size. Signals, timers, CEL waits, dynamic graph mutation, workflow retry, and graph UI are not claimed.
+- go: headgateworkflow/workflow_test.go::TestCoordinatorUsesDurableCompletionEvidenceAfterRetention
+NOTE: round 32u plus workflow-aware retention hardening. Both builders pin the durable batch shape and reject missing dependencies and cycles. They clamp short child retention to the workflow retention. The coordinator records observed completions in a fenced cursor before promoting descendants; both languages prove retained evidence still resolves a dependency after its ordinary job row disappears, while an unrecorded missing dependency remains a failure. The Rust live test enqueues one real coordinator plus four pending application jobs into Postgres, repeatedly runs the ordinary worker runtime, and requires `extract` first, `join` last, and both fan-out branches exactly once between them. Go independently drives the resolver through root promotion, two-way fan-out, and an archived branch; the still-pending join is deleted before execution and the workflow settles failed. The graph is static and bounded by coordinator payload size. Signals, timers, CEL waits, dynamic graph mutation, workflow retry, and graph UI are not claimed.
 
 ### Death handler
 - rust: crates/headgate/tests/death_handler.rs::death_handler_runs_once_only_after_the_archive_is_durable

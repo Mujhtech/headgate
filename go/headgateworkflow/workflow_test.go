@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	headgate "github.com/mujhtech/headgate/go"
 )
@@ -72,6 +73,24 @@ func TestPrepareBuildsCoordinatorAndPendingFanOutFanIn(t *testing.T) {
 	}
 }
 
+func TestPrepareRaisesShortChildRetentionToWorkflowRetention(t *testing.T) {
+	const retention = 3 * time.Hour
+	w := New("wf-retention")
+	if err := w.Retention(retention); err != nil {
+		t.Fatal(err)
+	}
+	short := task("task:short-retention")
+	short.RetentionMs = 1
+	w.Add("task", short)
+	batch, err := w.Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := batch[1].RetentionMs; got != retention.Milliseconds() {
+		t.Fatalf("child retention = %d, want %d", got, retention.Milliseconds())
+	}
+}
+
 func TestPrepareRejectsMissingDependenciesAndCycles(t *testing.T) {
 	missing := New("wf")
 	missing.Add("a", task("task:a"), "missing")
@@ -132,5 +151,40 @@ func TestCoordinatorPromotesFanOutThenFanInAndPropagatesFailure(t *testing.T) {
 	}
 	if got, err := tick(ctx, store, args); err != nil || got != tickFailed {
 		t.Fatalf("settled failed workflow = %v, %v", got, err)
+	}
+}
+
+func TestCoordinatorUsesDurableCompletionEvidenceAfterRetention(t *testing.T) {
+	args := CoordinatorArgs{WorkflowID: "wf", Nodes: []nodeSpec{
+		{Name: "prepare", JobID: "prepare"},
+		{Name: "process", JobID: "process", Deps: []string{"prepare"}},
+	}}
+	store := &workflowInspect{jobs: map[string]*headgate.JobSummary{
+		"prepare": {ID: "prepare", State: "completed"},
+		"process": {ID: "process", State: "pending"},
+	}}
+	completed := make(map[string]struct{})
+	var persisted workflowCursor
+	got, err := tickWithEvidence(context.Background(), store, args, completed, func(cursor workflowCursor) error {
+		persisted = cursor
+		return nil
+	})
+	if err != nil || got != tickWaiting {
+		t.Fatalf("tickWithEvidence() = %v, %v", got, err)
+	}
+	if len(persisted.Completed) != 1 || persisted.Completed[0] != "prepare" {
+		t.Fatalf("persisted completion evidence = %#v", persisted)
+	}
+	if state := store.jobs["process"].State; state != "available" {
+		t.Fatalf("process state = %q, want available", state)
+	}
+	delete(store.jobs, "prepare")
+	store.jobs["process"].State = "pending"
+	completed = completedSet(args, persisted.Completed)
+	if got, err := tickWithEvidence(context.Background(), store, args, completed, nil); err != nil || got != tickWaiting {
+		t.Fatalf("tickWithEvidence() after retention = %v, %v", got, err)
+	}
+	if state := store.jobs["process"].State; state != "available" {
+		t.Fatalf("process state after retention = %q, want available", state)
 	}
 }

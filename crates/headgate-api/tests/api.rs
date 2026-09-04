@@ -781,7 +781,8 @@ async fn control_api_end_to_end() {
     assert_eq!(v["jobs"].as_array().unwrap().len(), 1);
     assert!(v["next_cursor"].is_string(), "a full page carries a cursor");
 
-    // Cancel → terminal; retry from cancelled is refused (not a table row); delete works.
+    // Cancellation is terminal for automatic processing, but an explicit operator retry
+    // revives the same job identity and makes it available again.
     let (st, _) = call(
         &app,
         Method::POST,
@@ -797,10 +798,12 @@ async fn control_api_end_to_end() {
         None,
     )
     .await;
+    assert_eq!(st, StatusCode::NO_CONTENT, "cancelled retry failed: {v}");
+    let (st, v) = call(&app, Method::GET, &format!("/api/v1/jobs/{id}"), None).await;
+    assert_eq!(st, StatusCode::OK);
     assert_eq!(
-        st,
-        StatusCode::BAD_REQUEST,
-        "operator_retry is archived-only: {v}"
+        v["state"], "available",
+        "operator retry must revive the job"
     );
     let (st, v) = call(
         &app,

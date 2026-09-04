@@ -28,6 +28,7 @@ transitions:
   # §5.7 a resumed job whose step set changed under it must NOT silently restart
   - {from: running,    on: checkpoint_stale, to: undecodable}
   - {from: archived,   on: operator_retry, to: available}
+  - {from: cancelled,  on: operator_retry, to: available}
   - {from: quarantined, on: operator_release, to: available}
   - {from: available,  on: operator_cancel,  to: cancelled}
   - {from: scheduled,  on: operator_cancel,  to: cancelled}

@@ -57,6 +57,10 @@ func TestSharedPolicyAndAdmissionRules(t *testing.T) {
 	if !ok || !slices.Equal(states, []string{"scheduled", "available", "running"}) {
 		t.Fatalf("cancel states: %v %v", states, ok)
 	}
+	states, ok = BulkActionStates("retry")
+	if !ok || !slices.Equal(states, []string{"archived", "cancelled"}) {
+		t.Fatalf("retry states: %v %v", states, ok)
+	}
 	available := int64(2)
 	evaluation := EvaluateAdmission(AdmissionFacts{
 		State: "available", RateClass: "api", Weight: 3,

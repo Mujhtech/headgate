@@ -746,7 +746,7 @@ func (s *PgxStore) OperatorRetry(ctx context.Context, id string) error {
 		WITH upd AS (
 		  UPDATE headgate_job SET state = 'available', scheduled_at_ms = `+nowMS+`,
 		         finalized_at_ms = NULL
-		  WHERE ulid = $1 AND state = 'archived'
+		  WHERE ulid = $1 AND state IN ('archived', 'cancelled')
 		  RETURNING queue, partition_key
 		),
 		-- tenant fairness/adaptive admission retry-now makes the row available; list its partition here.
@@ -769,7 +769,7 @@ func (s *PgxStore) OperatorRetry(ctx context.Context, id string) error {
 	if !found {
 		return headgate.NotFoundf("job %s", id)
 	}
-	return headgate.Invalidf("operator_retry is only defined from archived; job %s is %s", id, st)
+	return headgate.Invalidf("operator_retry is only defined from archived or cancelled; job %s is %s", id, st)
 }
 
 func (s *PgxStore) OperatorCancel(ctx context.Context, id string) error {

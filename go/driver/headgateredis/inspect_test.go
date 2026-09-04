@@ -112,6 +112,29 @@ func TestTheInspectSurfaceAnswersOverGoRedis(t *testing.T) {
 	if err := s.OperatorCancel(ctx, "g-3"); err == nil {
 		t.Fatal("cancel from cancelled must error")
 	}
+	if err := s.OperatorRetry(ctx, "g-3"); err != nil {
+		t.Fatalf("retry cancelled job: %v", err)
+	}
+	if job, err := s.GetJob(ctx, "g-3", false); err != nil || job == nil || job.State != "available" {
+		t.Fatalf("cancelled retry state: %+v %v", job, err)
+	}
+	uniqueOld := mk("g-u-old", "k.unique")
+	uniqueOld.UniqueKey = []byte("same-key")
+	if err := s.Enqueue(ctx, []headgate.Envelope{uniqueOld}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.OperatorCancel(ctx, uniqueOld.ID); err != nil {
+		t.Fatal(err)
+	}
+	uniqueNew := uniqueOld
+	uniqueNew.ID = "g-u-new"
+	if err := s.Enqueue(ctx, []headgate.Envelope{uniqueNew}); err != nil {
+		t.Fatal(err)
+	}
+	var duplicate *headgate.DuplicateError
+	if err := s.OperatorRetry(ctx, uniqueOld.ID); !errors.As(err, &duplicate) || duplicate.ExistingID != uniqueNew.ID {
+		t.Fatalf("retry must preserve lifecycle uniqueness: %T %v", err, err)
+	}
 	if err := s.OperatorRetry(ctx, "g-2"); err != nil {
 		t.Fatal(err)
 	}

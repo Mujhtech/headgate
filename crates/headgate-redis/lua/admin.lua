@@ -11,7 +11,7 @@
 --   qmeta:{fp}           hash  kind, crash_count, at_ms, reason (list/display only)
 --
 -- KEYS[1] prefix; ARGV[1] op, then per-op args. Returns are op-specific; job ops use
--- {'OK', ...} | {'NF'} | {'ERR', state} — the caller formats the message so the API
+-- {'OK', ...} | {'NF'} | {'DUP', holder} | {'ERR', state} — the caller formats the message so the API
 -- error text matches the Postgres backend word-for-word.
 local p = KEYS[1]
 local t = redis.call('TIME')
@@ -95,14 +95,20 @@ local function do_cancel(id, h)
   if ret > 0 then redis.call('ZADD', p .. ':ret', now + ret, id) end
 end
 
--- archived -> available (operator_retry).
+-- archived|cancelled -> available (operator_retry).
 local function do_retry(id, h)
-  local q, part, fp = h[2], h[3], h[4]
+  local st, q, part, fp = h[1], h[2], h[3], h[4]
+  local uk, uw = h[5], tonumber(h[6] or '0') or 0
+  if uk and uk ~= '' and uw == 0 then
+    local holder = redis.call('GET', p .. ':unique:' .. uk)
+    if holder and holder ~= id then return holder end
+    redis.call('SET', p .. ':unique:' .. uk, id)
+  end
   redis.call('HSET', jk(id), 'state', 'available', 'scheduled_at_ms', now)
   redis.call('HDEL', jk(id), 'finalized_at_ms')
   enter_unfinished(q)
   add_waiting(id, q, part, h[8], now)
-  redis.call('ZREM', idx(q, 'archived'), id)
+  redis.call('ZREM', idx(q, st), id)
   redis.call('ZADD', idx(q, 'available'), now, id)
   redis.call('ZADD', p .. ':avail:' .. q .. ':' .. part, now, id)
   redis.call('ZADD', p .. ':metricparts:' .. q, now, part)
@@ -181,8 +187,9 @@ elseif op == 'retry' then
   local id = ARGV[2]
   local h = job_head(id)
   if not h[1] then return {'NF'} end
-  if h[1] ~= 'archived' then return {'ERR', h[1]} end
-  do_retry(id, h)
+  if h[1] ~= 'archived' and h[1] ~= 'cancelled' then return {'ERR', h[1]} end
+  local holder = do_retry(id, h)
+  if holder then return {'DUP', holder} end
   return {'OK'}
 
 elseif op == 'delete' then
@@ -412,9 +419,11 @@ elseif op == 'bulk' then
         end
         if m then
           if action == 'cancel' then do_cancel(id, h)
-          elseif action == 'retry' then do_retry(id, h)
+          elseif action == 'retry' then
+            local holder = do_retry(id, h)
+            if holder then m = false end
           else do_delete(id, h) end
-          applied = applied + 1
+          if m then applied = applied + 1 else off = off + 1 end
         else
           off = off + 1
         end

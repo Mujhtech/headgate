@@ -3,7 +3,7 @@ package headgateshared
 import "fmt"
 
 var (
-	retryStates  = []string{"archived"}
+	retryStates  = []string{"archived", "cancelled"}
 	cancelStates = []string{"scheduled", "available", "running"}
 	deleteStates = []string{"scheduled", "available", "retryable", "completed", "archived", "cancelled", "quarantined", "undecodable"}
 )

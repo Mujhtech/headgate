@@ -222,7 +222,10 @@ paths:
       responses: {'200': {description: OK}}
     delete: {parameters: [{$ref: '#/components/parameters/Id'}], responses: {'204': {description: Deleted}}}
   /jobs/{id}/retry:
-    post: {parameters: [{$ref: '#/components/parameters/Id'}], responses: {'204': {description: Moved to available}}}
+    post:
+      summary: Revive an archived or cancelled job and move it to available.
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses: {'204': {description: Moved to available}, '400': {description: Job is not archived or cancelled}}
   /jobs/{id}/promote:
     post:
       summary: Make an explicitly pending job available.

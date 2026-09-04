@@ -732,7 +732,7 @@ impl Inspect for MysqlStore {
         tx.exec_drop(
             "INSERT INTO headgate_active_partition (queue, partition_key)
              SELECT queue, partition_key FROM headgate_job
-             WHERE ulid = ? AND state = 'archived'
+             WHERE ulid = ? AND state IN ('archived', 'cancelled')
              ON DUPLICATE KEY UPDATE queue = VALUES(queue)",
             (id,),
         )
@@ -742,7 +742,7 @@ impl Inspect for MysqlStore {
             format!(
                 "UPDATE headgate_job SET state = 'available', scheduled_at_ms = {NOW_MS},
                         finalized_at_ms = NULL
-                 WHERE ulid = ? AND state = 'archived'"
+                 WHERE ulid = ? AND state IN ('archived', 'cancelled')"
             ),
             (id,),
         )
@@ -756,7 +756,7 @@ impl Inspect for MysqlStore {
         match self.job_state(id).await? {
             None => Err(StoreError::NotFound(format!("job {id}"))),
             Some(state) => Err(StoreError::Invalid(format!(
-                "operator_retry is only defined from archived; job {id} is {state}"
+                "operator_retry is only defined from archived or cancelled; job {id} is {state}"
             ))),
         }
     }

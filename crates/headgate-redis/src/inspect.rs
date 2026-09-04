@@ -889,8 +889,12 @@ impl Inspect for RedisStore {
         match res.first().map(String::as_str) {
             Some("OK") => Ok(()),
             Some("NF") => Err(StoreError::NotFound(format!("job {id}"))),
+            Some("DUP") => Err(StoreError::Duplicate {
+                existing_id: res.get(1).cloned().unwrap_or_default(),
+                replaced: false,
+            }),
             _ => Err(StoreError::Invalid(format!(
-                "operator_retry is only defined from archived; job {id} is {}",
+                "operator_retry is only defined from archived or cancelled; job {id} is {}",
                 res.get(1).map(String::as_str).unwrap_or("?")
             ))),
         }

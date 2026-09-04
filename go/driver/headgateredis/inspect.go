@@ -969,8 +969,10 @@ func (s *RedisStore) OperatorRetry(ctx context.Context, id string) error {
 		return nil
 	case "NF":
 		return headgate.NotFoundf("job %s", id)
+	case "DUP":
+		return &headgate.DuplicateError{ExistingID: second(res)}
 	default:
-		return headgate.Invalidf("operator_retry is only defined from archived; job %s is %s",
+		return headgate.Invalidf("operator_retry is only defined from archived or cancelled; job %s is %s",
 			id, second(res))
 	}
 }

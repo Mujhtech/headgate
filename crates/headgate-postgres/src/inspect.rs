@@ -671,7 +671,7 @@ impl Inspect for PgStore {
             WITH upd AS (
               UPDATE headgate_job SET state = 'available', scheduled_at_ms = {NOW_MS},
                      finalized_at_ms = NULL
-              WHERE ulid = $1 AND state = 'archived'
+              WHERE ulid = $1 AND state IN ('archived', 'cancelled')
               RETURNING queue, partition_key
             ),
             -- tenant fairness/adaptive admission retry-now makes the row available; list its partition here.
@@ -690,7 +690,7 @@ impl Inspect for PgStore {
         match self.job_state(&c, id).await? {
             None => Err(StoreError::NotFound(format!("job {id}"))),
             Some(state) => Err(StoreError::Invalid(format!(
-                "operator_retry is only defined from archived; job {id} is {state}"
+                "operator_retry is only defined from archived or cancelled; job {id} is {state}"
             ))),
         }
     }

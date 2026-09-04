@@ -161,7 +161,7 @@ pub const fn validate_opaque_schema(version: u32) -> OpaqueSchemaValidation {
 
 pub fn bulk_action_states(action: &str) -> Option<&'static [&'static str]> {
     match action {
-        "retry" => Some(&["archived"]),
+        "retry" => Some(&["archived", "cancelled"]),
         "cancel" => Some(&["scheduled", "available", "running"]),
         "delete" => Some(&[
             "scheduled",
@@ -580,6 +580,10 @@ mod tests {
         assert_eq!(
             super::bulk_action_states("cancel"),
             Some(["scheduled", "available", "running"].as_slice())
+        );
+        assert_eq!(
+            super::bulk_action_states("retry"),
+            Some(["archived", "cancelled"].as_slice())
         );
         let evaluation = super::evaluate_admission(&AdmissionFacts {
             state: "available".into(),

@@ -298,7 +298,9 @@ pub fn lifecycle_transition(from: State, ev: LifecycleEvent) -> Option<State> {
         (State::Retryable, LifecycleEvent::BackoffDue) => Some(State::Available),
         // step replay a resumed job whose step set changed under it must NOT silently restart
         (State::Running, LifecycleEvent::CheckpointStale) => Some(State::Undecodable),
-        (State::Archived, LifecycleEvent::OperatorRetry) => Some(State::Available),
+        (State::Archived | State::Cancelled, LifecycleEvent::OperatorRetry) => {
+            Some(State::Available)
+        }
         (State::Quarantined, LifecycleEvent::OperatorRelease) => Some(State::Available),
         (
             State::Pending | State::Available | State::Scheduled | State::Running,
@@ -1520,8 +1522,8 @@ pub trait Inspect: Store {
     /// available (`operator_release`) and new enqueues are accepted again. Returns how
     /// many jobs were released. A released job re-quarantines on its next crash.
     async fn quarantine_release(&self, fingerprint: &str) -> Result<u64, StoreError>;
-    /// `archived → available` (`operator_retry`). Any other state is an error — the
-    /// transition table defines exactly which rows exist.
+    /// `archived|cancelled → available` (`operator_retry`). Any other state is an
+    /// error — the transition table defines exactly which rows exist.
     async fn operator_retry(&self, id: &str) -> Result<(), StoreError>;
     /// `scheduled|available|running → cancelled` (`operator_cancel`). Cancelling a
     /// running job clears its lease, so the holder's next renew/ack/checkpoint is
@@ -2659,7 +2661,7 @@ mod tests {
         // Pinned on purpose: adding or removing a transition must be deliberate — the
         // yaml's own invariant requires a conformance scenario per new row.
         assert_eq!(
-            rows, 22,
+            rows, 23,
             "state_machine.yaml row count changed; update the table AND its scenarios"
         );
     }

@@ -782,14 +782,14 @@ func (s *MysqlStore) OperatorRetry(ctx context.Context, id string) error {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO headgate_active_partition (queue, partition_key)
 			SELECT queue, partition_key FROM headgate_job
-			WHERE ulid = ? AND state = 'archived'
+			WHERE ulid = ? AND state IN ('archived', 'cancelled')
 			ON DUPLICATE KEY UPDATE queue = VALUES(queue)`, id); err != nil {
 			return 0, err
 		}
 		res, err := tx.ExecContext(ctx, `
 			UPDATE headgate_job SET state = 'available', scheduled_at_ms = `+nowMS+`,
 			       finalized_at_ms = NULL
-			WHERE ulid = ? AND state = 'archived'`, id)
+			WHERE ulid = ? AND state IN ('archived', 'cancelled')`, id)
 		if err != nil {
 			return 0, err
 		}
@@ -812,7 +812,7 @@ func (s *MysqlStore) OperatorRetry(ctx context.Context, id string) error {
 	if !found {
 		return headgate.NotFoundf("job %s", id)
 	}
-	return headgate.Invalidf("operator_retry is only defined from archived; job %s is %s", id, st)
+	return headgate.Invalidf("operator_retry is only defined from archived or cancelled; job %s is %s", id, st)
 }
 
 func (s *MysqlStore) OperatorCancel(ctx context.Context, id string) error {

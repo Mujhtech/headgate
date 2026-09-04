@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { RelativeTime } from "@/components/relative-time";
 import { ActionButton } from "@/components/ui/action-button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,7 +20,7 @@ import {
   type ViewProps,
 } from "@/console";
 import { config } from "@/lib/config";
-import { formatDate, formatPercent } from "@/lib/format";
+import { formatPercent } from "@/lib/format";
 import {
   type WorkerCommand,
   type WorkerStatus,
@@ -215,7 +216,9 @@ export function WorkersView({ notify }: ViewProps) {
                     <TableCell>
                       {worker.inflight ?? 0}/{worker.concurrency}
                     </TableCell>
-                    <TableCell>{formatDate(worker.heartbeat_at_ms)}</TableCell>
+                    <TableCell>
+                      <RelativeTime value={worker.heartbeat_at_ms} />
+                    </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
                         {(

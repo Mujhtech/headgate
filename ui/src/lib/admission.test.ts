@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { admissionPresentation } from "@/lib/admission";
+import {
+  admissionDetailPresentation,
+  admissionPresentation,
+} from "@/lib/admission";
 
 describe("admission presentation", () => {
   it.each(["completed", "archived", "cancelled", "undecodable"])(
@@ -56,5 +59,15 @@ describe("admission presentation", () => {
     expect(
       admissionPresentation("available", { admissible: false }).title
     ).toBe("Admission decision unavailable");
+  });
+
+  it("presents admission detail timestamps and labels without leaking wire fields", () => {
+    expect(
+      admissionDetailPresentation("scheduled_at_ms", "1788532243225")
+    ).toEqual({ label: "scheduled at", timestamp: 1_788_532_243_225 });
+    expect(admissionDetailPresentation("tokens_available", "4")).toEqual({
+      label: "tokens available",
+      value: "4",
+    });
   });
 });

@@ -14,18 +14,12 @@ import {
 } from "lucide-react";
 import { type SubmitEvent, useMemo, useState } from "react";
 import { AttemptLogs } from "@/components/attempt-logs";
+import { RelativeTime } from "@/components/relative-time";
 import { ActionButton } from "@/components/ui/action-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
@@ -36,6 +30,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import {
   Table,
   TableBody,
@@ -53,11 +55,14 @@ import {
   useConsoleQuery,
   type ViewProps,
 } from "@/console";
-import { admissionPresentation } from "@/lib/admission";
+import {
+  admissionDetailPresentation,
+  admissionPresentation,
+} from "@/lib/admission";
 import { api } from "@/lib/api";
 import { useNow } from "@/lib/clock";
 import { config } from "@/lib/config";
-import { formatDate, formatDuration } from "@/lib/format";
+import { formatDuration } from "@/lib/format";
 import { type JobAction, jobActionDisabledReason } from "@/lib/job-control";
 import { displayPayload } from "@/lib/payload";
 import { hasResumableCheckpoint, type JobCheckpoint } from "@/lib/resumable";
@@ -429,18 +434,26 @@ export function JobDrawer({
   };
 
   return (
-    <Dialog onOpenChange={setOpen} open={open}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{id}</DialogTitle>
-          <DialogDescription>
+    <Sheet onOpenChange={setOpen} open={open}>
+      <SheetContent className="w-full gap-0 overflow-hidden p-0 data-[side=left]:sm:max-w-2xl data-[side=right]:sm:max-w-2xl">
+        <SheetHeader className="shrink-0 border-b p-4 pr-14">
+          <SheetTitle className="break-all font-mono">{id}</SheetTitle>
+          <SheetDescription>
             Job detail, admission decision, progress, and attempt history.
-          </DialogDescription>
-        </DialogHeader>
-        {error && <Failure message={error} />}
-        {!(job || error) && <Loading />}
+          </SheetDescription>
+        </SheetHeader>
+        {error ? (
+          <div className="p-4">
+            <Failure message={error} />
+          </div>
+        ) : null}
+        {job || error ? null : (
+          <div className="p-4">
+            <Loading />
+          </div>
+        )}
         {job && (
-          <div className="space-y-5">
+          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4">
             <dl className="grid grid-cols-[8rem_1fr] gap-x-3 gap-y-2 text-sm">
               <dt className="text-muted-foreground">Kind</dt>
               <dd>
@@ -485,16 +498,27 @@ export function JobDrawer({
               <dt className="text-muted-foreground">Fingerprint</dt>
               <dd className="break-all font-mono text-xs">{job.fingerprint}</dd>
               <dt className="text-muted-foreground">Enqueued</dt>
-              <dd>{formatDate(job.enqueued_at_ms)}</dd>
+              <dd>
+                <RelativeTime value={job.enqueued_at_ms} />
+              </dd>
               <dt className="text-muted-foreground">Scheduled</dt>
-              <dd>{formatDate(job.scheduled_at_ms)}</dd>
+              <dd>
+                <RelativeTime value={job.scheduled_at_ms} />
+              </dd>
               <dt className="text-muted-foreground">Finalized</dt>
-              <dd>{formatDate(job.finalized_at_ms ?? undefined)}</dd>
+              <dd>
+                <RelativeTime value={job.finalized_at_ms} />
+              </dd>
               <dt className="text-muted-foreground">Periodic origin</dt>
               <dd>
-                {job.periodic_origin
-                  ? `${job.periodic_origin.schedule_id} · ${formatDate(job.periodic_origin.tick_ms)}`
-                  : "—"}
+                {job.periodic_origin ? (
+                  <>
+                    {job.periodic_origin.schedule_id} ·{" "}
+                    <RelativeTime value={job.periodic_origin.tick_ms} />
+                  </>
+                ) : (
+                  "—"
+                )}
               </dd>
             </dl>
 
@@ -527,7 +551,9 @@ export function JobDrawer({
                         >
                           <span
                             className={`lifecycle-line-progress block h-full w-full ${tone.line}`}
-                            style={{ animationDelay: `${index * 90 + 120}ms` }}
+                            style={{
+                              animationDelay: `${index * 90 + 120}ms`,
+                            }}
                           />
                         </span>
                       )}
@@ -678,8 +704,8 @@ export function JobDrawer({
                     }
                   />
                   <p className="mt-1 text-muted-foreground text-xs">
-                    Updated {formatDate(progress.updated_at_ms)} · attempt fence{" "}
-                    {progress.fence}
+                    Updated <RelativeTime value={progress.updated_at_ms} /> ·
+                    attempt fence {progress.fence}
                   </p>
                 </>
               ) : (
@@ -824,11 +850,19 @@ export function JobDrawer({
                 </p>
                 <div className="mt-2 flex flex-wrap gap-1">
                   {Object.entries(admission.detail ?? {}).map(
-                    ([key, value]) => (
-                      <Badge key={key} variant="outline">
-                        {key}: {String(value)}
-                      </Badge>
-                    )
+                    ([key, value]) => {
+                      const detail = admissionDetailPresentation(key, value);
+                      return (
+                        <Badge key={key} variant="outline">
+                          {detail.label}:{" "}
+                          {detail.timestamp === undefined ? (
+                            detail.value
+                          ) : (
+                            <RelativeTime value={detail.timestamp} />
+                          )}
+                        </Badge>
+                      );
+                    }
                   )}
                 </div>
               </section>
@@ -850,7 +884,7 @@ export function JobDrawer({
                           {event.outcome}
                         </Badge>
                         <span className="text-muted-foreground text-xs">
-                          {formatDate(event.at_ms)}
+                          <RelativeTime value={event.at_ms} />
                           {event.attempt == null
                             ? ""
                             : ` · attempt ${event.attempt}`}
@@ -874,8 +908,11 @@ export function JobDrawer({
                 </p>
               )}
             </section>
-
-            <section aria-labelledby="actions-title">
+          </div>
+        )}
+        {job ? (
+          <SheetFooter className="shrink-0 border-t bg-background p-4">
+            <section aria-labelledby="actions-title" className="w-full">
               <h2 className="mb-2 font-semibold text-sm" id="actions-title">
                 Actions
               </h2>
@@ -947,10 +984,10 @@ export function JobDrawer({
                 })}
               </div>
             </section>
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
+          </SheetFooter>
+        ) : null}
+      </SheetContent>
+    </Sheet>
   );
 }
 
@@ -1464,7 +1501,7 @@ export function JobsView({ notify }: ViewProps) {
                       ) : null}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
-                      {formatDate(job.scheduled_at_ms)}
+                      <RelativeTime value={job.scheduled_at_ms} />
                     </TableCell>
                   </TableRow>
                 ))}

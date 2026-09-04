@@ -37,6 +37,7 @@ import {
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -520,12 +521,14 @@ export function OverviewView({
                   <SelectValue placeholder="Choose queue…" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All queues</SelectItem>
-                  {queues.map((item) => (
-                    <SelectItem key={item.queue} value={item.queue}>
-                      <span translate="no">{item.queue}</span>
-                    </SelectItem>
-                  ))}
+                  <SelectGroup>
+                    <SelectItem value="all">All queues</SelectItem>
+                    {queues.map((item) => (
+                      <SelectItem key={item.queue} value={item.queue}>
+                        <span translate="no">{item.queue}</span>
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
                 </SelectContent>
               </Select>
               <Select

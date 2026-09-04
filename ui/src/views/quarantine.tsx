@@ -1,3 +1,4 @@
+import { RelativeTime } from "@/components/relative-time";
 import { ActionButton } from "@/components/ui/action-button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,7 +19,6 @@ import {
   type ViewProps,
 } from "@/console";
 import { config } from "@/lib/config";
-import { formatDate } from "@/lib/format";
 
 interface QuarantineEntry {
   crash_count: number;
@@ -98,7 +98,9 @@ export function QuarantineView({ notify }: ViewProps) {
                     <TableCell>
                       <Badge variant="destructive">{entry.crash_count}</Badge>
                     </TableCell>
-                    <TableCell>{formatDate(entry.quarantined_at_ms)}</TableCell>
+                    <TableCell>
+                      <RelativeTime value={entry.quarantined_at_ms} />
+                    </TableCell>
                     <TableCell>{entry.reason}</TableCell>
                     <TableCell>
                       <ActionButton

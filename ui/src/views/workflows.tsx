@@ -6,6 +6,7 @@ import {
   GitForkIcon,
 } from "lucide-react";
 import { lazy, Suspense, useMemo } from "react";
+import { RelativeTime } from "@/components/relative-time";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -32,7 +33,6 @@ import {
   type ViewProps,
 } from "@/console";
 import { ApiError, api } from "@/lib/api";
-import { formatDate } from "@/lib/format";
 import type { JobCheckpoint } from "@/lib/resumable";
 import {
   decodeWorkflowCompletionCursor,
@@ -280,8 +280,12 @@ export function WorkflowsView(_props: ViewProps) {
                             · {job.crash_attempt ?? 0} crashes
                           </span>
                         </TableCell>
-                        <TableCell>{formatDate(job.enqueued_at_ms)}</TableCell>
-                        <TableCell>{formatDate(job.finalized_at_ms)}</TableCell>
+                        <TableCell>
+                          <RelativeTime value={job.enqueued_at_ms} />
+                        </TableCell>
+                        <TableCell>
+                          <RelativeTime value={job.finalized_at_ms} />
+                        </TableCell>
                         <TableCell className="text-right">
                           <Button
                             nativeButton={false}
@@ -292,6 +296,7 @@ export function WorkflowsView(_props: ViewProps) {
                               />
                             }
                             size="sm"
+                            variant="outline"
                           >
                             Inspect
                           </Button>

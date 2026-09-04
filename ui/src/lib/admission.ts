@@ -10,12 +10,39 @@ export interface AdmissionPresentation {
   tone: "success" | "warning" | "destructive" | "muted";
 }
 
+export interface AdmissionDetailPresentation {
+  label: string;
+  timestamp?: number;
+  value?: string;
+}
+
 const terminalStates = new Set([
   "completed",
   "archived",
   "cancelled",
   "undecodable",
 ]);
+
+function detailLabel(key: string) {
+  const withoutUnit = key.endsWith("_at_ms") ? key.slice(0, -3) : key;
+  return withoutUnit.replaceAll("_", " ");
+}
+
+export function admissionDetailPresentation(
+  key: string,
+  value: unknown
+): AdmissionDetailPresentation {
+  if (key.endsWith("_at_ms")) {
+    const timestamp = typeof value === "number" ? value : Number(value);
+    if (Number.isSafeInteger(timestamp) && timestamp > 0) {
+      return { label: detailLabel(key), timestamp };
+    }
+  }
+  return {
+    label: detailLabel(key),
+    value: value == null ? "—" : String(value),
+  };
+}
 
 function estimate(decision: AdmissionDecision, fallback: string) {
   return decision.estimated_admission_ms == null

@@ -1,5 +1,10 @@
 import { Link } from "@tanstack/react-router";
-import { ArrowLeftIcon, ArrowRightIcon, GitForkIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  GitForkIcon,
+} from "lucide-react";
 import { lazy, Suspense, useMemo } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,7 +33,12 @@ import {
 } from "@/console";
 import { ApiError, api } from "@/lib/api";
 import { formatDate } from "@/lib/format";
-import { decodeWorkflowPayload, type WorkflowNode } from "@/lib/workflow";
+import type { JobCheckpoint } from "@/lib/resumable";
+import {
+  decodeWorkflowCompletionCursor,
+  decodeWorkflowPayload,
+  type WorkflowNode,
+} from "@/lib/workflow";
 import { Route as WorkflowsRoute } from "@/routes/_console.workflows";
 
 const WorkflowGraph = lazy(async () => {
@@ -57,6 +67,7 @@ interface JobPage {
 
 interface NodeStatus extends WorkflowNode {
   job: JobSummary | null;
+  recordedCompletion: boolean;
 }
 
 const failedStates = new Set([
@@ -102,10 +113,10 @@ async function loadNodeJobs(nodes: WorkflowNode[], signal: AbortSignal) {
           `/jobs/${encodeURIComponent(node.job_id)}`,
           { signal }
         );
-        results[index] = { ...node, job };
+        results[index] = { ...node, job, recordedCompletion: false };
       } catch (reason) {
         if (reason instanceof ApiError && reason.status === 404) {
-          results[index] = { ...node, job: null };
+          results[index] = { ...node, job: null, recordedCompletion: false };
         } else {
           throw reason;
         }
@@ -116,8 +127,37 @@ async function loadNodeJobs(nodes: WorkflowNode[], signal: AbortSignal) {
   return results;
 }
 
+async function loadCompletionEvidence(
+  coordinatorID: string,
+  signal: AbortSignal
+) {
+  try {
+    const checkpoint = await api<JobCheckpoint>(
+      `/jobs/${encodeURIComponent(coordinatorID)}/checkpoint`,
+      { signal }
+    );
+    if (checkpoint.cursor_step !== "headgate:workflow-state") {
+      return new Set<string>();
+    }
+    return decodeWorkflowCompletionCursor(checkpoint.cursor);
+  } catch (reason) {
+    if (
+      reason instanceof ApiError &&
+      (reason.status === 404 || reason.status === 501)
+    ) {
+      return new Set<string>();
+    }
+    throw reason;
+  }
+}
+
+function nodeState(node: NodeStatus) {
+  return node.job?.state ?? (node.recordedCompletion ? "completed" : "missing");
+}
+
 export function WorkflowsView(_props: ViewProps) {
   const search = WorkflowsRoute.useSearch();
+  const navigate = WorkflowsRoute.useNavigate();
   const params = new URLSearchParams({
     kind: "headgate:workflow",
     limit: "50",
@@ -136,6 +176,48 @@ export function WorkflowsView(_props: ViewProps) {
       : String(workflows.error)
     : null;
   const loading = workflows.isPending;
+  const cursorTrail = useMemo<Array<string | null>>(() => {
+    if (!search.cursorTrail) {
+      return [];
+    }
+    try {
+      const value: unknown = JSON.parse(search.cursorTrail);
+      return Array.isArray(value) &&
+        value.every((entry) => entry === null || typeof entry === "string")
+        ? value
+        : [];
+    } catch {
+      return [];
+    }
+  }, [search.cursorTrail]);
+
+  const previousPage = () => {
+    if (!cursorTrail.length) {
+      return;
+    }
+    const previousCursor = cursorTrail.at(-1) ?? undefined;
+    const remaining = cursorTrail.slice(0, -1);
+    void navigate({
+      search: (current) => ({
+        ...current,
+        cursor: previousCursor,
+        cursorTrail: remaining.length ? JSON.stringify(remaining) : undefined,
+      }),
+    });
+  };
+
+  const nextPage = () => {
+    if (!data?.next_cursor) {
+      return;
+    }
+    void navigate({
+      search: (current) => ({
+        ...current,
+        cursor: data.next_cursor,
+        cursorTrail: JSON.stringify([...cursorTrail, search.cursor ?? null]),
+      }),
+    });
+  };
 
   return (
     <>
@@ -220,29 +302,22 @@ export function WorkflowsView(_props: ViewProps) {
                 </TableBody>
               </Table>
               <div className="mt-4 flex justify-end gap-2">
-                {search.cursor && (
-                  <Button
-                    nativeButton={false}
-                    render={<Link search={{}} to="/workflows" />}
-                    size="sm"
-                  >
-                    First page
-                  </Button>
-                )}
-                {data.next_cursor && (
-                  <Button
-                    nativeButton={false}
-                    render={
-                      <Link
-                        search={{ cursor: data.next_cursor }}
-                        to="/workflows"
-                      />
-                    }
-                    size="sm"
-                  >
-                    Next page <ArrowRightIcon />
-                  </Button>
-                )}
+                <Button
+                  disabled={!cursorTrail.length}
+                  onClick={previousPage}
+                  variant="outline"
+                >
+                  <ChevronLeftIcon />
+                  Previous
+                </Button>
+                <Button
+                  disabled={!data.next_cursor}
+                  onClick={nextPage}
+                  variant="outline"
+                >
+                  Next
+                  <ChevronRightIcon />
+                </Button>
               </div>
             </>
           ) : (
@@ -267,7 +342,14 @@ export function WorkflowDetailView({
         { signal }
       );
       const workflow = decodeWorkflowPayload(coordinator.payload);
-      const nodes = await loadNodeJobs(workflow.nodes, signal);
+      const [loadedNodes, completed] = await Promise.all([
+        loadNodeJobs(workflow.nodes, signal),
+        loadCompletionEvidence(coordinatorID, signal),
+      ]);
+      const nodes = loadedNodes.map((node) => ({
+        ...node,
+        recordedCompletion: node.job === null && completed.has(node.name),
+      }));
       return { coordinator, nodes, workflow };
     }
   );
@@ -284,7 +366,7 @@ export function WorkflowDetailView({
   const counts = useMemo(
     () =>
       nodes.reduce<Record<string, number>>((result, node) => {
-        const state = node.job?.state ?? "missing";
+        const state = nodeState(node);
         result[state] = (result[state] ?? 0) + 1;
         return result;
       }, {}),
@@ -373,7 +455,7 @@ export function WorkflowDetailView({
                 <CardTitle>Dependency graph</CardTitle>
                 <CardDescription>
                   Arrows show execution order. Drag or scroll to pan, use the
-                  controls to zoom, and select any task to inspect it.
+                  controls to zoom, and select a retained task to inspect it.
                 </CardDescription>
               </div>
               <div className="flex flex-wrap gap-3 text-muted-foreground text-xs">

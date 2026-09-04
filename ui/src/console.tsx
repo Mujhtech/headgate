@@ -5,7 +5,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { Outlet, useRouterState } from "@tanstack/react-router";
-import { AlertTriangleIcon, RefreshCwIcon } from "lucide-react";
+import { AlertTriangleIcon, RefreshCwIcon, Settings2Icon } from "lucide-react";
 import {
   createContext,
   useCallback,
@@ -14,11 +14,28 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   SidebarInset,
   SidebarProvider,
@@ -26,6 +43,21 @@ import {
 } from "@/components/ui/sidebar";
 import { api } from "@/lib/api";
 import { config } from "@/lib/config";
+import {
+  DEFAULT_POLLING_INTERVAL_MS,
+  getPollingIntervalSnapshot,
+  pollingIntervalOptions,
+  setPollingInterval,
+  subscribePollingInterval,
+} from "@/lib/console-settings";
+import {
+  type ConsoleTheme,
+  DEFAULT_THEME,
+  getThemeSnapshot,
+  setTheme,
+  subscribeTheme,
+  themeOptions,
+} from "@/lib/theme";
 
 export interface ViewProps {
   notify: (message: string, tone?: "normal" | "error") => void;
@@ -34,6 +66,7 @@ export interface ViewProps {
 
 interface ConsoleValue extends ViewProps {
   livePaused: boolean;
+  pollingIntervalMs: number;
 }
 
 const ConsoleContext = createContext<ConsoleValue | null>(null);
@@ -49,15 +82,16 @@ export function useConsole() {
 export function useConsoleQuery<T>(
   queryKey: readonly unknown[],
   queryFn: (signal: AbortSignal) => Promise<T>,
-  enabled = true,
-  refetchInterval = 15_000
+  enabled = true
 ) {
   const context = useContext(ConsoleContext);
   return useQuery({
     enabled,
     queryFn: ({ signal }) => queryFn(signal),
     queryKey,
-    refetchInterval: context?.livePaused ? false : refetchInterval,
+    refetchInterval: context?.livePaused
+      ? false
+      : (context?.pollingIntervalMs ?? DEFAULT_POLLING_INTERVAL_MS),
   });
 }
 
@@ -74,7 +108,9 @@ export function useConsoleQueries<T>(
       enabled: query.enabled ?? true,
       queryFn: ({ signal }: { signal: AbortSignal }) => query.queryFn(signal),
       queryKey: query.queryKey,
-      refetchInterval: context?.livePaused ? false : 15_000,
+      refetchInterval: context?.livePaused
+        ? false
+        : (context?.pollingIntervalMs ?? DEFAULT_POLLING_INTERVAL_MS),
     })),
   });
 }
@@ -240,6 +276,16 @@ export function ConsoleLayout() {
     tone: "normal" | "error";
   } | null>(null);
   const [manualRefreshing, setManualRefreshing] = useState(false);
+  const pollingIntervalMs = useSyncExternalStore(
+    subscribePollingInterval,
+    getPollingIntervalSnapshot,
+    () => DEFAULT_POLLING_INTERVAL_MS
+  );
+  const theme = useSyncExternalStore(
+    subscribeTheme,
+    getThemeSnapshot,
+    () => DEFAULT_THEME
+  );
   const noticeTimeout = useRef<number | null>(null);
   const queryClient = useQueryClient();
   const refresh = useCallback(
@@ -279,9 +325,34 @@ export function ConsoleLayout() {
       setManualRefreshing(false);
     }
   }, [manualRefreshing, notify, refresh]);
+  const updatePollingInterval = useCallback(
+    (value: string | null) => {
+      if (!value) {
+        return;
+      }
+      const next = setPollingInterval(Number(value));
+      notify(`Polling interval set to ${next / 1000} seconds`);
+    },
+    [notify]
+  );
+  const updateTheme = useCallback(
+    (value: string | null) => {
+      if (!value) {
+        return;
+      }
+      const next = setTheme(value as ConsoleTheme);
+      notify(`Theme set to ${next}`);
+    },
+    [notify]
+  );
   const context = useMemo(
-    () => ({ livePaused: live.paused, notify, refresh }),
-    [refresh, notify, live.paused]
+    () => ({
+      livePaused: live.paused,
+      notify,
+      pollingIntervalMs,
+      refresh,
+    }),
+    [refresh, notify, live.paused, pollingIntervalMs]
   );
 
   return (
@@ -333,6 +404,74 @@ export function ConsoleLayout() {
                 }
               />
             </Button>
+            <Dialog>
+              <DialogTrigger
+                render={
+                  <Button
+                    aria-label="Console settings"
+                    size="icon"
+                    title="Console settings"
+                    variant="ghost"
+                  />
+                }
+              >
+                <Settings2Icon aria-hidden />
+              </DialogTrigger>
+              <DialogContent className="inset-auto top-1/2 left-1/2 h-auto max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border">
+                <DialogHeader>
+                  <DialogTitle>Console Settings</DialogTitle>
+                  <DialogDescription>
+                    Control how often this browser checks for fresh data. Live
+                    events can still refresh the console sooner.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-5">
+                  <div className="grid gap-2">
+                    <Label htmlFor="console-theme">Theme</Label>
+                    <Select onValueChange={updateTheme} value={theme}>
+                      <SelectTrigger id="console-theme">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {themeOptions.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-muted-foreground text-xs">
+                      System follows your operating-system appearance.
+                    </p>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="polling-interval">Polling Interval</Label>
+                    <Select
+                      onValueChange={updatePollingInterval}
+                      value={String(pollingIntervalMs)}
+                    >
+                      <SelectTrigger id="polling-interval">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {pollingIntervalOptions.map((option) => (
+                          <SelectItem
+                            key={option.value}
+                            value={String(option.value)}
+                          >
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-muted-foreground text-xs">
+                      Saved in this browser. Pausing live updates also pauses
+                      polling.
+                    </p>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
           </header>
           <main className="flex-1 scroll-mt-16 p-4 lg:p-6" id="main-content">
             <Outlet />

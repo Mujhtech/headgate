@@ -9,6 +9,17 @@ export interface CoordinatorPayload {
   workflow_id: string;
 }
 
+interface WorkflowCursor {
+  completed: string[];
+}
+
+function decodeBase64JSON(value: string): unknown {
+  const bytes = Uint8Array.from(atob(value), (character) =>
+    character.charCodeAt(0)
+  );
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
 function workflowNode(value: unknown, index: number): WorkflowNode {
   if (!value || typeof value !== "object") {
     throw new Error(`node ${index} is not an object`);
@@ -42,13 +53,7 @@ export function decodeWorkflowPayload(
     throw new Error("The coordinator payload was withheld by the control API.");
   }
   try {
-    const bytes = Uint8Array.from(atob(payload), (character) =>
-      character.charCodeAt(0)
-    );
-    const value = JSON.parse(new TextDecoder().decode(bytes)) as Record<
-      string,
-      unknown
-    >;
+    const value = decodeBase64JSON(payload) as Record<string, unknown>;
     if (typeof value.workflow_id !== "string" || !Array.isArray(value.nodes)) {
       throw new Error("missing workflow fields");
     }
@@ -59,6 +64,29 @@ export function decodeWorkflowPayload(
   } catch (reason) {
     throw new Error(
       `The coordinator payload is not a readable workflow graph: ${reason instanceof Error ? reason.message : String(reason)}`,
+      { cause: reason }
+    );
+  }
+}
+
+export function decodeWorkflowCompletionCursor(
+  cursor: string | null | undefined
+): Set<string> {
+  if (!cursor) {
+    return new Set();
+  }
+  try {
+    const value = decodeBase64JSON(cursor) as Partial<WorkflowCursor>;
+    if (
+      !Array.isArray(value.completed) ||
+      value.completed.some((name) => typeof name !== "string")
+    ) {
+      throw new Error("missing completed task names");
+    }
+    return new Set(value.completed);
+  } catch (reason) {
+    throw new Error(
+      `The workflow completion checkpoint is not readable: ${reason instanceof Error ? reason.message : String(reason)}`,
       { cause: reason }
     );
   }

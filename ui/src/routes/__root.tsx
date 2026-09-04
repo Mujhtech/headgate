@@ -8,6 +8,7 @@ import {
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { queryClient } from "@/lib/query";
+import { themeBootstrapScript } from "@/lib/theme";
 import appCss from "../styles.css?url";
 
 export const Route = createRootRoute({
@@ -48,9 +49,12 @@ function NotFound() {
 
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <HeadContent />
+        <script id="headgate-theme" suppressHydrationWarning>
+          {themeBootstrapScript}
+        </script>
         <script id="headgate-config" suppressHydrationWarning>
           {`window.HEADGATE = window.HEADGATE || {apiBase:"/api/v1",readOnly:false};`}
         </script>

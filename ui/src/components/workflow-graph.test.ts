@@ -74,4 +74,34 @@ describe("workflow graph", () => {
 
     expect(workflowGraphLayers(cyclic)).toEqual([[1, cyclic]]);
   });
+
+  it("shows retained completion without linking to an expired job", () => {
+    const retained: WorkflowGraphItem[] = [
+      {
+        deps: [],
+        job: null,
+        job_id: "wf:prepare",
+        name: "prepare",
+        recordedCompletion: true,
+      },
+      {
+        deps: ["prepare"],
+        job: { id: "wf:process", kind: "demo:step", state: "running" },
+        job_id: "wf:process",
+        name: "process",
+      },
+    ];
+    const graph = buildWorkflowGraph(retained, "wf");
+    const prepare = graph.nodes.find((node) => node.id === "prepare");
+    const process = graph.nodes.find((node) => node.id === "process");
+
+    expect(prepare?.data).toMatchObject({
+      inspectable: false,
+      state: "completed",
+    });
+    expect(process?.data).toMatchObject({
+      dependencyText: "1 dependency satisfied",
+    });
+    expect(graph.edges[0]?.style).toMatchObject({ stroke: "var(--success)" });
+  });
 });

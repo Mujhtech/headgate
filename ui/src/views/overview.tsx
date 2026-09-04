@@ -62,6 +62,7 @@ import {
   mergeQueueHistories,
   type QueueHistoryBucket,
   type QueueMetric,
+  resolveQueueSelection,
   summarizeHistory,
   summarizeQueues,
 } from "@/lib/metrics";
@@ -343,13 +344,7 @@ export function OverviewView({
     ? queuesQuery.data
     : (queuesQuery.data?.queues ?? []);
   const summary = summarizeQueues(queues);
-  const defaultQueue =
-    summary.slowestDrain?.queue ?? summary.oldest?.queue ?? queues[0]?.queue;
-  const selectedQueue =
-    requestedQueue === "all" ||
-    queues.some((item) => item.queue === requestedQueue)
-      ? requestedQueue
-      : defaultQueue;
+  const selectedQueue = resolveQueueSelection(requestedQueue, queues);
   const selectedRange =
     rangeOptions.find((item) => item.value === range) ?? rangeOptions[1];
   const historySince = Date.now() - selectedRange.duration;

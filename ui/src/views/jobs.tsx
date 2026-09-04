@@ -310,8 +310,7 @@ export function JobDrawer({
       jobPath === null
         ? Promise.reject(new Error("Job ID is required."))
         : api<JobProgress>(`${jobPath}/progress`, { signal }),
-    Boolean(id && open && job?.state === "running"),
-    2000
+    Boolean(id && open && job?.state === "running")
   );
   const checkpointQuery = useConsoleQuery(
     ["api", "job-checkpoint", id],

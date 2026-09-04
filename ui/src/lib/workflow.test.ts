@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { decodeWorkflowPayload } from "./workflow";
+import {
+  decodeWorkflowCompletionCursor,
+  decodeWorkflowPayload,
+} from "./workflow";
 
 function encoded(value: unknown) {
   return btoa(JSON.stringify(value));
@@ -31,5 +34,23 @@ describe("decodeWorkflowPayload", () => {
         })
       )
     ).toThrow("node 0 has invalid dependencies");
+  });
+});
+
+describe("decodeWorkflowCompletionCursor", () => {
+  it("returns the durable names of completed tasks", () => {
+    expect([
+      ...decodeWorkflowCompletionCursor(encoded({ completed: ["prepare"] })),
+    ]).toEqual(["prepare"]);
+  });
+
+  it("treats an absent cursor as no retained evidence", () => {
+    expect(decodeWorkflowCompletionCursor(null).size).toBe(0);
+  });
+
+  it("rejects malformed completion evidence", () => {
+    expect(() =>
+      decodeWorkflowCompletionCursor(encoded({ completed: [42] }))
+    ).toThrow("workflow completion checkpoint is not readable");
   });
 });

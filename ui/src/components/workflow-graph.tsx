@@ -30,10 +30,12 @@ export interface WorkflowGraphItem {
   job: WorkflowGraphJob | null;
   job_id: string;
   name: string;
+  recordedCompletion?: boolean;
 }
 
 interface TaskNodeData extends Record<string, unknown> {
   dependencyText: string;
+  inspectable: boolean;
   jobId: string;
   kind: string;
   name: string;
@@ -179,12 +181,17 @@ export function buildWorkflowGraph(
     });
 
     stageItems.forEach((item, itemIndex) => {
-      const state = item.job?.state ?? "missing";
-      const blockedBy = item.deps.filter(
-        (dependency) =>
-          items.find((candidate) => candidate.name === dependency)?.job
-            ?.state !== "completed"
-      );
+      const state =
+        item.job?.state ?? (item.recordedCompletion ? "completed" : "missing");
+      const blockedBy = item.deps.filter((dependency) => {
+        const candidate = items.find(
+          (candidateItem) => candidateItem.name === dependency
+        );
+        return (
+          candidate?.job?.state !== "completed" &&
+          !candidate?.recordedCompletion
+        );
+      });
       const dependencyText = item.deps.length
         ? blockedBy.length
           ? `Waiting for ${blockedBy.join(", ")}`
@@ -193,6 +200,7 @@ export function buildWorkflowGraph(
       const node: TaskNode = {
         data: {
           dependencyText,
+          inspectable: item.job !== null,
           jobId: item.job_id,
           kind: item.job?.kind ?? item.job_id,
           name: item.name,
@@ -252,6 +260,45 @@ export function buildWorkflowGraph(
 
 const TaskCard = memo(function WorkflowTaskCard({ data }: NodeProps<TaskNode>) {
   const active = data.state === "running";
+  const className = `nodrag nopan flex h-31 w-65 flex-col rounded-xl border bg-background p-3 text-left text-foreground shadow-sm outline-none transition-[border-color,box-shadow,background-color,transform] ${data.inspectable ? "hover:-translate-y-0.5 hover:border-primary/50 hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" : "cursor-default"} ${nodeBorder(data.state)} ${active ? "border-success/60 bg-success/5 shadow-md shadow-success/10" : ""} ${data.selected ? "ring-2 ring-primary ring-offset-2" : ""}`;
+  const content = (
+    <>
+      <div className="flex items-start gap-2">
+        {data.state === "completed" ? (
+          <CheckCircle2Icon
+            aria-hidden="true"
+            className="mt-0.5 size-4 shrink-0 text-success"
+          />
+        ) : (
+          <CircleDashedIcon
+            aria-hidden="true"
+            className={`mt-0.5 size-4 shrink-0 ${active ? "animate-spin text-success motion-reduce:animate-none" : "text-muted-foreground"}`}
+          />
+        )}
+        <div className="min-w-0 flex-1">
+          <p className="wrap-break-word font-semibold text-sm">{data.name}</p>
+          <p
+            className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground"
+            title={data.jobId}
+            translate="no"
+          >
+            {data.kind}
+          </p>
+        </div>
+        <Badge variant={badgeVariant(data.state)}>{data.state}</Badge>
+      </div>
+      <p
+        className={`mt-auto truncate border-t pt-2 text-xs ${active ? "font-medium text-success" : data.dependencyText.startsWith("Waiting") ? "text-warning" : "text-muted-foreground"}`}
+        title={data.dependencyText}
+      >
+        {active
+          ? "Running now"
+          : data.inspectable
+            ? data.dependencyText
+            : "Completion retained; job expired"}
+      </p>
+    </>
+  );
   return (
     <>
       <Handle
@@ -260,43 +307,18 @@ const TaskCard = memo(function WorkflowTaskCard({ data }: NodeProps<TaskNode>) {
         position={Position.Left}
         type="target"
       />
-      <a
-        aria-current={data.selected ? "location" : undefined}
-        aria-label={`${data.name}, ${data.state}. ${data.dependencyText}`}
-        className={`nodrag nopan flex h-31 w-65 flex-col rounded-xl border bg-background p-3 text-left text-foreground shadow-sm outline-none transition-[border-color,box-shadow,background-color,transform] hover:-translate-y-0.5 hover:border-primary/50 hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${nodeBorder(data.state)} ${active ? "border-success/60 bg-success/5 shadow-md shadow-success/10" : ""} ${data.selected ? "ring-2 ring-primary ring-offset-2" : ""}`}
-        href={`/workflows/${encodeURIComponent(data.workflowId)}?selected=${encodeURIComponent(data.jobId)}`}
-      >
-        <div className="flex items-start gap-2">
-          {data.state === "completed" ? (
-            <CheckCircle2Icon
-              aria-hidden="true"
-              className="mt-0.5 size-4 shrink-0 text-success"
-            />
-          ) : (
-            <CircleDashedIcon
-              aria-hidden="true"
-              className={`mt-0.5 size-4 shrink-0 ${active ? "animate-spin text-success motion-reduce:animate-none" : "text-muted-foreground"}`}
-            />
-          )}
-          <div className="min-w-0 flex-1">
-            <p className="wrap-break-word font-semibold text-sm">{data.name}</p>
-            <p
-              className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground"
-              title={data.jobId}
-              translate="no"
-            >
-              {data.kind}
-            </p>
-          </div>
-          <Badge variant={badgeVariant(data.state)}>{data.state}</Badge>
-        </div>
-        <p
-          className={`mt-auto truncate border-t pt-2 text-xs ${active ? "font-medium text-success" : data.dependencyText.startsWith("Waiting") ? "text-warning" : "text-muted-foreground"}`}
-          title={data.dependencyText}
+      {data.inspectable ? (
+        <a
+          aria-current={data.selected ? "location" : undefined}
+          aria-label={`${data.name}, ${data.state}. ${data.dependencyText}`}
+          className={className}
+          href={`/workflows/${encodeURIComponent(data.workflowId)}?selected=${encodeURIComponent(data.jobId)}`}
         >
-          {active ? "Running now" : data.dependencyText}
-        </p>
-      </a>
+          {content}
+        </a>
+      ) : (
+        <div className={className}>{content}</div>
+      )}
       <Handle
         className="size-px! border-0! bg-transparent!"
         isConnectable={false}
@@ -350,6 +372,7 @@ export function WorkflowGraph({
     (event, node) => {
       if (
         node.type !== "task" ||
+        !node.data.inspectable ||
         event.button !== 0 ||
         event.metaKey ||
         event.ctrlKey ||

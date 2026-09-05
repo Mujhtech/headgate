@@ -16,6 +16,7 @@ export const Route = createRootRoute({
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
+      { name: "google", content: "notranslate" },
       { name: "theme-color", content: "#111827" },
       { title: "headgate console" },
     ],
@@ -52,7 +53,12 @@ function NotFound() {
 
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html
+      className="notranslate"
+      lang="en"
+      suppressHydrationWarning
+      translate="no"
+    >
       <head>
         <HeadContent />
         <script id="headgate-theme" suppressHydrationWarning>
@@ -62,7 +68,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
           {`window.HEADGATE = window.HEADGATE || {apiBase:"/api/v1",readOnly:false};`}
         </script>
       </head>
-      <body>
+      <body className="scrollbar-thin console-scrollbar">
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>{children}</TooltipProvider>
         </QueryClientProvider>

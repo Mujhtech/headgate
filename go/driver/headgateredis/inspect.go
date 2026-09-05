@@ -1339,7 +1339,7 @@ func (s *RedisStore) AppendDurableEvent(ctx context.Context, event headgate.Dura
 	const script = `local old=redis.call('HGET',KEYS[2],ARGV[2])
 if old then return {'0',old} end
 local id=redis.call('INCR',KEYS[3])
-local value=cjson.encode({event_id=id,scope=ARGV[1],topic=ARGV[3],idempotency_key=ARGV[2],payload=cjson.decode(ARGV[4]),source=cjson.decode(ARGV[5]),recorded_at_ms=ARGV[6]})
+local value=cjson.encode({event_id=id,scope=ARGV[1],topic=ARGV[3],idempotency_key=ARGV[2],payload=ARGV[4],source=ARGV[5],recorded_at_ms=tonumber(ARGV[6])})
 redis.call('HSET',KEYS[2],ARGV[2],value)
 redis.call('ZADD',KEYS[1],id,value)
 local excess=redis.call('ZCARD',KEYS[1])-tonumber(ARGV[7])
@@ -1406,12 +1406,50 @@ func decodeDurableEvent(data []byte) (headgate.DurableEvent, error) {
 		IdempotencyKey string          `json:"idempotency_key"`
 		Payload        json.RawMessage `json:"payload"`
 		Source         json.RawMessage `json:"source"`
-		RecordedAtMs   int64           `json:"recorded_at_ms"`
+		RecordedAtMs   json.RawMessage `json:"recorded_at_ms"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return headgate.DurableEvent{}, fmt.Errorf("decoding stored durable event: %w", err)
 	}
-	return headgate.DurableEvent{EventID: raw.EventID, Scope: raw.Scope, Topic: raw.Topic, IdempotencyKey: raw.IdempotencyKey, Payload: raw.Payload, Source: raw.Source, RecordedAtMs: raw.RecordedAtMs}, nil
+	payload, err := decodeStoredJSON(raw.Payload)
+	if err != nil {
+		return headgate.DurableEvent{}, fmt.Errorf("decoding stored durable event: payload: %w", err)
+	}
+	source, err := decodeStoredJSON(raw.Source)
+	if err != nil {
+		return headgate.DurableEvent{}, fmt.Errorf("decoding stored durable event: source: %w", err)
+	}
+	recordedAtMs, err := decodeJSONInt64(raw.RecordedAtMs)
+	if err != nil {
+		return headgate.DurableEvent{}, fmt.Errorf("decoding stored durable event: recorded_at_ms: %w", err)
+	}
+	return headgate.DurableEvent{EventID: raw.EventID, Scope: raw.Scope, Topic: raw.Topic, IdempotencyKey: raw.IdempotencyKey, Payload: payload, Source: source, RecordedAtMs: recordedAtMs}, nil
+}
+
+func decodeStoredJSON(data []byte) (json.RawMessage, error) {
+	if len(data) > 0 && data[0] == '"' {
+		var encoded string
+		if err := json.Unmarshal(data, &encoded); err != nil {
+			return nil, err
+		}
+		data = []byte(encoded)
+	}
+	if !json.Valid(data) {
+		return nil, errors.New("invalid JSON")
+	}
+	return json.RawMessage(bytes.Clone(data)), nil
+}
+
+func decodeJSONInt64(data []byte) (int64, error) {
+	var value int64
+	if err := json.Unmarshal(data, &value); err == nil {
+		return value, nil
+	}
+	var encoded string
+	if err := json.Unmarshal(data, &encoded); err != nil {
+		return 0, err
+	}
+	return strconv.ParseInt(encoded, 10, 64)
 }
 
 func (s *RedisStore) HeartbeatWorker(ctx context.Context, w headgate.WorkerMeta) (string, error) {

@@ -1261,7 +1261,7 @@ impl Inspect for RedisStore {
             "local old=redis.call('HGET',KEYS[2],ARGV[2])\n\
              if old then return {'0',old} end\n\
              local id=redis.call('INCR',KEYS[3])\n\
-             local value=cjson.encode({event_id=id,scope=ARGV[1],topic=ARGV[3],idempotency_key=ARGV[2],payload=cjson.decode(ARGV[4]),source=cjson.decode(ARGV[5]),recorded_at_ms=ARGV[6]})\n\
+             local value=cjson.encode({event_id=id,scope=ARGV[1],topic=ARGV[3],idempotency_key=ARGV[2],payload=ARGV[4],source=ARGV[5],recorded_at_ms=tonumber(ARGV[6])})\n\
              redis.call('HSET',KEYS[2],ARGV[2],value)\n\
              redis.call('ZADD',KEYS[1],id,value)\n\
              local excess=redis.call('ZCARD',KEYS[1])-tonumber(ARGV[7])\n\
@@ -1841,17 +1841,52 @@ fn validate_durable_event(event: &DurableEvent) -> Result<(), StoreError> {
 fn decode_durable_event(bytes: &[u8]) -> Result<DurableEvent, StoreError> {
     let value: serde_json::Value = serde_json::from_slice(bytes)
         .map_err(|e| StoreError::Invalid(format!("invalid stored durable event: {e}")))?;
+    let recorded_at_ms = value["recorded_at_ms"]
+        .as_i64()
+        .or_else(|| value["recorded_at_ms"].as_str()?.parse().ok())
+        .ok_or_else(|| StoreError::Invalid("invalid stored durable event recorded_at_ms".into()))?;
+    let stored_json = |field: &str| -> Result<Vec<u8>, StoreError> {
+        if let Some(encoded) = value[field].as_str() {
+            serde_json::from_str::<serde_json::Value>(encoded).map_err(|e| {
+                StoreError::Invalid(format!("invalid stored durable event {field}: {e}"))
+            })?;
+            Ok(encoded.as_bytes().to_vec())
+        } else {
+            serde_json::to_vec(&value[field]).map_err(|e| {
+                StoreError::Invalid(format!("invalid stored durable event {field}: {e}"))
+            })
+        }
+    };
     Ok(DurableEvent {
         event_id: value["event_id"].as_u64().unwrap_or_default(),
         scope: value["scope"].as_str().unwrap_or_default().into(),
         topic: value["topic"].as_str().unwrap_or_default().into(),
         idempotency_key: value["idempotency_key"].as_str().unwrap_or_default().into(),
-        payload: serde_json::to_vec(&value["payload"])
-            .map_err(|e| StoreError::Invalid(e.to_string()))?,
-        source: serde_json::to_vec(&value["source"])
-            .map_err(|e| StoreError::Invalid(e.to_string()))?,
-        recorded_at_ms: value["recorded_at_ms"].as_i64().unwrap_or_default(),
+        payload: stored_json("payload")?,
+        source: stored_json("source")?,
+        recorded_at_ms,
     })
+}
+
+#[cfg(test)]
+mod durable_event_tests {
+    use super::decode_durable_event;
+
+    #[test]
+    fn current_and_legacy_redis_timestamps_decode() {
+        let fixtures = [
+            r#"{"event_id":7,"scope":"workflow:w1","topic":"approved","idempotency_key":"signal:1","payload":"{\"approved\": true}","source":"{\"emitter\": \"api\"}","recorded_at_ms":1720000000123}"#,
+            r#"{"event_id":7,"scope":"workflow:w1","topic":"approved","idempotency_key":"signal:1","payload":{"approved":true},"source":{"emitter":"api"},"recorded_at_ms":"1720000000123"}"#,
+        ];
+        for encoded in fixtures {
+            let event = decode_durable_event(encoded.as_bytes()).unwrap();
+            assert_eq!(event.event_id, 7);
+            assert_eq!(event.recorded_at_ms, 1_720_000_000_123);
+        }
+        let current = decode_durable_event(fixtures[0].as_bytes()).unwrap();
+        assert_eq!(current.payload, br#"{"approved": true}"#);
+        assert_eq!(current.source, br#"{"emitter": "api"}"#);
+    }
 }
 
 #[async_trait::async_trait]

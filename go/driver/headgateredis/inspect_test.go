@@ -13,6 +13,26 @@ import (
 	headgate "github.com/mujhtech/headgate/go"
 )
 
+func TestDecodeDurableEventAcceptsCurrentAndLegacyRedisTimestamps(t *testing.T) {
+	fixtures := []string{
+		`{"event_id":7,"scope":"workflow:w1","topic":"approved","idempotency_key":"signal:1","payload":"{\"approved\": true}","source":"{\"emitter\": \"api\"}","recorded_at_ms":1720000000123}`,
+		`{"event_id":7,"scope":"workflow:w1","topic":"approved","idempotency_key":"signal:1","payload":{"approved":true},"source":{"emitter":"api"},"recorded_at_ms":"1720000000123"}`,
+	}
+	for index, fixture := range fixtures {
+		event, err := decodeDurableEvent([]byte(fixture))
+		if err != nil {
+			t.Fatalf("fixture %d: %v", index, err)
+		}
+		if event.EventID != 7 || event.RecordedAtMs != 1720000000123 {
+			t.Fatalf("fixture %d decoded as %#v", index, event)
+		}
+	}
+	current, err := decodeDurableEvent([]byte(fixtures[0]))
+	if err != nil || string(current.Payload) != `{"approved": true}` || string(current.Source) != `{"emitter": "api"}` {
+		t.Fatalf("current payload/source bytes were not preserved: %#v, %v", current, err)
+	}
+}
+
 func TestSchedulerEnqueueEventsAreDurableAndBoundedOnGoRedis(t *testing.T) {
 	s, _, ctx := testStore(t, "gri-audit")
 	for tick := int64(1); tick <= 105; tick++ {

@@ -20,6 +20,7 @@ var objects = map[string]struct{}{
 	"headgate_effect": {}, "headgate_operation": {},
 	"headgate_enqueue_policy": {}, "headgate_enqueue_counter": {},
 	"headgate_job_tag": {}, "headgate_queue_sample": {},
+	"headgate_durable_event_scope": {}, "headgate_durable_event": {},
 	"headgate_archive_policy": {}, "headgate_job_archive": {},
 	"headgate_job_archive_before_2025": {},
 	"headgate_job_archive_202501":      {},
@@ -114,6 +115,7 @@ var indexes = map[string]struct{}{
 	"headgate_job_unique": {}, "headgate_job_unique_throttle": {},
 	"headgate_job_sticky_available": {}, "headgate_job_avail_sticky": {},
 	"headgate_job_archive_queue_time": {},
+	"headgate_durable_event_recent":   {},
 }
 
 type Namespace struct {

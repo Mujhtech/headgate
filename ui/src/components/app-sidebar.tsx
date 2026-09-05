@@ -67,9 +67,13 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
               size="lg"
               tooltip="headgate"
             >
-              <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
-                <span className="font-semibold text-sm">h</span>
-              </div>
+              <img
+                alt=""
+                className="size-8 shrink-0"
+                height="32"
+                src="/favicon.svg"
+                width="32"
+              />
               <div className="grid flex-1 text-left leading-tight">
                 <span className="truncate font-semibold">headgate</span>
                 <span className="truncate text-xs">operations console</span>

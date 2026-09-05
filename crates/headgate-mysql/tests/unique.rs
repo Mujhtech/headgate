@@ -119,7 +119,8 @@ async fn field(id: &str, col: &str) -> String {
 async fn generated(id: &str) -> (bool, bool) {
     use mysql_async::prelude::*;
     let mut c = raw().await;
-    let row: Option<(Option<Vec<u8>>, Option<Vec<u8>>)> = c
+    type GeneratedUniqueKeys = (Option<Vec<u8>>, Option<Vec<u8>>);
+    let row: Option<GeneratedUniqueKeys> = c
         .exec_first(
             "SELECT unique_active, unique_throttle FROM headgate_job WHERE ulid = ?",
             (id,),

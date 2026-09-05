@@ -83,12 +83,21 @@ func TestMigrationIndexesAndNewMetricTablesStayInsideExplicitSchema(t *testing.T
 	rendered := namespace.Render(`DROP INDEX headgate_job_unique;
 		CREATE UNIQUE INDEX headgate_job_unique ON headgate_job (unique_key);
 		CREATE TABLE headgate_job_tag (job_id bigint);
-		CREATE TABLE headgate_queue_sample (queue text);`)
+		CREATE TABLE headgate_queue_sample (queue text);
+		CREATE TABLE headgate_durable_event_scope (scope text);
+		CREATE TABLE headgate_durable_event (scope text REFERENCES headgate_durable_event_scope(scope));
+		CREATE INDEX headgate_durable_event_recent ON headgate_durable_event (scope);
+		DROP INDEX headgate_durable_event_recent;`)
 	for _, expected := range []string{
 		`DROP INDEX "tenant".headgate_job_unique`,
 		`CREATE UNIQUE INDEX headgate_job_unique ON "tenant".headgate_job`,
 		`CREATE TABLE "tenant".headgate_job_tag`,
 		`CREATE TABLE "tenant".headgate_queue_sample`,
+		`CREATE TABLE "tenant".headgate_durable_event_scope`,
+		`CREATE TABLE "tenant".headgate_durable_event`,
+		`REFERENCES "tenant".headgate_durable_event_scope`,
+		`CREATE INDEX headgate_durable_event_recent ON "tenant".headgate_durable_event`,
+		`DROP INDEX "tenant".headgate_durable_event_recent`,
 	} {
 		if !strings.Contains(rendered, expected) {
 			t.Fatalf("rendered SQL does not contain %q:\n%s", expected, rendered)

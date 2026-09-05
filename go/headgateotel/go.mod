@@ -20,7 +20,10 @@ require (
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 )
 
-require golang.org/x/sys v0.41.0 // indirect
+require (
+	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
+)
 
 replace github.com/mujhtech/headgate/go => ..
 

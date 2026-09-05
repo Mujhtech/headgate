@@ -35,6 +35,8 @@ pub(crate) const TABLES: &[&str] = &[
     "headgate_duty",
     "headgate_schedule",
     "headgate_schedule_event",
+    "headgate_durable_event_scope",
+    "headgate_durable_event",
     "headgate_worker",
     "headgate_effect",
     "headgate_operation",
@@ -94,6 +96,8 @@ required_columns!(POSTGRES_COLUMNS {
     "headgate_schedule_event" => [
         "id", "schedule_id", "tick_ms", "job_id", "outcome", "reason", "recorded_at_ms"
     ],
+    "headgate_durable_event_scope" => ["scope"],
+    "headgate_durable_event" => ["id", "scope", "topic", "idempotency_key", "payload", "source", "recorded_at_ms"],
     "headgate_worker" => [
         "worker_id", "host", "pid", "queues", "concurrency", "started_at_ms",
         "heartbeat_at_ms", "command", "inflight", "polls", "empty_polls", "status",
@@ -164,6 +168,8 @@ required_columns!(MYSQL_COLUMNS {
     "headgate_schedule_event" => [
         "id", "schedule_id", "tick_ms", "job_id", "outcome", "reason", "recorded_at_ms"
     ],
+    "headgate_durable_event_scope" => ["scope"],
+    "headgate_durable_event" => ["id", "scope", "topic", "idempotency_key", "payload", "source", "recorded_at_ms"],
     "headgate_worker" => [
         "worker_id", "host", "pid", "queues", "concurrency", "started_at_ms",
         "heartbeat_at_ms", "command", "inflight", "polls", "empty_polls"
@@ -203,6 +209,7 @@ pub(crate) const POSTGRES_INDEXES: &[&str] = &[
     "headgate_partition_counter_recent",
     "headgate_schedule_due",
     "headgate_schedule_event_recent",
+    "headgate_durable_event_recent",
     "headgate_job_archive_queue_time",
 ];
 
@@ -225,6 +232,7 @@ pub(crate) const MYSQL_INDEXES: &[&str] = &[
     "headgate_partition_counter_recent",
     "headgate_schedule_due",
     "headgate_schedule_event_recent",
+    "headgate_durable_event_recent",
     "headgate_job_archive_queue_time",
 ];
 

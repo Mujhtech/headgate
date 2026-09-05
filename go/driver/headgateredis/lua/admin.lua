@@ -95,7 +95,7 @@ local function do_cancel(id, h)
   if ret > 0 then redis.call('ZADD', p .. ':ret', now + ret, id) end
 end
 
--- archived|cancelled -> available (operator_retry).
+-- archived|cancelled|undecodable -> available (operator_retry).
 local function do_retry(id, h)
   local st, q, part, fp = h[1], h[2], h[3], h[4]
   local uk, uw = h[5], tonumber(h[6] or '0') or 0
@@ -141,7 +141,7 @@ if op == 'cancel' then
   local id = ARGV[2]
   local h = job_head(id)
   if not h[1] then return {'NF'} end
-  if h[1] ~= 'pending' and h[1] ~= 'scheduled' and h[1] ~= 'available' and h[1] ~= 'running' then
+  if h[1] ~= 'pending' and h[1] ~= 'scheduled' and h[1] ~= 'available' and h[1] ~= 'running' and h[1] ~= 'retryable' then
     return {'ERR', h[1]}
   end
   do_cancel(id, h)
@@ -158,6 +158,17 @@ elseif op == 'promote' then
   add_waiting(id, h[2], h[3], h[8], now)
   redis.call('ZADD', p .. ':avail:' .. h[2] .. ':' .. h[3], now, id)
   redis.call('ZADD', p .. ':metricparts:' .. h[2], now, h[3])
+  return {'OK'}
+elseif op == 'schedule_pending' then
+  local id, at = ARGV[2], tonumber(ARGV[3])
+  local h = job_head(id)
+  if not h[1] then return {'NF'} end
+  if h[1] ~= 'pending' or not at or at <= 0 then return {'ERR', h[1]} end
+  redis.call('ZREM', idx(h[2], 'pending'), id)
+  redis.call('ZADD', idx(h[2], 'scheduled'), at, id)
+  redis.call('ZADD', p .. ':sched', at, id)
+  add_waiting(id, h[2], h[3], h[8], at)
+  redis.call('HSET', jk(id), 'state', 'scheduled', 'scheduled_at_ms', at)
   return {'OK'}
 
 elseif op == 'queue_delete' then
@@ -187,7 +198,7 @@ elseif op == 'retry' then
   local id = ARGV[2]
   local h = job_head(id)
   if not h[1] then return {'NF'} end
-  if h[1] ~= 'archived' and h[1] ~= 'cancelled' then return {'ERR', h[1]} end
+  if h[1] ~= 'archived' and h[1] ~= 'cancelled' and h[1] ~= 'undecodable' then return {'ERR', h[1]} end
   local holder = do_retry(id, h)
   if holder then return {'DUP', holder} end
   return {'OK'}

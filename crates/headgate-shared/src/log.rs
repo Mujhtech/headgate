@@ -125,44 +125,42 @@ impl LogEntry {
             fields: Map::new(),
             truncated: false,
         };
-        if line.len() <= MAX_LOG_BYTES {
-            if let Some(body) = line.strip_prefix(LOG_PREFIX) {
-                if let Ok(value) = serde_json::from_str::<Value>(body) {
-                    if let (Some(level), Some(message)) = (
-                        value
-                            .get("level")
-                            .and_then(Value::as_str)
-                            .and_then(LogLevel::parse),
-                        value.get("message").and_then(Value::as_str),
-                    ) {
-                        let fields_valid = value.get("fields").is_none_or(|fields| {
-                            fields.as_object().is_some_and(|fields| {
-                                fields.values().all(|v| !v.is_array() && !v.is_object())
-                            })
-                        });
-                        if !fields_valid
-                            || value.get("at_ms").is_some_and(|at| !at.is_i64())
-                            || value.get("truncated").is_some_and(|v| !v.is_boolean())
-                        {
-                            return plain();
-                        }
-                        return Self {
-                            level,
-                            at_ms: value.get("at_ms").and_then(Value::as_i64),
-                            message: message.to_owned(),
-                            fields: value
-                                .get("fields")
-                                .and_then(Value::as_object)
-                                .cloned()
-                                .unwrap_or_default(),
-                            truncated: value
-                                .get("truncated")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false),
-                        };
-                    }
-                }
+        if line.len() <= MAX_LOG_BYTES
+            && let Some(body) = line.strip_prefix(LOG_PREFIX)
+            && let Ok(value) = serde_json::from_str::<Value>(body)
+            && let (Some(level), Some(message)) = (
+                value
+                    .get("level")
+                    .and_then(Value::as_str)
+                    .and_then(LogLevel::parse),
+                value.get("message").and_then(Value::as_str),
+            )
+        {
+            let fields_valid = value.get("fields").is_none_or(|fields| {
+                fields
+                    .as_object()
+                    .is_some_and(|fields| fields.values().all(|v| !v.is_array() && !v.is_object()))
+            });
+            if !fields_valid
+                || value.get("at_ms").is_some_and(|at| !at.is_i64())
+                || value.get("truncated").is_some_and(|v| !v.is_boolean())
+            {
+                return plain();
             }
+            return Self {
+                level,
+                at_ms: value.get("at_ms").and_then(Value::as_i64),
+                message: message.to_owned(),
+                fields: value
+                    .get("fields")
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default(),
+                truncated: value
+                    .get("truncated")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            };
         }
         plain()
     }

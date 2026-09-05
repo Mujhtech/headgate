@@ -23,6 +23,7 @@ package headgatemysql
 //     so "0 rows" unambiguously means "no such row".
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -782,14 +783,14 @@ func (s *MysqlStore) OperatorRetry(ctx context.Context, id string) error {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO headgate_active_partition (queue, partition_key)
 			SELECT queue, partition_key FROM headgate_job
-			WHERE ulid = ? AND state IN ('archived', 'cancelled')
+			WHERE ulid = ? AND state IN ('archived', 'cancelled', 'undecodable')
 			ON DUPLICATE KEY UPDATE queue = VALUES(queue)`, id); err != nil {
 			return 0, err
 		}
 		res, err := tx.ExecContext(ctx, `
 			UPDATE headgate_job SET state = 'available', scheduled_at_ms = `+nowMS+`,
 			       finalized_at_ms = NULL
-			WHERE ulid = ? AND state IN ('archived', 'cancelled')`, id)
+			WHERE ulid = ? AND state IN ('archived', 'cancelled', 'undecodable')`, id)
 		if err != nil {
 			return 0, err
 		}
@@ -812,7 +813,7 @@ func (s *MysqlStore) OperatorRetry(ctx context.Context, id string) error {
 	if !found {
 		return headgate.NotFoundf("job %s", id)
 	}
-	return headgate.Invalidf("operator_retry is only defined from archived or cancelled; job %s is %s", id, st)
+	return headgate.Invalidf("operator_retry is only defined from archived, cancelled, or undecodable; job %s is %s", id, st)
 }
 
 func (s *MysqlStore) OperatorCancel(ctx context.Context, id string) error {
@@ -838,7 +839,7 @@ func (s *MysqlStore) OperatorCancel(ctx context.Context, id string) error {
 			UPDATE headgate_job SET state = 'cancelled', lease_id = NULL,
 			       lease_expires_at_ms = NULL, claimed_by = NULL,
 			       finalized_at_ms = `+nowMS+`
-			WHERE ulid = ? AND state IN ('pending', 'scheduled', 'available', 'running')`, id)
+			WHERE ulid = ? AND state IN ('pending', 'scheduled', 'available', 'running', 'retryable')`, id)
 		if err != nil {
 			return 0, err
 		}
@@ -1287,6 +1288,83 @@ func (s *MysqlStore) ListScheduleEvents(ctx context.Context, scheduleID string, 
 	return out, rows.Err()
 }
 
+func (s *MysqlStore) AppendDurableEvent(ctx context.Context, event headgate.DurableEvent) (headgate.DurableEvent, bool, error) {
+	if err := validateDurableEvent(event); err != nil {
+		return headgate.DurableEvent{}, false, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return headgate.DurableEvent{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err = tx.ExecContext(ctx, `INSERT IGNORE INTO headgate_durable_event_scope(scope) VALUES(?)`, event.Scope); err != nil {
+		return headgate.DurableEvent{}, false, err
+	}
+	var locked string
+	if err = tx.QueryRowContext(ctx, `SELECT scope FROM headgate_durable_event_scope WHERE scope=? FOR UPDATE`, event.Scope).Scan(&locked); err != nil {
+		return headgate.DurableEvent{}, false, err
+	}
+	var existingID uint64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM headgate_durable_event WHERE scope=? AND idempotency_key=?`, event.Scope, event.IdempotencyKey).Scan(&existingID)
+	inserted := errors.Is(err, sql.ErrNoRows)
+	if err != nil && !inserted {
+		return headgate.DurableEvent{}, false, err
+	}
+	if inserted {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO headgate_durable_event(scope,topic,idempotency_key,payload,source,recorded_at_ms) VALUES(?,?,?,?,?,`+nowMS+`)`, event.Scope, event.Topic, event.IdempotencyKey, event.Payload, event.Source); err != nil {
+			return headgate.DurableEvent{}, false, err
+		}
+	}
+	var topic string
+	var payload, source []byte
+	if err = tx.QueryRowContext(ctx, `SELECT id,topic,payload,source,recorded_at_ms FROM headgate_durable_event WHERE scope=? AND idempotency_key=?`, event.Scope, event.IdempotencyKey).Scan(&event.EventID, &topic, &payload, &source, &event.RecordedAtMs); err != nil {
+		return headgate.DurableEvent{}, false, err
+	}
+	if topic != event.Topic || !bytes.Equal(payload, event.Payload) || !bytes.Equal(source, event.Source) {
+		return headgate.DurableEvent{}, false, &headgate.InvalidError{Msg: "durable event idempotency key was reused with different content"}
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE e FROM headgate_durable_event e LEFT JOIN (SELECT id FROM headgate_durable_event WHERE scope=? ORDER BY id DESC LIMIT ?) keep ON keep.id=e.id WHERE e.scope=? AND keep.id IS NULL`, event.Scope, headgate.DurableEventLimit, event.Scope); err != nil {
+		return headgate.DurableEvent{}, false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return headgate.DurableEvent{}, false, err
+	}
+	return event, inserted, nil
+}
+
+func (s *MysqlStore) ListDurableEvents(ctx context.Context, scope string, beforeEventID uint64, limit uint32) ([]headgate.DurableEvent, error) {
+	if err := headgate.ValidateDurableEventLimit(limit); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,scope,topic,idempotency_key,payload,source,recorded_at_ms FROM headgate_durable_event WHERE scope=? AND (?=0 OR id<?) ORDER BY id DESC LIMIT ?`, scope, beforeEventID, beforeEventID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]headgate.DurableEvent, 0, limit)
+	for rows.Next() {
+		var event headgate.DurableEvent
+		if err := rows.Scan(&event.EventID, &event.Scope, &event.Topic, &event.IdempotencyKey, &event.Payload, &event.Source, &event.RecordedAtMs); err != nil {
+			return nil, err
+		}
+		out = append(out, event)
+	}
+	return out, rows.Err()
+}
+
+func validateDurableEvent(event headgate.DurableEvent) error {
+	if event.Scope == "" || len(event.Scope) > 512 || event.Topic == "" || len(event.Topic) > 255 || event.IdempotencyKey == "" || len(event.IdempotencyKey) > 255 {
+		return &headgate.InvalidError{Msg: "durable event scope, topic, or idempotency key is invalid"}
+	}
+	if len(event.Payload) > headgate.MaxDurableEventPayloadBytes || !json.Valid(event.Payload) {
+		return &headgate.InvalidError{Msg: "durable event payload must be valid JSON of at most 65536 bytes"}
+	}
+	if len(event.Source) > headgate.MaxDurableEventSourceBytes || !json.Valid(event.Source) {
+		return &headgate.InvalidError{Msg: "durable event source must be valid JSON of at most 16384 bytes"}
+	}
+	return nil
+}
+
 // ---------- worker registry + surveyed policy behavior control channel ----------
 
 func (s *MysqlStore) HeartbeatWorker(ctx context.Context, w headgate.WorkerMeta) (string, error) {
@@ -1590,6 +1668,25 @@ func (s *MysqlStore) PromoteJob(ctx context.Context, id string) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *MysqlStore) SchedulePendingJob(ctx context.Context, id string, atMs int64) error {
+	if atMs <= 0 {
+		return headgate.Invalidf("pending schedule timestamp must be positive")
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE headgate_job SET state='scheduled', scheduled_at_ms=?
+		WHERE ulid=? AND state='pending'`, atMs, id)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return headgate.Invalidf("workflow_schedule is defined only from pending")
+	}
+	return nil
 }
 
 func (s *MysqlStore) DeleteQueue(ctx context.Context, queue string, force bool) (string, error) {

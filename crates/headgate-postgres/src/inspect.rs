@@ -6,11 +6,12 @@
 
 use headgate_core::{
     AdmissionExplain, BulkRequest, Checkpoint, CheckpointInspect, ConcurrencyLimitConfig,
-    HistoryBucket, Inspect, JobFilter, JobOutput, JobPage, JobProgress, JobResult, JobSummary,
-    MissedPolicy, OperationStatus, OutputInspect, PartitionState, ProgressInspect, QuarantineEntry,
-    QueueStats, QuietGroupMetrics, RateClassConfig, RateClassState, ResultInspect,
-    SCHEDULE_EVENT_LIMIT, SaturationStrategy, Schedule, ScheduleEvent, ScheduleEventOutcome,
-    StateCounts, StoreError, WorkerMeta, noisy_partition_keys,
+    DURABLE_EVENT_LIMIT, DurableEvent, HistoryBucket, Inspect, JobFilter, JobOutput, JobPage,
+    JobProgress, JobResult, JobSummary, MissedPolicy, OperationStatus, OutputInspect,
+    PartitionState, ProgressInspect, QuarantineEntry, QueueStats, QuietGroupMetrics,
+    RateClassConfig, RateClassState, ResultInspect, SCHEDULE_EVENT_LIMIT, SaturationStrategy,
+    Schedule, ScheduleEvent, ScheduleEventOutcome, StateCounts, StoreError, WorkerMeta,
+    noisy_partition_keys,
 };
 use tokio_postgres::types::ToSql;
 
@@ -20,8 +21,6 @@ use crate::{NOW_MS, PgStore, decode_headers, map_pg_err};
 use headgate_shared::inspection::{
     MAX_PAGE, MEMORY_SAMPLE_LIMIT, POSITION_LIMIT, QUIET_PARTITION_LIMIT, SAMPLE_LIMIT,
 };
-/// Queue-position lookups cap here; "position >= 1000" is answer enough.
-
 fn job_from_row(row: &tokio_postgres::Row, include_payload: bool) -> JobSummary {
     JobSummary {
         id: row.get("ulid"),
@@ -271,8 +270,7 @@ impl Inspect for PgStore {
             // partial index. A noisy tenant's depth therefore cannot become admin work.
             let part_rows = c
                 .query(
-                    &format!(
-                        r#"
+                    r#"
                         WITH names AS (
                           SELECT partition_key FROM headgate_active_partition WHERE queue = $1
                           UNION SELECT partition_key FROM headgate_inflight
@@ -298,8 +296,7 @@ impl Inspect for PgStore {
                           ON i.queue = $1 AND i.partition_key = n.partition_key
                         LEFT JOIN rates r ON r.partition_key = n.partition_key
                         ORDER BY n.partition_key
-                        "#
-                    ),
+                        "#,
                     &[
                         &queue,
                         &(now_ms / 60000 * 60000 - 60000),
@@ -671,7 +668,7 @@ impl Inspect for PgStore {
             WITH upd AS (
               UPDATE headgate_job SET state = 'available', scheduled_at_ms = {NOW_MS},
                      finalized_at_ms = NULL
-              WHERE ulid = $1 AND state IN ('archived', 'cancelled')
+              WHERE ulid = $1 AND state IN ('archived', 'cancelled', 'undecodable')
               RETURNING queue, partition_key
             ),
             -- tenant fairness/adaptive admission retry-now makes the row available; list its partition here.
@@ -690,7 +687,7 @@ impl Inspect for PgStore {
         match self.job_state(&c, id).await? {
             None => Err(StoreError::NotFound(format!("job {id}"))),
             Some(state) => Err(StoreError::Invalid(format!(
-                "operator_retry is only defined from archived or cancelled; job {id} is {state}"
+                "operator_retry is only defined from archived, cancelled, or undecodable; job {id} is {state}"
             ))),
         }
     }
@@ -706,7 +703,7 @@ impl Inspect for PgStore {
             "WITH pick AS (
                SELECT j.id, j.queue, j.partition_key, (j.state = 'running') AS was_running
                FROM headgate_job j
-               WHERE j.ulid = $1 AND j.state IN ('pending', 'scheduled', 'available', 'running')
+               WHERE j.ulid = $1 AND j.state IN ('pending', 'scheduled', 'available', 'running', 'retryable')
                FOR UPDATE
              ),
              upd AS (
@@ -1119,6 +1116,107 @@ impl Inspect for PgStore {
             .collect()
     }
 
+    async fn append_durable_event(
+        &self,
+        event: &DurableEvent,
+    ) -> Result<(DurableEvent, bool), StoreError> {
+        validate_durable_event(event)?;
+        let mut c = self.client().await?;
+        let tx = c.transaction().await.map_err(map_pg_err)?;
+        tx.execute(
+            "INSERT INTO headgate_durable_event_scope(scope) VALUES($1) ON CONFLICT DO NOTHING",
+            &[&event.scope],
+        )
+        .await
+        .map_err(map_pg_err)?;
+        tx.query_one(
+            "SELECT scope FROM headgate_durable_event_scope WHERE scope=$1 FOR UPDATE",
+            &[&event.scope],
+        )
+        .await
+        .map_err(map_pg_err)?;
+        let sql = format!(
+            "INSERT INTO headgate_durable_event(scope,topic,idempotency_key,payload,source,recorded_at_ms)
+             VALUES($1,$2,$3,$4,$5,{NOW_MS}) ON CONFLICT(scope,idempotency_key) DO NOTHING
+             RETURNING id,recorded_at_ms"
+        );
+        let inserted = tx
+            .query(
+                &sql,
+                &[
+                    &event.scope as &(dyn ToSql + Sync),
+                    &event.topic,
+                    &event.idempotency_key,
+                    &event.payload,
+                    &event.source,
+                ],
+            )
+            .await
+            .map_err(map_pg_err)?
+            .into_iter()
+            .next();
+        let (id, recorded_at_ms, was_inserted) = if let Some(row) = inserted {
+            (row.get::<_, i64>(0) as u64, row.get(1), true)
+        } else {
+            let row = tx.query_one(
+                "SELECT id,topic,payload,source,recorded_at_ms FROM headgate_durable_event WHERE scope=$1 AND idempotency_key=$2",
+                &[&event.scope, &event.idempotency_key],
+            ).await.map_err(map_pg_err)?;
+            let topic: String = row.get(1);
+            let payload: Vec<u8> = row.get(2);
+            let source: Vec<u8> = row.get(3);
+            if topic != event.topic || payload != event.payload || source != event.source {
+                return Err(StoreError::Invalid(
+                    "durable event idempotency key was reused with different content".into(),
+                ));
+            }
+            (row.get::<_, i64>(0) as u64, row.get(4), false)
+        };
+        tx.execute(
+            "DELETE FROM headgate_durable_event WHERE scope=$1 AND id NOT IN
+             (SELECT id FROM headgate_durable_event WHERE scope=$1 ORDER BY id DESC LIMIT $2)",
+            &[&event.scope, &(DURABLE_EVENT_LIMIT as i64)],
+        )
+        .await
+        .map_err(map_pg_err)?;
+        tx.commit().await.map_err(map_pg_err)?;
+        Ok((
+            DurableEvent {
+                event_id: id,
+                recorded_at_ms,
+                ..event.clone()
+            },
+            was_inserted,
+        ))
+    }
+
+    async fn list_durable_events(
+        &self,
+        scope: &str,
+        before_event_id: Option<u64>,
+        limit: u32,
+    ) -> Result<Vec<DurableEvent>, StoreError> {
+        headgate_core::validate_durable_event_limit(limit)?;
+        let c = self.client().await?;
+        let rows = c.query(
+            "SELECT id,scope,topic,idempotency_key,payload,source,recorded_at_ms FROM headgate_durable_event
+             WHERE scope=$1 AND ($2::bigint IS NULL OR id<$2) ORDER BY id DESC LIMIT $3",
+            &[&scope, &before_event_id.map(|id| id as i64), &(limit as i64)],
+        ).await.map_err(map_pg_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| DurableEvent {
+                event_id: row.get::<_, i64>("id") as u64,
+                scope: row.get("scope"),
+                topic: row.get("topic"),
+                idempotency_key: row.get("idempotency_key"),
+                payload: row.get("payload"),
+                source: row.get("source"),
+                recorded_at_ms: row.get("recorded_at_ms"),
+            })
+            .collect())
+    }
+
     async fn heartbeat_worker(&self, w: &WorkerMeta) -> Result<Option<String>, StoreError> {
         let c = self.client().await?;
         let status = if w.status.is_empty() {
@@ -1171,12 +1269,12 @@ impl Inspect for PgStore {
         worker_id: &str,
         command: Option<&str>,
     ) -> Result<(), StoreError> {
-        if let Some(cmd) = command {
-            if !headgate_core::valid_worker_command(cmd) {
-                return Err(StoreError::Invalid(
-                    "command must be quiet, resume, restart, terminate, or resign".into(),
-                ));
-            }
+        if let Some(cmd) = command
+            && !headgate_core::valid_worker_command(cmd)
+        {
+            return Err(StoreError::Invalid(
+                "command must be quiet, resume, restart, terminate, or resign".into(),
+            ));
         }
         let c = self.client().await?;
         let n = c
@@ -1394,6 +1492,30 @@ impl Inspect for PgStore {
         Ok(())
     }
 
+    async fn schedule_pending_job(&self, id: &str, at_ms: i64) -> Result<(), StoreError> {
+        if at_ms <= 0 {
+            return Err(StoreError::Invalid(
+                "pending schedule timestamp must be positive".into(),
+            ));
+        }
+        let c = self.client().await?;
+        let n = c
+            .execute(
+                "UPDATE headgate_job SET state = 'scheduled', scheduled_at_ms = $2
+                 WHERE ulid = $1 AND state = 'pending'",
+                &[&id, &at_ms],
+            )
+            .await
+            .map_err(map_pg_err)?;
+        if n == 1 {
+            Ok(())
+        } else {
+            Err(StoreError::Invalid(
+                "workflow_schedule is defined only from pending".into(),
+            ))
+        }
+    }
+
     async fn delete_queue(&self, queue: &str, force: bool) -> Result<Option<String>, StoreError> {
         let mut c = self.client().await?;
         let tx = c.transaction().await.map_err(map_pg_err)?;
@@ -1484,6 +1606,35 @@ impl Inspect for PgStore {
         ).await.map_err(map_pg_err)?;
         Ok(rows.len() as u32)
     }
+}
+
+fn validate_durable_event(event: &DurableEvent) -> Result<(), StoreError> {
+    if event.scope.is_empty()
+        || event.scope.len() > 512
+        || event.topic.is_empty()
+        || event.topic.len() > 255
+        || event.idempotency_key.is_empty()
+        || event.idempotency_key.len() > 255
+    {
+        return Err(StoreError::Invalid(
+            "durable event scope, topic, or idempotency key is invalid".into(),
+        ));
+    }
+    if event.payload.len() > headgate_core::MAX_DURABLE_EVENT_PAYLOAD_BYTES
+        || serde_json::from_slice::<serde_json::Value>(&event.payload).is_err()
+    {
+        return Err(StoreError::Invalid(
+            "durable event payload must be valid JSON of at most 65536 bytes".into(),
+        ));
+    }
+    if event.source.len() > headgate_core::MAX_DURABLE_EVENT_SOURCE_BYTES
+        || serde_json::from_slice::<serde_json::Value>(&event.source).is_err()
+    {
+        return Err(StoreError::Invalid(
+            "durable event source must be valid JSON of at most 16384 bytes".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[async_trait::async_trait]

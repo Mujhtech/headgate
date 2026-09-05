@@ -35,8 +35,9 @@ import {
 import { ApiError, api } from "@/lib/api";
 import type { JobCheckpoint } from "@/lib/resumable";
 import {
-  decodeWorkflowCompletionCursor,
+  decodeWorkflowCursor,
   decodeWorkflowPayload,
+  type WorkflowCursorProjection,
   type WorkflowNode,
 } from "@/lib/workflow";
 import { Route as WorkflowsRoute } from "@/routes/_console.workflows";
@@ -127,25 +128,25 @@ async function loadNodeJobs(nodes: WorkflowNode[], signal: AbortSignal) {
   return results;
 }
 
-async function loadCompletionEvidence(
+async function loadWorkflowCursor(
   coordinatorID: string,
   signal: AbortSignal
-) {
+): Promise<WorkflowCursorProjection> {
   try {
     const checkpoint = await api<JobCheckpoint>(
       `/jobs/${encodeURIComponent(coordinatorID)}/checkpoint`,
       { signal }
     );
     if (checkpoint.cursor_step !== "headgate:workflow-state") {
-      return new Set<string>();
+      return decodeWorkflowCursor(null);
     }
-    return decodeWorkflowCompletionCursor(checkpoint.cursor);
+    return decodeWorkflowCursor(checkpoint.cursor);
   } catch (reason) {
     if (
       reason instanceof ApiError &&
       (reason.status === 404 || reason.status === 501)
     ) {
-      return new Set<string>();
+      return decodeWorkflowCursor(null);
     }
     throw reason;
   }
@@ -224,7 +225,7 @@ export function WorkflowsView(_props: ViewProps) {
       <div className="mb-4">
         <h1 className="font-semibold text-lg">Workflows</h1>
         <p className="text-muted-foreground text-sm">
-          Static durable DAGs coordinated through ordinary headgate jobs.
+          Durable DAGs coordinated through ordinary headgate jobs.
         </p>
       </div>
       <Card>
@@ -342,24 +343,27 @@ export function WorkflowDetailView({
     ["api", "workflow", workflowId],
     async (signal) => {
       const coordinatorID = `${workflowId}:coordinator`;
-      const coordinator = await api<JobSummary>(
-        `/jobs/${encodeURIComponent(coordinatorID)}?include_payload=true`,
-        { signal }
-      );
-      const workflow = decodeWorkflowPayload(coordinator.payload);
-      const [loadedNodes, completed] = await Promise.all([
-        loadNodeJobs(workflow.nodes, signal),
-        loadCompletionEvidence(coordinatorID, signal),
+      const [coordinator, cursor] = await Promise.all([
+        api<JobSummary>(
+          `/jobs/${encodeURIComponent(coordinatorID)}?include_payload=true`,
+          { signal }
+        ),
+        loadWorkflowCursor(coordinatorID, signal),
       ]);
+      const workflow = decodeWorkflowPayload(coordinator.payload);
+      const graphNodes = [...workflow.nodes, ...cursor.grafts];
+      const loadedNodes = await loadNodeJobs(graphNodes, signal);
       const nodes = loadedNodes.map((node) => ({
         ...node,
-        recordedCompletion: node.job === null && completed.has(node.name),
+        recordedCompletion:
+          node.job === null && cursor.completed.has(node.name),
       }));
-      return { coordinator, nodes, workflow };
+      return { coordinator, cursor, nodes, workflow };
     }
   );
   const coordinator = detail.data?.coordinator ?? null;
   const workflow = detail.data?.workflow ?? null;
+  const cursor = detail.data?.cursor ?? null;
   const nodes = detail.data?.nodes ?? [];
   const error = detail.error
     ? detail.error instanceof Error
@@ -398,11 +402,25 @@ export function WorkflowDetailView({
             Workflow dependency graph and live task state.
           </p>
         </div>
-        {coordinator && (
-          <Badge variant={badgeVariant(coordinator.state)}>
-            coordinator: {coordinator.state}
-          </Badge>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {cursor ? (
+            <>
+              <Badge variant="outline">revision {cursor.revision}</Badge>
+              <Badge variant="outline">generation {cursor.generation}</Badge>
+              {cursor.failed ? (
+                <Badge variant="destructive">generation failed</Badge>
+              ) : null}
+            </>
+          ) : null}
+          {workflow?.failed_subgraph_retry ? (
+            <Badge variant="secondary">retry enabled</Badge>
+          ) : null}
+          {coordinator ? (
+            <Badge variant={badgeVariant(coordinator.state)}>
+              coordinator: {coordinator.state}
+            </Badge>
+          ) : null}
+        </div>
       </div>
       {loading ? (
         <Loading />
@@ -459,8 +477,9 @@ export function WorkflowDetailView({
               <div className="min-w-0 flex-1">
                 <CardTitle>Dependency graph</CardTitle>
                 <CardDescription>
-                  Arrows show execution order. Drag or scroll to pan, use the
-                  controls to zoom, and select a retained task to inspect it.
+                  Lines show execution order from left to right. Drag or scroll
+                  to pan, use the controls to zoom, and select a retained task
+                  to inspect it.
                 </CardDescription>
               </div>
               <div className="flex flex-wrap gap-3 text-muted-foreground text-xs">

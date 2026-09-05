@@ -895,6 +895,7 @@ impl PgStore {
     ///      block a producer, never deadlock with a concurrent pruner);
     ///   2. in a SECOND statement, which under READ COMMITTED takes a FRESH snapshot,
     ///      delete only those with no available job left.
+    ///
     /// One statement cannot do this. All CTEs in a statement share one snapshot, so a
     /// producer that committed after that snapshot is invisible, and the delete would
     /// strand its job — the one direction of staleness that is a correctness bug. With
@@ -1416,6 +1417,7 @@ impl PgStore {
     /// lifecycle state machine apply the transition table on an explicit client/transaction. Every
     /// statement re-checks `(ulid, lease_id, fence, state='running')`, so a superseded
     /// holder gets `LeaseRejected` — an error the worker must handle, never a no-op.
+    #[allow(clippy::too_many_arguments)] // Keeps every ack policy inside the caller's transaction.
     async fn ack_on<C: GenericClient>(
         &self,
         c: &C,
@@ -2191,7 +2193,7 @@ impl headgate_core::Notifying for PgStore {
             match tokio::time::timeout_at(deadline, rx.recv()).await {
                 Err(_) => return Ok(None), // timeout: the poll fallback takes it
                 Ok(Ok(queue)) => {
-                    if queues.is_empty() || queues.iter().any(|q| *q == queue) {
+                    if queues.is_empty() || queues.contains(&queue) {
                         return Ok(Some(queue));
                     }
                 }
@@ -2487,12 +2489,12 @@ impl PgTx {
 
 impl Drop for PgTx {
     fn drop(&mut self) {
-        if !self.done {
-            if let Some(client) = self.conn.take() {
-                // Take the connection out of the pool for good; closing it makes the
-                // server abort the open transaction.
-                let _ = Object::take(client.inner);
-            }
+        if !self.done
+            && let Some(client) = self.conn.take()
+        {
+            // Take the connection out of the pool for good; closing it makes the
+            // server abort the open transaction.
+            let _ = Object::take(client.inner);
         }
     }
 }

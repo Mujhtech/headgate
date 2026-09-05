@@ -7,6 +7,7 @@ package headgatepgx
 // exactness.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -746,7 +747,7 @@ func (s *PgxStore) OperatorRetry(ctx context.Context, id string) error {
 		WITH upd AS (
 		  UPDATE headgate_job SET state = 'available', scheduled_at_ms = `+nowMS+`,
 		         finalized_at_ms = NULL
-		  WHERE ulid = $1 AND state IN ('archived', 'cancelled')
+		  WHERE ulid = $1 AND state IN ('archived', 'cancelled', 'undecodable')
 		  RETURNING queue, partition_key
 		),
 		-- tenant fairness/adaptive admission retry-now makes the row available; list its partition here.
@@ -769,7 +770,7 @@ func (s *PgxStore) OperatorRetry(ctx context.Context, id string) error {
 	if !found {
 		return headgate.NotFoundf("job %s", id)
 	}
-	return headgate.Invalidf("operator_retry is only defined from archived or cancelled; job %s is %s", id, st)
+	return headgate.Invalidf("operator_retry is only defined from archived, cancelled, or undecodable; job %s is %s", id, st)
 }
 
 func (s *PgxStore) OperatorCancel(ctx context.Context, id string) error {
@@ -783,7 +784,7 @@ func (s *PgxStore) OperatorCancel(ctx context.Context, id string) error {
 		WITH pick AS (
 		  SELECT j.id, j.queue, j.partition_key, (j.state = 'running') AS was_running
 		  FROM headgate_job j
-		  WHERE j.ulid = $1 AND j.state IN ('pending', 'scheduled', 'available', 'running')
+		  WHERE j.ulid = $1 AND j.state IN ('pending', 'scheduled', 'available', 'running', 'retryable')
 		  FOR UPDATE
 		),
 		upd AS (
@@ -1211,6 +1212,81 @@ func (s *PgxStore) ListScheduleEvents(ctx context.Context, scheduleID string, be
 	return out, rows.Err()
 }
 
+func (s *PgxStore) AppendDurableEvent(ctx context.Context, event headgate.DurableEvent) (headgate.DurableEvent, bool, error) {
+	if err := validateDurableEvent(event); err != nil {
+		return headgate.DurableEvent{}, false, err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return headgate.DurableEvent{}, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err = tx.Exec(ctx, `INSERT INTO headgate_durable_event_scope(scope) VALUES($1) ON CONFLICT DO NOTHING`, event.Scope); err != nil {
+		return headgate.DurableEvent{}, false, err
+	}
+	var locked string
+	if err = tx.QueryRow(ctx, `SELECT scope FROM headgate_durable_event_scope WHERE scope=$1 FOR UPDATE`, event.Scope).Scan(&locked); err != nil {
+		return headgate.DurableEvent{}, false, err
+	}
+	var id uint64
+	var recorded int64
+	err = tx.QueryRow(ctx, `INSERT INTO headgate_durable_event(scope,topic,idempotency_key,payload,source,recorded_at_ms) VALUES($1,$2,$3,$4,$5,`+nowMS+`) ON CONFLICT(scope,idempotency_key) DO NOTHING RETURNING id,recorded_at_ms`, event.Scope, event.Topic, event.IdempotencyKey, event.Payload, event.Source).Scan(&id, &recorded)
+	inserted := err == nil
+	if errors.Is(err, pgx.ErrNoRows) {
+		var topic string
+		var payload, source []byte
+		if err = tx.QueryRow(ctx, `SELECT id,topic,payload,source,recorded_at_ms FROM headgate_durable_event WHERE scope=$1 AND idempotency_key=$2`, event.Scope, event.IdempotencyKey).Scan(&id, &topic, &payload, &source, &recorded); err != nil {
+			return headgate.DurableEvent{}, false, err
+		}
+		if topic != event.Topic || !bytes.Equal(payload, event.Payload) || !bytes.Equal(source, event.Source) {
+			return headgate.DurableEvent{}, false, &headgate.InvalidError{Msg: "durable event idempotency key was reused with different content"}
+		}
+	} else if err != nil {
+		return headgate.DurableEvent{}, false, err
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM headgate_durable_event WHERE scope=$1 AND id NOT IN (SELECT id FROM headgate_durable_event WHERE scope=$1 ORDER BY id DESC LIMIT $2)`, event.Scope, headgate.DurableEventLimit); err != nil {
+		return headgate.DurableEvent{}, false, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return headgate.DurableEvent{}, false, err
+	}
+	event.EventID, event.RecordedAtMs = id, recorded
+	return event, inserted, nil
+}
+
+func (s *PgxStore) ListDurableEvents(ctx context.Context, scope string, beforeEventID uint64, limit uint32) ([]headgate.DurableEvent, error) {
+	if err := headgate.ValidateDurableEventLimit(limit); err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id,scope,topic,idempotency_key,payload,source,recorded_at_ms FROM headgate_durable_event WHERE scope=$1 AND ($2=0 OR id<$2) ORDER BY id DESC LIMIT $3`, scope, beforeEventID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]headgate.DurableEvent, 0, limit)
+	for rows.Next() {
+		var event headgate.DurableEvent
+		if err := rows.Scan(&event.EventID, &event.Scope, &event.Topic, &event.IdempotencyKey, &event.Payload, &event.Source, &event.RecordedAtMs); err != nil {
+			return nil, err
+		}
+		out = append(out, event)
+	}
+	return out, rows.Err()
+}
+
+func validateDurableEvent(event headgate.DurableEvent) error {
+	if event.Scope == "" || len(event.Scope) > 512 || event.Topic == "" || len(event.Topic) > 255 || event.IdempotencyKey == "" || len(event.IdempotencyKey) > 255 {
+		return &headgate.InvalidError{Msg: "durable event scope, topic, or idempotency key is invalid"}
+	}
+	if len(event.Payload) > headgate.MaxDurableEventPayloadBytes || !json.Valid(event.Payload) {
+		return &headgate.InvalidError{Msg: "durable event payload must be valid JSON of at most 65536 bytes"}
+	}
+	if len(event.Source) > headgate.MaxDurableEventSourceBytes || !json.Valid(event.Source) {
+		return &headgate.InvalidError{Msg: "durable event source must be valid JSON of at most 16384 bytes"}
+	}
+	return nil
+}
+
 // ---------- worker registry + surveyed policy behavior control channel ----------
 
 func (s *PgxStore) HeartbeatWorker(ctx context.Context, w headgate.WorkerMeta) (string, error) {
@@ -1483,6 +1559,21 @@ func (s *PgxStore) PromoteJob(ctx context.Context, id string) error {
 	}
 	if n == 0 {
 		return headgate.Invalidf("operator_promote is defined only from pending")
+	}
+	return nil
+}
+
+func (s *PgxStore) SchedulePendingJob(ctx context.Context, id string, atMs int64) error {
+	if atMs <= 0 {
+		return headgate.Invalidf("pending schedule timestamp must be positive")
+	}
+	result, err := s.pool.Exec(ctx, `UPDATE headgate_job SET state='scheduled', scheduled_at_ms=$2
+		WHERE ulid=$1 AND state='pending'`, id, atMs)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return headgate.Invalidf("workflow_schedule is defined only from pending")
 	}
 	return nil
 }

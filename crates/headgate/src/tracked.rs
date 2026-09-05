@@ -93,12 +93,12 @@ impl TaskTracker {
                     format!("tracked task was cancelled unexpectedly: {error}").into(),
                 )),
             };
-            if first.is_none() {
-                if let Some(failure) = failure {
-                    first = Some(failure);
-                    aborting = true;
-                    tasks.abort_all();
-                }
+            if first.is_none()
+                && let Some(failure) = failure
+            {
+                first = Some(failure);
+                aborting = true;
+                tasks.abort_all();
             }
         }
         match first {
@@ -137,10 +137,10 @@ impl TaskTracker {
 
 impl Drop for TaskTracker {
     fn drop(&mut self) {
-        if let Ok(state) = self.state.get_mut() {
-            if let Some(tasks) = state.tasks.as_mut() {
-                tasks.abort_all();
-            }
+        if let Ok(state) = self.state.get_mut()
+            && let Some(tasks) = state.tasks.as_mut()
+        {
+            tasks.abort_all();
         }
     }
 }

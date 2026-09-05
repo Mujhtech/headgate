@@ -18,7 +18,12 @@ headgate-core = { workspace = true }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+cel = "0.14.4"
 
 [dev-dependencies]
+headgate-mysql = { workspace = true }
 headgate-postgres = { workspace = true }
+headgate-redis = { workspace = true }
+headgate-testkit = { workspace = true }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

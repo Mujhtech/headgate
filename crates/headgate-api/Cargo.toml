@@ -18,6 +18,7 @@ license.workspace = true
 headgate-core = { workspace = true }
 # schedule_spec: the API validates specs and computes a schedule's first next_run.
 headgate = { workspace = true }
+headgate-workflow = { workspace = true }
 axum = "0.8"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tokio = { version = "1", features = ["time", "rt-multi-thread", "macros", "net"] }

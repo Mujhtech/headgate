@@ -181,10 +181,10 @@ async fn execute_request(
         read_bounded(stderr, max),
         child.wait(),
     );
-    if let Err(error) = write_result {
-        if error.kind() != std::io::ErrorKind::BrokenPipe {
-            return Err(Box::new(error));
-        }
+    if let Err(error) = write_result
+        && error.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        return Err(Box::new(error));
     }
     let (stdout, stdout_overflow) = stdout_result?;
     let (stderr, stderr_overflow) = stderr_result?;

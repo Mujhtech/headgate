@@ -5,7 +5,7 @@
 # deliberate hand-edit, because that is what deleting a test is.
 scenario	conformance/scenarios/admission.yaml	9
 rust	crates/headgate-api/src/lib.rs	2
-rust	crates/headgate-api/tests/api.rs	10
+rust	crates/headgate-api/tests/api.rs	11
 rust	crates/headgate-core/src/lib.rs	26
 rust	crates/headgate-crypto/src/lib.rs	3
 rust	crates/headgate-crypto/tests/live.rs	1
@@ -42,8 +42,9 @@ rust	crates/headgate-testkit/tests/database_postgres.rs	1
 rust	crates/headgate-testkit/tests/database_redis.rs	1
 rust	crates/headgate-testkit/tests/memstore.rs	10
 rust	crates/headgate-ui/tests/ui.rs	4
-rust	crates/headgate-workflow/src/lib.rs	5
-rust	crates/headgate-workflow/tests/live.rs	1
+rust	crates/headgate-workflow/src/lib.rs	14
+rust	crates/headgate-workflow/tests/live.rs	7
+rust	crates/headgate-workflow/tests/live_mysql.rs	1
 rust	crates/headgate/src/circuit_breaker.rs	5
 rust	crates/headgate/src/client.rs	2
 rust	crates/headgate/src/isolated.rs	6
@@ -95,7 +96,7 @@ go	go/driver/headgateredis/inspect_test.go	2
 go	go/driver/headgateredis/store_test.go	8
 go	go/enqueue_middleware_test.go	4
 go	go/fingerprint_test.go	2
-go	go/headgateapi/api_test.go	18
+go	go/headgateapi/api_test.go	19
 go	go/headgatecrypto/crypto_test.go	3
 go	go/headgatectl/main_test.go	1
 go	go/headgatemigrate/cmd/hg-migrate/main_test.go	5
@@ -116,7 +117,9 @@ go	go/headgatetest/memstore_test.go	11
 go	go/headgatetest/task_data_test.go	1
 go	go/headgatetest/tracked_tasks_test.go	5
 go	go/headgateui/ui_test.go	5
-go	go/headgateworkflow/workflow_test.go	6
+go	go/headgateworkflow/live_matrix_test.go	2
+go	go/headgateworkflow/live_mysql_test.go	1
+go	go/headgateworkflow/workflow_test.go	18
 go	go/insert_hook_test.go	4
 go	go/log_test.go	4
 go	go/output_test.go	2

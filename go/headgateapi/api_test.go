@@ -50,6 +50,93 @@ type outputAPIStore struct {
 
 type queuePageStore struct{ errStore }
 
+type workflowAPIStore struct{ errStore }
+
+type workflowSignalAPIStore struct {
+	workflowAPIStore
+	events []headgate.DurableEvent
+}
+
+func (s *workflowSignalAPIStore) GetJob(_ context.Context, id string, includePayload bool) (*headgate.JobSummary, error) {
+	jobs := map[string]headgate.JobSummary{
+		"wf:coordinator": {ID: "wf:coordinator", Kind: "headgate:workflow", State: "running"},
+		"wf:approval":    {ID: "wf:approval", Kind: "headgate:workflow-signal", State: "pending"},
+	}
+	job, ok := jobs[id]
+	if !ok {
+		return nil, nil
+	}
+	if includePayload && id == "wf:coordinator" {
+		job.Payload = []byte(`{"workflow_id":"wf","nodes":[{"name":"approval","job_id":"wf:approval","deps":[],"kind":"signal","signal":"approved"}]}`)
+	}
+	return &job, nil
+}
+
+func (s *workflowSignalAPIStore) PromoteJob(context.Context, string) error { return nil }
+
+func (s *workflowSignalAPIStore) AppendDurableEvent(_ context.Context, event headgate.DurableEvent) (headgate.DurableEvent, bool, error) {
+	for _, existing := range s.events {
+		if existing.IdempotencyKey == event.IdempotencyKey {
+			if existing.Topic != event.Topic || string(existing.Payload) != string(event.Payload) || string(existing.Source) != string(event.Source) {
+				return headgate.DurableEvent{}, false, headgate.Invalidf("durable event idempotency key was reused with different content")
+			}
+			return existing, false, nil
+		}
+	}
+	event.EventID = uint64(len(s.events) + 1)
+	event.RecordedAtMs = int64(event.EventID)
+	s.events = append([]headgate.DurableEvent{event}, s.events...)
+	return event, true, nil
+}
+
+func (s *workflowSignalAPIStore) ListDurableEvents(_ context.Context, _ string, before uint64, limit uint32) ([]headgate.DurableEvent, error) {
+	out := make([]headgate.DurableEvent, 0, limit)
+	for _, event := range s.events {
+		if before == 0 || event.EventID < before {
+			out = append(out, event)
+			if len(out) == int(limit) {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+func (s *workflowAPIStore) GetJob(_ context.Context, id string, includePayload bool) (*headgate.JobSummary, error) {
+	jobs := map[string]headgate.JobSummary{
+		"wf:coordinator": {ID: "wf:coordinator", Kind: "headgate:workflow", State: "running"},
+		"wf:prepare":     {ID: "wf:prepare", Kind: "task:prepare", State: "completed"},
+		"wf:publish":     {ID: "wf:publish", Kind: "task:publish", State: "pending"},
+	}
+	job, ok := jobs[id]
+	if !ok {
+		return nil, nil
+	}
+	if includePayload && id == "wf:coordinator" {
+		job.Payload = []byte(`{"workflow_id":"wf","nodes":[{"name":"prepare","job_id":"wf:prepare","deps":[],"kind":"task"},{"name":"publish","job_id":"wf:publish","deps":["prepare"],"kind":"task"}]}`)
+	}
+	return &job, nil
+}
+
+func (s *workflowAPIStore) GetJobCheckpoint(_ context.Context, id string) (*headgate.Checkpoint, error) {
+	if id != "wf:coordinator" {
+		return nil, nil
+	}
+	return &headgate.Checkpoint{
+		CursorStep: "headgate:workflow-state",
+		Cursor:     []byte(`{"revision":2,"generation":1,"completed":["prepare"],"completed_at_ms":{"prepare":42}}`),
+	}, nil
+}
+
+func (s *workflowAPIStore) ListJobs(_ context.Context, filter headgate.JobFilter, _ string, _ uint32) (headgate.JobPage, error) {
+	if filter.Kind == nil || *filter.Kind != "headgate:workflow" {
+		return headgate.JobPage{}, errors.New("workflow list did not use the coordinator kind")
+	}
+	return headgate.JobPage{Jobs: []headgate.JobSummary{{
+		ID: "wf:coordinator", Kind: "headgate:workflow", State: "running",
+	}}}, nil
+}
+
 func (s *queuePageStore) QueueStats(context.Context) ([]headgate.QueueStatsView, error) {
 	stats := make([]headgate.QueueStatsView, 205)
 	for i := range stats {
@@ -703,6 +790,127 @@ func TestRouteParity(t *testing.T) {
 	}
 	if a := w.Header().Get("Allow"); a != "GET,HEAD" {
 		t.Errorf("Allow on the 400 = %q, want %q", a, "GET,HEAD")
+	}
+}
+
+func TestWorkflowMutationRoutesRequireIdempotencyKey(t *testing.T) {
+	h := Handler(&errStore{err: errors.New("unused")})
+	for _, path := range []string{
+		"/api/v1/workflows/wf/signals",
+		"/api/v1/workflows/wf/grafts",
+		"/api/v1/workflows/wf/retry",
+		"/api/v1/workflows/wf/cancel",
+	} {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+		r.Header.Set("Content-Type", "application/json")
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "Idempotency-Key") {
+			t.Fatalf("POST %s without key = %d %s", path, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestWorkflowSignalRoutePersistsPayloadSourceAndReplay(t *testing.T) {
+	store := &workflowSignalAPIStore{}
+	h := Handler(store)
+	body := `{"signal":"approved","payload":{"approved":true,"reviewer":"Ada"},"source":{"emitter":"admin-console","actor":"operator-42"}}`
+
+	post := func() map[string]any {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/wf/signals", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Idempotency-Key", "workflow-signal-1")
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("POST signal = %d %s", w.Code, w.Body.String())
+		}
+		var response map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+
+	first := post()
+	if first["inserted"] != true {
+		t.Fatalf("first signal receipt = %#v", first)
+	}
+	emission := first["emission"].(map[string]any)
+	if emission["idempotency_key"] != "workflow-signal-1" || emission["payload"].(map[string]any)["reviewer"] != "Ada" || emission["source"].(map[string]any)["actor"] != "operator-42" {
+		t.Fatalf("signal emission = %#v", emission)
+	}
+
+	replay := post()
+	if replay["inserted"] != false || !reflect.DeepEqual(replay["emission"], first["emission"]) {
+		t.Fatalf("signal replay = %#v", replay)
+	}
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/workflows/wf/signals?limit=100", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET signal history = %d %s", w.Code, w.Body.String())
+	}
+	var history map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &history); err != nil {
+		t.Fatal(err)
+	}
+	signals := history["signals"].([]any)
+	if len(signals) != 1 || !reflect.DeepEqual(signals[0], first["emission"]) {
+		t.Fatalf("signal history = %#v", history)
+	}
+}
+
+func TestWorkflowInspectionRoutesAreReadOnlyAndBoundedToKnownNodes(t *testing.T) {
+	h := Handler(&errStore{})
+	for _, path := range []string{
+		"/api/v1/workflows/missing",
+		"/api/v1/workflows/missing/nodes/task",
+		"/api/v1/workflows/missing/nodes/task/dependencies",
+		"/api/v1/workflows/missing/nodes/task/dependents",
+	} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("GET %s = %d %s, want 404", path, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestWorkflowInspectionRoutesReturnTopologyWithoutPayloads(t *testing.T) {
+	h := Handler(&workflowAPIStore{})
+	for _, test := range []struct {
+		path, field, name string
+	}{
+		{"/api/v1/workflows", "workflows", "wf"},
+		{"/api/v1/workflows/wf", "nodes", "prepare"},
+		{"/api/v1/workflows/wf/nodes/publish", "", "publish"},
+		{"/api/v1/workflows/wf/nodes/publish/dependencies", "dependencies", "prepare"},
+		{"/api/v1/workflows/wf/nodes/prepare/dependents", "dependents", "publish"},
+	} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, test.path, nil))
+		if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "Payload") {
+			t.Fatalf("GET %s = %d %s", test.path, w.Code, w.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if test.field == "" {
+			if body["name"] != test.name {
+				t.Fatalf("GET %s name = %#v", test.path, body["name"])
+			}
+			continue
+		}
+		items, ok := body[test.field].([]any)
+		itemKey := "name"
+		if test.field == "workflows" {
+			itemKey = "workflow_id"
+		}
+		if !ok || len(items) == 0 || items[0].(map[string]any)[itemKey] != test.name {
+			t.Fatalf("GET %s %s = %#v", test.path, test.field, body[test.field])
+		}
 	}
 }
 

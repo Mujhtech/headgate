@@ -9,6 +9,7 @@ package headgateredis
 // match the other backends word-for-word (the mutation-diff discipline).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -972,7 +973,7 @@ func (s *RedisStore) OperatorRetry(ctx context.Context, id string) error {
 	case "DUP":
 		return &headgate.DuplicateError{ExistingID: second(res)}
 	default:
-		return headgate.Invalidf("operator_retry is only defined from archived or cancelled; job %s is %s",
+		return headgate.Invalidf("operator_retry is only defined from archived, cancelled, or undecodable; job %s is %s",
 			id, second(res))
 	}
 }
@@ -1327,6 +1328,92 @@ func (s *RedisStore) ListScheduleEvents(ctx context.Context, scheduleID string, 
 	return out, nil
 }
 
+func (s *RedisStore) AppendDurableEvent(ctx context.Context, event headgate.DurableEvent) (headgate.DurableEvent, bool, error) {
+	if err := validateDurableEvent(event); err != nil {
+		return headgate.DurableEvent{}, false, err
+	}
+	now, err := s.storeNowMs(ctx)
+	if err != nil {
+		return headgate.DurableEvent{}, false, err
+	}
+	const script = `local old=redis.call('HGET',KEYS[2],ARGV[2])
+if old then return {'0',old} end
+local id=redis.call('INCR',KEYS[3])
+local value=cjson.encode({event_id=id,scope=ARGV[1],topic=ARGV[3],idempotency_key=ARGV[2],payload=cjson.decode(ARGV[4]),source=cjson.decode(ARGV[5]),recorded_at_ms=ARGV[6]})
+redis.call('HSET',KEYS[2],ARGV[2],value)
+redis.call('ZADD',KEYS[1],id,value)
+local excess=redis.call('ZCARD',KEYS[1])-tonumber(ARGV[7])
+if excess>0 then local gone=redis.call('ZRANGE',KEYS[1],0,excess-1) for _,v in ipairs(gone) do local e=cjson.decode(v) redis.call('HDEL',KEYS[2],e.idempotency_key) end redis.call('ZREMRANGEBYRANK',KEYS[1],0,excess-1) end
+return {'1',value}`
+	values, err := redis.NewScript(script).Run(ctx, s.rdb, []string{s.key("durable-events", event.Scope), s.key("durable-event-idem", event.Scope), s.key("durable-event-seq")}, event.Scope, event.IdempotencyKey, event.Topic, string(event.Payload), string(event.Source), now, headgate.DurableEventLimit).StringSlice()
+	if err != nil {
+		return headgate.DurableEvent{}, false, err
+	}
+	if len(values) != 2 {
+		return headgate.DurableEvent{}, false, fmt.Errorf("headgate: unexpected durable event reply")
+	}
+	stored, err := decodeDurableEvent([]byte(values[1]))
+	if err != nil {
+		return headgate.DurableEvent{}, false, err
+	}
+	if stored.Topic != event.Topic || !bytes.Equal(stored.Payload, event.Payload) || !bytes.Equal(stored.Source, event.Source) {
+		return headgate.DurableEvent{}, false, &headgate.InvalidError{Msg: "durable event idempotency key was reused with different content"}
+	}
+	return stored, values[0] == "1", nil
+}
+
+func (s *RedisStore) ListDurableEvents(ctx context.Context, scope string, beforeEventID uint64, limit uint32) ([]headgate.DurableEvent, error) {
+	if err := headgate.ValidateDurableEventLimit(limit); err != nil {
+		return nil, err
+	}
+	max := "+inf"
+	if beforeEventID != 0 {
+		max = "(" + strconv.FormatUint(beforeEventID, 10)
+	}
+	values, err := s.rdb.ZRevRangeByScore(ctx, s.key("durable-events", scope), &redis.ZRangeBy{Max: max, Min: "-inf", Offset: 0, Count: int64(limit)}).Result()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]headgate.DurableEvent, 0, len(values))
+	for _, value := range values {
+		event, err := decodeDurableEvent([]byte(value))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, event)
+	}
+	return out, nil
+}
+
+func validateDurableEvent(event headgate.DurableEvent) error {
+	if event.Scope == "" || len(event.Scope) > 512 || event.Topic == "" || len(event.Topic) > 255 || event.IdempotencyKey == "" || len(event.IdempotencyKey) > 255 {
+		return &headgate.InvalidError{Msg: "durable event scope, topic, or idempotency key is invalid"}
+	}
+	if len(event.Payload) > headgate.MaxDurableEventPayloadBytes || !json.Valid(event.Payload) {
+		return &headgate.InvalidError{Msg: "durable event payload must be valid JSON of at most 65536 bytes"}
+	}
+	if len(event.Source) > headgate.MaxDurableEventSourceBytes || !json.Valid(event.Source) {
+		return &headgate.InvalidError{Msg: "durable event source must be valid JSON of at most 16384 bytes"}
+	}
+	return nil
+}
+
+func decodeDurableEvent(data []byte) (headgate.DurableEvent, error) {
+	var raw struct {
+		EventID        uint64          `json:"event_id"`
+		Scope          string          `json:"scope"`
+		Topic          string          `json:"topic"`
+		IdempotencyKey string          `json:"idempotency_key"`
+		Payload        json.RawMessage `json:"payload"`
+		Source         json.RawMessage `json:"source"`
+		RecordedAtMs   int64           `json:"recorded_at_ms"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return headgate.DurableEvent{}, fmt.Errorf("decoding stored durable event: %w", err)
+	}
+	return headgate.DurableEvent{EventID: raw.EventID, Scope: raw.Scope, Topic: raw.Topic, IdempotencyKey: raw.IdempotencyKey, Payload: raw.Payload, Source: raw.Source, RecordedAtMs: raw.RecordedAtMs}, nil
+}
+
 func (s *RedisStore) HeartbeatWorker(ctx context.Context, w headgate.WorkerMeta) (string, error) {
 	status := w.Status
 	if status == "" {
@@ -1668,6 +1755,29 @@ func (s *RedisStore) PromoteJob(ctx context.Context, id string) error {
 		return headgate.Invalidf("operator_promote is defined only from pending")
 	default:
 		return errors.New("invalid promote response")
+	}
+}
+
+func (s *RedisStore) SchedulePendingJob(ctx context.Context, id string, atMs int64) error {
+	if atMs <= 0 {
+		return headgate.Invalidf("pending schedule timestamp must be positive")
+	}
+	res, err := s.adminJobOp(ctx, "schedule_pending", id, atMs)
+	if err != nil {
+		return err
+	}
+	if len(res) == 0 {
+		return errors.New("invalid schedule_pending response")
+	}
+	switch res[0] {
+	case "OK":
+		return nil
+	case "NF":
+		return headgate.NotFoundf("job %s", id)
+	case "ERR":
+		return headgate.Invalidf("workflow_schedule is defined only from pending")
+	default:
+		return errors.New("invalid schedule_pending response")
 	}
 }
 

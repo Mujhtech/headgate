@@ -9,11 +9,12 @@
 
 use headgate_core::{
     AdmissionExplain, BulkRequest, Checkpoint, CheckpointInspect, ConcurrencyLimitConfig,
-    HistoryBucket, Inspect, JobFilter, JobOutput, JobPage, JobProgress, JobResult, JobSummary,
-    MissedPolicy, OperationStatus, OutputInspect, PartitionState, ProgressInspect, QuarantineEntry,
-    QueueStats, QuietGroupMetrics, RateClassConfig, RateClassState, ResultInspect,
-    SCHEDULE_EVENT_LIMIT, SaturationStrategy, Schedule, ScheduleEvent, ScheduleEventOutcome,
-    StateCounts, StoreError, WorkerMeta, noisy_partition_keys,
+    DURABLE_EVENT_LIMIT, DurableEvent, HistoryBucket, Inspect, JobFilter, JobOutput, JobPage,
+    JobProgress, JobResult, JobSummary, MissedPolicy, OperationStatus, OutputInspect,
+    PartitionState, ProgressInspect, QuarantineEntry, QueueStats, QuietGroupMetrics,
+    RateClassConfig, RateClassState, ResultInspect, SCHEDULE_EVENT_LIMIT, SaturationStrategy,
+    Schedule, ScheduleEvent, ScheduleEventOutcome, StateCounts, StoreError, WorkerMeta,
+    noisy_partition_keys,
 };
 
 use crate::{JobHash, RedisStore, decode_headers, hn, hs, map_redis_err};
@@ -171,35 +172,35 @@ fn matches_filter(h: &JobHash, f: &JobFilter) -> bool {
     if !f.tags_any.is_empty() && !f.tags_any.iter().any(|tag| tags.contains(tag)) {
         return false;
     }
-    if let Some(k) = &f.kind {
-        if hs(h, "kind") != k {
-            return false;
-        }
+    if let Some(k) = &f.kind
+        && hs(h, "kind") != k
+    {
+        return false;
     }
-    if let Some(kp) = &f.kind_prefix {
-        if !hs(h, "kind").starts_with(kp.as_str()) {
-            return false;
-        }
+    if let Some(kp) = &f.kind_prefix
+        && !hs(h, "kind").starts_with(kp.as_str())
+    {
+        return false;
     }
-    if let Some(p) = &f.partition_key {
-        if hs(h, "partition_key") != p {
-            return false;
-        }
+    if let Some(p) = &f.partition_key
+        && hs(h, "partition_key") != p
+    {
+        return false;
     }
-    if let Some(fp) = &f.fingerprint {
-        if hs(h, "fingerprint") != fp {
-            return false;
-        }
+    if let Some(fp) = &f.fingerprint
+        && hs(h, "fingerprint") != fp
+    {
+        return false;
     }
-    if let Some(rc) = &f.rate_class {
-        if hs(h, "rate_class") != rc {
-            return false;
-        }
+    if let Some(rc) = &f.rate_class
+        && hs(h, "rate_class") != rc
+    {
+        return false;
     }
-    if let Some(pr) = f.priority {
-        if hn(h, "priority") as i32 != pr {
-            return false;
-        }
+    if let Some(pr) = f.priority
+        && hn(h, "priority") as i32 != pr
+    {
+        return false;
     }
     true
 }
@@ -870,7 +871,7 @@ impl Inspect for RedisStore {
                 reason: hs(m, "reason").to_string(),
             })
             .collect();
-        out.sort_by(|a, b| b.quarantined_at_ms.cmp(&a.quarantined_at_ms));
+        out.sort_by_key(|entry| std::cmp::Reverse(entry.quarantined_at_ms));
         Ok(out)
     }
 
@@ -894,7 +895,7 @@ impl Inspect for RedisStore {
                 replaced: false,
             }),
             _ => Err(StoreError::Invalid(format!(
-                "operator_retry is only defined from archived or cancelled; job {id} is {}",
+                "operator_retry is only defined from archived, cancelled, or undecodable; job {id} is {}",
                 res.get(1).map(String::as_str).unwrap_or("?")
             ))),
         }
@@ -1241,6 +1242,91 @@ impl Inspect for RedisStore {
             .collect()
     }
 
+    async fn append_durable_event(
+        &self,
+        event: &DurableEvent,
+    ) -> Result<(DurableEvent, bool), StoreError> {
+        validate_durable_event(event)?;
+        let payload = std::str::from_utf8(&event.payload)
+            .map_err(|_| StoreError::Invalid("durable event payload must be UTF-8 JSON".into()))?;
+        let source = std::str::from_utf8(&event.source)
+            .map_err(|_| StoreError::Invalid("durable event source must be UTF-8 JSON".into()))?;
+        serde_json::from_str::<serde_json::Value>(payload)
+            .map_err(|_| StoreError::Invalid("durable event payload must be valid JSON".into()))?;
+        serde_json::from_str::<serde_json::Value>(source)
+            .map_err(|_| StoreError::Invalid("durable event source must be valid JSON".into()))?;
+        let now = self.store_now_ms().await?;
+        let mut conn = self.conn.clone();
+        let script = redis::Script::new(
+            "local old=redis.call('HGET',KEYS[2],ARGV[2])\n\
+             if old then return {'0',old} end\n\
+             local id=redis.call('INCR',KEYS[3])\n\
+             local value=cjson.encode({event_id=id,scope=ARGV[1],topic=ARGV[3],idempotency_key=ARGV[2],payload=cjson.decode(ARGV[4]),source=cjson.decode(ARGV[5]),recorded_at_ms=ARGV[6]})\n\
+             redis.call('HSET',KEYS[2],ARGV[2],value)\n\
+             redis.call('ZADD',KEYS[1],id,value)\n\
+             local excess=redis.call('ZCARD',KEYS[1])-tonumber(ARGV[7])\n\
+             if excess>0 then local gone=redis.call('ZRANGE',KEYS[1],0,excess-1) for _,v in ipairs(gone) do local e=cjson.decode(v) redis.call('HDEL',KEYS[2],e.idempotency_key) end redis.call('ZREMRANGEBYRANK',KEYS[1],0,excess-1) end\n\
+             return {'1',value}",
+        );
+        let values: Vec<Vec<u8>> = script
+            .key(format!("{}:durable-events:{}", self.prefix, event.scope))
+            .key(format!(
+                "{}:durable-event-idem:{}",
+                self.prefix, event.scope
+            ))
+            .key(format!("{}:durable-event-seq", self.prefix))
+            .arg(&event.scope)
+            .arg(&event.idempotency_key)
+            .arg(&event.topic)
+            .arg(payload)
+            .arg(source)
+            .arg(now)
+            .arg(DURABLE_EVENT_LIMIT)
+            .invoke_async(&mut conn)
+            .await
+            .map_err(map_redis_err)?;
+        let inserted = values.first().is_some_and(|v| v.as_slice() == b"1");
+        let stored = decode_durable_event(values.get(1).ok_or_else(|| {
+            StoreError::Invalid("durable event append returned no record".into())
+        })?)?;
+        if stored.topic != event.topic
+            || stored.payload != event.payload
+            || stored.source != event.source
+        {
+            return Err(StoreError::Invalid(
+                "durable event idempotency key was reused with different content".into(),
+            ));
+        }
+        Ok((stored, inserted))
+    }
+
+    async fn list_durable_events(
+        &self,
+        scope: &str,
+        before_event_id: Option<u64>,
+        limit: u32,
+    ) -> Result<Vec<DurableEvent>, StoreError> {
+        headgate_core::validate_durable_event_limit(limit)?;
+        let mut conn = self.conn.clone();
+        let max = before_event_id
+            .map(|id| format!("({id}"))
+            .unwrap_or_else(|| "+inf".into());
+        let values: Vec<Vec<u8>> = redis::cmd("ZREVRANGEBYSCORE")
+            .arg(format!("{}:durable-events:{scope}", self.prefix))
+            .arg(max)
+            .arg("-inf")
+            .arg("LIMIT")
+            .arg(0)
+            .arg(limit)
+            .query_async(&mut conn)
+            .await
+            .map_err(map_redis_err)?;
+        values
+            .iter()
+            .map(|value| decode_durable_event(value))
+            .collect()
+    }
+
     async fn heartbeat_worker(&self, w: &WorkerMeta) -> Result<Option<String>, StoreError> {
         let mut conn = self.conn.clone();
         let status = if w.status.is_empty() {
@@ -1330,12 +1416,12 @@ impl Inspect for RedisStore {
         worker_id: &str,
         command: Option<&str>,
     ) -> Result<(), StoreError> {
-        if let Some(cmd) = command {
-            if !headgate_core::valid_worker_command(cmd) {
-                return Err(StoreError::Invalid(
-                    "command must be quiet, resume, restart, terminate, or resign".into(),
-                ));
-            }
+        if let Some(cmd) = command
+            && !headgate_core::valid_worker_command(cmd)
+        {
+            return Err(StoreError::Invalid(
+                "command must be quiet, resume, restart, terminate, or resign".into(),
+            ));
         }
         let mut conn = self.conn.clone();
         let n: i64 = self
@@ -1516,7 +1602,7 @@ impl Inspect for RedisStore {
         let mut total = 0u64;
         for id in &ids {
             let ok = format!("{}:op:{id}", self.prefix);
-            let h = &self.hashes(&[ok.clone()]).await?[0];
+            let h = &self.hashes(std::slice::from_ref(&ok)).await?[0];
             let action = hs(h, "action").to_string();
             let done_with = |status: &str| {
                 let mut pipe = redis::pipe();
@@ -1613,6 +1699,27 @@ impl Inspect for RedisStore {
         }
     }
 
+    async fn schedule_pending_job(&self, id: &str, at_ms: i64) -> Result<(), StoreError> {
+        if at_ms <= 0 {
+            return Err(StoreError::Invalid(
+                "pending schedule timestamp must be positive".into(),
+            ));
+        }
+        let res = self
+            .admin_job_op(&["schedule_pending", id, &at_ms.to_string()])
+            .await?;
+        match res.first().map(String::as_str) {
+            Some("OK") => Ok(()),
+            Some("NF") => Err(StoreError::NotFound(id.into())),
+            Some("ERR") => Err(StoreError::Invalid(
+                "workflow_schedule is defined only from pending".into(),
+            )),
+            _ => Err(StoreError::Backend(
+                "invalid schedule_pending response".into(),
+            )),
+        }
+    }
+
     async fn delete_queue(&self, queue: &str, force: bool) -> Result<Option<String>, StoreError> {
         let now = self.store_now_ms().await?;
         let id = format!(
@@ -1700,6 +1807,51 @@ impl Inspect for RedisStore {
         }
         Ok(queues.len() as u32)
     }
+}
+
+fn validate_durable_event(event: &DurableEvent) -> Result<(), StoreError> {
+    if event.scope.is_empty()
+        || event.scope.len() > 512
+        || event.topic.is_empty()
+        || event.topic.len() > 255
+        || event.idempotency_key.is_empty()
+        || event.idempotency_key.len() > 255
+    {
+        return Err(StoreError::Invalid(
+            "durable event scope, topic, or idempotency key is invalid".into(),
+        ));
+    }
+    if event.payload.len() > headgate_core::MAX_DURABLE_EVENT_PAYLOAD_BYTES
+        || serde_json::from_slice::<serde_json::Value>(&event.payload).is_err()
+    {
+        return Err(StoreError::Invalid(
+            "durable event payload must be valid JSON of at most 65536 bytes".into(),
+        ));
+    }
+    if event.source.len() > headgate_core::MAX_DURABLE_EVENT_SOURCE_BYTES
+        || serde_json::from_slice::<serde_json::Value>(&event.source).is_err()
+    {
+        return Err(StoreError::Invalid(
+            "durable event source must be valid JSON of at most 16384 bytes".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn decode_durable_event(bytes: &[u8]) -> Result<DurableEvent, StoreError> {
+    let value: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|e| StoreError::Invalid(format!("invalid stored durable event: {e}")))?;
+    Ok(DurableEvent {
+        event_id: value["event_id"].as_u64().unwrap_or_default(),
+        scope: value["scope"].as_str().unwrap_or_default().into(),
+        topic: value["topic"].as_str().unwrap_or_default().into(),
+        idempotency_key: value["idempotency_key"].as_str().unwrap_or_default().into(),
+        payload: serde_json::to_vec(&value["payload"])
+            .map_err(|e| StoreError::Invalid(e.to_string()))?,
+        source: serde_json::to_vec(&value["source"])
+            .map_err(|e| StoreError::Invalid(e.to_string()))?,
+        recorded_at_ms: value["recorded_at_ms"].as_i64().unwrap_or_default(),
+    })
 }
 
 #[async_trait::async_trait]

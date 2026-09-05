@@ -177,6 +177,13 @@ const POSTGRES_MIGRATIONS: &[Migration] = &[
         down_sql: include_str!("../migrations/postgres/0012_worker_control_state.down.sql"),
         online_safe: true,
     },
+    Migration {
+        version: 13,
+        name: "durable_events",
+        up_sql: include_str!("../migrations/postgres/0013_durable_events.up.sql"),
+        down_sql: include_str!("../migrations/postgres/0013_durable_events.down.sql"),
+        online_safe: true,
+    },
 ];
 
 const MYSQL_MIGRATIONS: &[Migration] = &[
@@ -263,6 +270,13 @@ const MYSQL_MIGRATIONS: &[Migration] = &[
         up_sql: include_str!("../migrations/mysql/0012_worker_control_state.up.sql"),
         down_sql: include_str!("../migrations/mysql/0012_worker_control_state.down.sql"),
         online_safe: false,
+    },
+    Migration {
+        version: 13,
+        name: "durable_events",
+        up_sql: include_str!("../migrations/mysql/0013_durable_events.up.sql"),
+        down_sql: include_str!("../migrations/mysql/0013_durable_events.down.sql"),
+        online_safe: true,
     },
 ];
 
@@ -512,7 +526,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             up.iter().map(|s| s.migration.version).collect::<Vec<_>>(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
 
         let current = [
@@ -528,6 +542,7 @@ mod tests {
             applied(10),
             applied(11),
             applied(12),
+            applied(13),
         ];
         assert!(
             plan(
@@ -548,7 +563,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             down.iter().map(|s| s.migration.version).collect::<Vec<_>>(),
-            [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+            [13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
         );
     }
 
@@ -602,7 +617,7 @@ mod tests {
                 &[],
                 Direction::Up,
                 MigrateOptions {
-                    target_version: Some(13),
+                    target_version: Some(14),
                     ..MigrateOptions::default()
                 }
             ),

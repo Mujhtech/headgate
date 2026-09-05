@@ -571,10 +571,11 @@ fn default_backoff(attempt: i64, base: i64, cap: i64) -> i64 {
 
 fn release_unique(inner: &mut Inner, id: &str) {
     let Some(j) = inner.jobs.get(id) else { return };
-    if let Some(k) = headgate_core::effective_unique_key(&j.env) {
-        if j.env.unique_window_ms == 0 && inner.unique.get(&k).map(String::as_str) == Some(id) {
-            inner.unique.remove(&k);
-        }
+    if let Some(k) = headgate_core::effective_unique_key(&j.env)
+        && j.env.unique_window_ms == 0
+        && inner.unique.get(&k).map(String::as_str) == Some(id)
+    {
+        inner.unique.remove(&k);
     }
 }
 
@@ -641,57 +642,55 @@ impl Store for MemStore {
                 };
                 if let Some(id) = holder {
                     let mut replaced = false;
-                    if e.unique_replace != 0 || e.unique_debounce_ms > 0 {
-                        if let Some(job) = inner.jobs.get_mut(&id) {
-                            if matches!(job.state.as_str(), "scheduled" | "available" | "retryable")
-                            {
-                                let mask = e.unique_replace;
-                                if e.unique_debounce_ms > 0 {
-                                    job.env.schema_version = if e.schema_version == 0 {
-                                        1
-                                    } else {
-                                        e.schema_version
-                                    };
-                                    job.env.payload.clone_from(&e.payload);
-                                    job.env.fingerprint.clone_from(&e.fingerprint);
-                                    job.env.tags = headgate_core::canonical_tags(&e.tags);
-                                    job.env.scheduled_at_ms = now + e.unique_debounce_ms;
-                                    job.state = "scheduled".into();
-                                    replaced = true;
-                                }
-                                if mask & headgate_core::UNIQUE_REPLACE_PAYLOAD != 0 {
-                                    job.env.schema_version = if e.schema_version == 0 {
-                                        1
-                                    } else {
-                                        e.schema_version
-                                    };
-                                    job.env.payload.clone_from(&e.payload);
-                                    job.env.fingerprint.clone_from(&e.fingerprint);
-                                    replaced = true;
-                                }
-                                if mask & headgate_core::UNIQUE_REPLACE_SCHEDULED_AT != 0
-                                    && job.state == "scheduled"
-                                {
-                                    job.env.scheduled_at_ms = if e.scheduled_at_ms == 0 {
-                                        now
-                                    } else {
-                                        e.scheduled_at_ms
-                                    };
-                                    replaced = true;
-                                }
-                                if mask & headgate_core::UNIQUE_REPLACE_PRIORITY != 0 {
-                                    job.env.priority = e.priority;
-                                    replaced = true;
-                                }
-                                if mask & headgate_core::UNIQUE_REPLACE_MAX_ATTEMPTS != 0 {
-                                    job.env.max_attempts = if e.max_attempts == 0 {
-                                        25
-                                    } else {
-                                        e.max_attempts
-                                    };
-                                    replaced = true;
-                                }
-                            }
+                    if (e.unique_replace != 0 || e.unique_debounce_ms > 0)
+                        && let Some(job) = inner.jobs.get_mut(&id)
+                        && matches!(job.state.as_str(), "scheduled" | "available" | "retryable")
+                    {
+                        let mask = e.unique_replace;
+                        if e.unique_debounce_ms > 0 {
+                            job.env.schema_version = if e.schema_version == 0 {
+                                1
+                            } else {
+                                e.schema_version
+                            };
+                            job.env.payload.clone_from(&e.payload);
+                            job.env.fingerprint.clone_from(&e.fingerprint);
+                            job.env.tags = headgate_core::canonical_tags(&e.tags);
+                            job.env.scheduled_at_ms = now + e.unique_debounce_ms;
+                            job.state = "scheduled".into();
+                            replaced = true;
+                        }
+                        if mask & headgate_core::UNIQUE_REPLACE_PAYLOAD != 0 {
+                            job.env.schema_version = if e.schema_version == 0 {
+                                1
+                            } else {
+                                e.schema_version
+                            };
+                            job.env.payload.clone_from(&e.payload);
+                            job.env.fingerprint.clone_from(&e.fingerprint);
+                            replaced = true;
+                        }
+                        if mask & headgate_core::UNIQUE_REPLACE_SCHEDULED_AT != 0
+                            && job.state == "scheduled"
+                        {
+                            job.env.scheduled_at_ms = if e.scheduled_at_ms == 0 {
+                                now
+                            } else {
+                                e.scheduled_at_ms
+                            };
+                            replaced = true;
+                        }
+                        if mask & headgate_core::UNIQUE_REPLACE_PRIORITY != 0 {
+                            job.env.priority = e.priority;
+                            replaced = true;
+                        }
+                        if mask & headgate_core::UNIQUE_REPLACE_MAX_ATTEMPTS != 0 {
+                            job.env.max_attempts = if e.max_attempts == 0 {
+                                25
+                            } else {
+                                e.max_attempts
+                            };
+                            replaced = true;
                         }
                     }
                     return Err(StoreError::Duplicate {
@@ -882,17 +881,17 @@ impl Store for MemStore {
                 let j = &inner.jobs[&id];
                 (j.env.rate_class.clone(), j.rate_charge)
             };
-            if charge > 0 {
-                if let Some(b) = inner.rate.get_mut(&rc) {
-                    let gained = if b.limit > 0 && b.window > 0 {
-                        (now - b.refilled).max(0) * b.limit / b.window
-                    } else {
-                        0
-                    };
-                    let avail = b.burst.min(b.tokens + gained);
-                    b.tokens = b.burst.min(avail + charge - actual as i64);
-                    b.refilled = now;
-                }
+            if charge > 0
+                && let Some(b) = inner.rate.get_mut(&rc)
+            {
+                let gained = if b.limit > 0 && b.window > 0 {
+                    (now - b.refilled).max(0) * b.limit / b.window
+                } else {
+                    0
+                };
+                let avail = b.burst.min(b.tokens + gained);
+                b.tokens = b.burst.min(avail + charge - actual as i64);
+                b.refilled = now;
             }
             inner.jobs.get_mut(&id).unwrap().rate_charge = 0;
         }
@@ -1134,10 +1133,11 @@ impl Store for MemStore {
         }
         let now = self.now();
         let mut inner = self.inner.lock().unwrap();
-        if let Some((h, expires)) = inner.duties.get(name) {
-            if *expires > now && h != holder {
-                return Ok(false);
-            }
+        if let Some((h, expires)) = inner.duties.get(name)
+            && *expires > now
+            && h != holder
+        {
+            return Ok(false);
         }
         inner
             .duties
@@ -1213,17 +1213,17 @@ impl headgate_core::ResultStore for MemStore {
                 let job = &inner.jobs[&id];
                 (job.env.rate_class.clone(), job.rate_charge)
             };
-            if charge > 0 {
-                if let Some(bucket) = inner.rate.get_mut(&rc) {
-                    let gained = if bucket.limit > 0 && bucket.window > 0 {
-                        (now - bucket.refilled).max(0) * bucket.limit / bucket.window
-                    } else {
-                        0
-                    };
-                    let available = bucket.burst.min(bucket.tokens + gained);
-                    bucket.tokens = bucket.burst.min(available + charge - actual as i64);
-                    bucket.refilled = now;
-                }
+            if charge > 0
+                && let Some(bucket) = inner.rate.get_mut(&rc)
+            {
+                let gained = if bucket.limit > 0 && bucket.window > 0 {
+                    (now - bucket.refilled).max(0) * bucket.limit / bucket.window
+                } else {
+                    0
+                };
+                let available = bucket.burst.min(bucket.tokens + gained);
+                bucket.tokens = bucket.burst.min(available + charge - actual as i64);
+                bucket.refilled = now;
             }
             inner.jobs.get_mut(&id).unwrap().rate_charge = 0;
         }

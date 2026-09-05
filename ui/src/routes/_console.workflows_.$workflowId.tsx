@@ -42,6 +42,7 @@ function WorkflowDetailRoute() {
             });
           }
         }}
+        workflowId={workflowId}
       />
     </>
   );

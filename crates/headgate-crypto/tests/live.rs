@@ -51,7 +51,10 @@ async fn live_store_holds_ciphertext_while_handler_receives_plaintext() {
             .windows(plaintext.len())
             .any(|w| w == plaintext)
     );
-    store.enqueue(&[encrypted.clone()]).await.unwrap();
+    store
+        .enqueue(std::slice::from_ref(&encrypted))
+        .await
+        .unwrap();
     let stored = store
         .get_job(&id, true)
         .await

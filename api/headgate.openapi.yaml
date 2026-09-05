@@ -803,6 +803,193 @@ paths:
                         reason: {type: string, maxLength: 64}
                         recorded_at_ms: {type: integer}
 
+  /workflows:
+    get:
+      summary: List workflow coordinators without loading their graphs
+      parameters:
+        - {$ref: '#/components/parameters/ControlLimit'}
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        '200':
+          description: Bounded workflow page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workflows, next_cursor]
+                properties:
+                  workflows: {type: array, maxItems: 200, items: {$ref: '#/components/schemas/WorkflowSummary'}}
+                  next_cursor: {type: [string, "null"]}
+  /workflows/{id}:
+    get:
+      summary: Inspect a workflow's accepted graph and live execution state
+      description: Returns the base graph plus accepted additive grafts. Task payloads are never returned.
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200':
+          description: Bounded workflow graph snapshot.
+          content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowSnapshot'}}}
+        '404': {description: Workflow not found}
+  /workflows/{id}/events:
+    get:
+      summary: Read bounded durable workflow history
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses: {'200': {description: At most 256 ordered events from the fenced coordinator checkpoint.}, '404': {description: Workflow not found}}
+  /workflows/{id}/nodes/{node}:
+    get:
+      summary: Inspect one workflow node
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - {name: node, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Node topology and live job state, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowNode'}}}}
+        '404': {description: Workflow or node not found}
+  /workflows/{id}/nodes/{node}/dependencies:
+    get:
+      summary: List a workflow node's immediate prerequisites
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - {name: node, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Immediate dependency nodes.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [dependencies]
+                properties: {dependencies: {type: array, items: {$ref: '#/components/schemas/WorkflowNode'}}}
+        '404': {description: Workflow or node not found}
+  /workflows/{id}/nodes/{node}/dependents:
+    get:
+      summary: List nodes that immediately depend on a workflow node
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - {name: node, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Immediate dependent nodes.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [dependents]
+                properties: {dependents: {type: array, items: {$ref: '#/components/schemas/WorkflowNode'}}}
+        '404': {description: Workflow or node not found}
+  /workflows/{id}/signals:
+    get:
+      summary: List bounded durable workflow signal history
+      parameters:
+        - {$ref: '#/components/parameters/Id'}
+        - {$ref: '#/components/parameters/ControlLimit'}
+        - {name: cursor, in: query, schema: {type: integer, minimum: 1}}
+      responses:
+        '200':
+          description: Newest-first signal emissions, at most 100 retained per workflow.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [signals, next_cursor]
+                properties:
+                  signals: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/WorkflowSignal'}}
+                  next_cursor: {type: [integer, "null"]}
+    post:
+      summary: Emit a durable buffered workflow signal
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [signal]
+              properties:
+                signal: {type: string, minLength: 1}
+                payload: {description: Arbitrary JSON value delivered with the signal.}
+                source: {description: Caller-supplied JSON describing the emitter or calling system; authenticate and populate it at a trusted upstream boundary.}
+      responses:
+        '200':
+          description: Idempotent signal receipt including the original durable emission.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [matched, promoted, inserted, emission]
+                properties:
+                  matched: {type: integer, minimum: 1}
+                  promoted: {type: integer, minimum: 0}
+                  inserted: {type: boolean, description: False when this idempotency key replayed an existing emission.}
+                  emission: {$ref: '#/components/schemas/WorkflowSignal'}
+  /workflows/{id}/grafts:
+    post:
+      summary: Atomically submit a revision-checked additive graph graft
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_revision, tasks]
+              properties:
+                expected_revision: {type: integer, minimum: 1}
+                queue: {type: string}
+                tasks:
+                  type: array
+                  minItems: 1
+                  maxItems: 999
+                  items:
+                    type: object
+                    required: [name, kind, payload]
+                    properties:
+                      name: {type: string, minLength: 1, maxLength: 128}
+                      deps: {type: array, items: {type: string}}
+                      id: {type: string}
+                      kind: {type: string, minLength: 1}
+                      payload: {type: string, contentEncoding: base64}
+                      queue: {type: string}
+                      schema_version: {type: integer, minimum: 1}
+      responses: {'202': {description: Graft receipt and task batch accepted atomically}, '409': {description: Revision conflict}}
+  /workflows/{id}/retry:
+    post:
+      summary: Retry only a workflow's failed subgraph
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_revision]
+              properties:
+                expected_revision: {type: integer, minimum: 1}
+                recoveries:
+                  type: array
+                  maxItems: 999
+                  description: Explicit repair instructions for failed nodes that cannot be retried as-is.
+                  items:
+                    type: object
+                    required: [node]
+                    properties:
+                      node: {type: string, minLength: 1, maxLength: 128}
+                      payload: {type: string, contentEncoding: base64, description: Required when repairing an undecodable node.}
+                      schema_version: {type: integer, minimum: 1, description: Required when repairing an undecodable node.}
+                      release_quarantine: {type: boolean, default: false, description: Must be true to release a quarantined fingerprint.}
+      responses: {'200': {description: Accepted revision and generation}, '409': {description: Revision conflict}}
+  /workflows/{id}/cancel:
+    post:
+      summary: Cancel active workflow work and optionally linked children
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {propagate_children: {type: boolean, default: true}}
+      responses: {'200': {description: Bounded cancellation receipt}}
+
   /healthz:
     get:
       summary: Liveness. Never touches the store.
@@ -836,6 +1023,61 @@ components:
         POST, must not enqueue the job twice. Keys are retained long enough to cover a
         client retry window and the response is replayed verbatim.
   schemas:
+    WorkflowSummary:
+      type: object
+      required: [workflow_id, coordinator_job_id, state, enqueued_at_ms, scheduled_at_ms]
+      properties:
+        workflow_id: {type: string}
+        coordinator_job_id: {type: string}
+        state: {type: string}
+        enqueued_at_ms: {type: integer}
+        scheduled_at_ms: {type: integer}
+        finalized_at_ms: {type: integer}
+    WorkflowNode:
+      type: object
+      required: [name, job_id, kind, job_kind, state, dependencies, dependents]
+      properties:
+        name: {type: string}
+        job_id: {type: string}
+        kind: {type: string, enum: [task, signal, timer, child_workflow, condition]}
+        job_kind: {type: string}
+        state: {type: string, description: May be `missing` when retention removed an unfinished node before inspection.}
+        dependencies: {type: array, items: {type: string}}
+        dependents: {type: array, items: {type: string}}
+        signal: {type: string}
+        wake_at_ms: {type: integer}
+        delay_ms: {type: integer}
+        child_workflow_id: {type: string}
+        condition: {type: string}
+        completed_at_ms: {type: integer}
+    WorkflowSnapshot:
+      type: object
+      required: [workflow_id, coordinator_job_id, coordinator_state, revision, generation, failed, failed_subgraph_retry, nodes]
+      properties:
+        workflow_id: {type: string}
+        coordinator_job_id: {type: string}
+        coordinator_state: {type: string}
+        revision: {type: integer, minimum: 1}
+        generation: {type: integer, minimum: 1}
+        failed: {type: boolean}
+        failed_subgraph_retry: {type: boolean}
+        retry_policy:
+          type: object
+          required: [max_generations, backoff_ms]
+          properties:
+            max_generations: {type: integer, minimum: 1}
+            backoff_ms: {type: integer, minimum: 1}
+        nodes: {type: array, maxItems: 999, items: {$ref: '#/components/schemas/WorkflowNode'}}
+    WorkflowSignal:
+      type: object
+      required: [id, signal, idempotency_key, payload, source, recorded_at_ms]
+      properties:
+        id: {type: integer, minimum: 1}
+        signal: {type: string}
+        idempotency_key: {type: string}
+        payload: {description: Arbitrary JSON value supplied by the emitter, limited to 64 KiB after canonical serialization.}
+        source: {description: Caller-supplied JSON describing the emitter or calling system, limited to 16 KiB; it is not proof of identity by itself.}
+        recorded_at_ms: {type: integer, description: Timestamp assigned by the backing store.}
     State:
       type: string
       enum: [pending, scheduled, available, running, retryable, completed, archived, cancelled, quarantined, undecodable]

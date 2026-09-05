@@ -143,6 +143,30 @@ const (
 	OutcomeRateLimited = headgateshared.OutcomeRateLimited
 )
 
+const DurableEventLimit = uint32(100)
+const MaxDurableEventPayloadBytes = 64 * 1024
+const MaxDurableEventSourceBytes = 16 * 1024
+
+// DurableEvent is one bounded, store-timestamped fact attached to an application scope.
+// Payload and Source contain valid JSON so every backend preserves the same value.
+type DurableEvent struct {
+	EventID        uint64
+	Scope          string
+	Topic          string
+	IdempotencyKey string
+	Payload        []byte
+	Source         []byte
+	RecordedAtMs   int64
+}
+
+// DurableEventStore is an optional inspection capability used by layered packages such
+// as headgateworkflow. It stays separate from InspectStore so core inspection adapters
+// do not falsely claim durable event support.
+type DurableEventStore interface {
+	AppendDurableEvent(ctx context.Context, event DurableEvent) (stored DurableEvent, inserted bool, err error)
+	ListDurableEvents(ctx context.Context, scope string, beforeEventID uint64, limit uint32) ([]DurableEvent, error)
+}
+
 func ParseOutcome(value string) (Outcome, bool) {
 	return headgateshared.ParseOutcome(value)
 }
@@ -1027,6 +1051,14 @@ type CheckpointInspectStore interface {
 	GetJobCheckpoint(ctx context.Context, id string) (*Checkpoint, error)
 }
 
+// PendingScheduleStore is the narrow optional capability workflow-relative timers use
+// to atomically move pending work to an absolute store-clock deadline. Keeping it
+// separate from InspectStore does not force unrelated third-party inspection adapters
+// to claim support they do not have.
+type PendingScheduleStore interface {
+	SchedulePendingJob(ctx context.Context, id string, atMs int64) error
+}
+
 // Tx is a caller-owned store transaction. Drivers wrap their concrete handle and
 // recover it via Unwrap — the Go mirror of Rust's TxHandle::as_any (transactional API): the
 // compile-time path is typed, the dyn path downcasts, and a foreign handle is a hard
@@ -1698,6 +1730,13 @@ func ValidateConcurrencyLimit(cfg ConcurrencyLimit) error {
 func ValidateScheduleEventLimit(limit uint32) error {
 	if limit == 0 || limit > ScheduleEventLimit {
 		return &InvalidError{Msg: "schedule event limit must be between 1 and 100"}
+	}
+	return nil
+}
+
+func ValidateDurableEventLimit(limit uint32) error {
+	if limit == 0 || limit > DurableEventLimit {
+		return &InvalidError{Msg: "durable event limit must be between 1 and 100"}
 	}
 	return nil
 }

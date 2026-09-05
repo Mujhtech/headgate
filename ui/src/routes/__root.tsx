@@ -19,7 +19,10 @@ export const Route = createRootRoute({
       { name: "theme-color", content: "#111827" },
       { title: "headgate console" },
     ],
-    links: [{ rel: "stylesheet", href: appCss }],
+    links: [
+      { rel: "stylesheet", href: appCss },
+      { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
+    ],
   }),
   shellComponent: RootDocument,
   notFoundComponent: NotFound,

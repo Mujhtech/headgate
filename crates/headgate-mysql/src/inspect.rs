@@ -8,11 +8,12 @@
 
 use headgate_core::{
     AdmissionExplain, BulkRequest, Checkpoint, CheckpointInspect, ConcurrencyLimitConfig,
-    HistoryBucket, Inspect, JobFilter, JobOutput, JobPage, JobProgress, JobResult, JobSummary,
-    MissedPolicy, OperationStatus, OutputInspect, PartitionState, ProgressInspect, QuarantineEntry,
-    QueueStats, QuietGroupMetrics, RateClassConfig, RateClassState, ResultInspect,
-    SCHEDULE_EVENT_LIMIT, SaturationStrategy, Schedule, ScheduleEvent, ScheduleEventOutcome,
-    StateCounts, StoreError, WorkerMeta, noisy_partition_keys,
+    DURABLE_EVENT_LIMIT, DurableEvent, HistoryBucket, Inspect, JobFilter, JobOutput, JobPage,
+    JobProgress, JobResult, JobSummary, MissedPolicy, OperationStatus, OutputInspect,
+    PartitionState, ProgressInspect, QuarantineEntry, QueueStats, QuietGroupMetrics,
+    RateClassConfig, RateClassState, ResultInspect, SCHEDULE_EVENT_LIMIT, SaturationStrategy,
+    Schedule, ScheduleEvent, ScheduleEventOutcome, StateCounts, StoreError, WorkerMeta,
+    noisy_partition_keys,
 };
 use mysql_async::prelude::*;
 use mysql_async::{Params, Row, TxOpts, Value};
@@ -26,8 +27,6 @@ use headgate_shared::inspection::{
 };
 
 const QUIET_PARTITION_LIMIT: usize = SHARED_QUIET_PARTITION_LIMIT as usize;
-/// Queue-position lookups cap here; "position >= 1000" is answer enough.
-
 const JOB_COLS: &str = "j.ulid, j.kind, j.queue, CAST(j.state AS CHAR) AS state_text, \
      j.schema_version, j.priority, j.attempt, j.crash_attempt, j.max_attempts, \
      j.partition_key, j.rate_class, j.sticky_worker, j.weight, j.fingerprint, j.enqueued_at_ms, j.scheduled_at_ms, j.claimed_at_ms, \
@@ -732,7 +731,7 @@ impl Inspect for MysqlStore {
         tx.exec_drop(
             "INSERT INTO headgate_active_partition (queue, partition_key)
              SELECT queue, partition_key FROM headgate_job
-             WHERE ulid = ? AND state IN ('archived', 'cancelled')
+             WHERE ulid = ? AND state IN ('archived', 'cancelled', 'undecodable')
              ON DUPLICATE KEY UPDATE queue = VALUES(queue)",
             (id,),
         )
@@ -742,7 +741,7 @@ impl Inspect for MysqlStore {
             format!(
                 "UPDATE headgate_job SET state = 'available', scheduled_at_ms = {NOW_MS},
                         finalized_at_ms = NULL
-                 WHERE ulid = ? AND state IN ('archived', 'cancelled')"
+                 WHERE ulid = ? AND state IN ('archived', 'cancelled', 'undecodable')"
             ),
             (id,),
         )
@@ -756,7 +755,7 @@ impl Inspect for MysqlStore {
         match self.job_state(id).await? {
             None => Err(StoreError::NotFound(format!("job {id}"))),
             Some(state) => Err(StoreError::Invalid(format!(
-                "operator_retry is only defined from archived or cancelled; job {id} is {state}"
+                "operator_retry is only defined from archived, cancelled, or undecodable; job {id} is {state}"
             ))),
         }
     }
@@ -785,7 +784,7 @@ impl Inspect for MysqlStore {
                 "UPDATE headgate_job SET state = 'cancelled', lease_id = NULL,
                         lease_expires_at_ms = NULL, claimed_by = NULL,
                         finalized_at_ms = {NOW_MS}
-                 WHERE ulid = ? AND state IN ('pending', 'scheduled', 'available', 'running')"
+                 WHERE ulid = ? AND state IN ('pending', 'scheduled', 'available', 'running', 'retryable')"
             ),
             (id,),
         )
@@ -1187,6 +1186,99 @@ impl Inspect for MysqlStore {
             .collect()
     }
 
+    async fn append_durable_event(
+        &self,
+        event: &DurableEvent,
+    ) -> Result<(DurableEvent, bool), StoreError> {
+        validate_durable_event(event)?;
+        let mut c = self.raw_conn().await?;
+        let mut tx = c
+            .start_transaction(TxOpts::default())
+            .await
+            .map_err(map_err)?;
+        tx.exec_drop(
+            "INSERT IGNORE INTO headgate_durable_event_scope(scope) VALUES(?)",
+            (&event.scope,),
+        )
+        .await
+        .map_err(map_err)?;
+        let _: String = tx
+            .exec_first(
+                "SELECT scope FROM headgate_durable_event_scope WHERE scope=? FOR UPDATE",
+                (&event.scope,),
+            )
+            .await
+            .map_err(map_err)?
+            .ok_or_else(|| StoreError::Invalid("durable event scope was not created".into()))?;
+        let existing: Option<Row> = tx.exec_first(
+            "SELECT id,topic,payload,source,recorded_at_ms FROM headgate_durable_event WHERE scope=? AND idempotency_key=?",
+            (&event.scope, &event.idempotency_key),
+        ).await.map_err(map_err)?;
+        let inserted = existing.is_none();
+        if inserted {
+            tx.exec_drop(
+                format!("INSERT INTO headgate_durable_event(scope,topic,idempotency_key,payload,source,recorded_at_ms) VALUES(?,?,?,?,?,{NOW_MS})"),
+                (&event.scope, &event.topic, &event.idempotency_key, &event.payload, &event.source),
+            ).await.map_err(map_err)?;
+        }
+        let row: Row = tx.exec_first(
+            "SELECT id,topic,payload,source,recorded_at_ms FROM headgate_durable_event WHERE scope=? AND idempotency_key=?",
+            (&event.scope, &event.idempotency_key),
+        ).await.map_err(map_err)?.ok_or_else(|| StoreError::Invalid("durable event was not stored".into()))?;
+        let topic: String = row.get("topic").unwrap_or_default();
+        let payload: Vec<u8> = row.get("payload").unwrap_or_default();
+        let source: Vec<u8> = row.get("source").unwrap_or_default();
+        if topic != event.topic || payload != event.payload || source != event.source {
+            return Err(StoreError::Invalid(
+                "durable event idempotency key was reused with different content".into(),
+            ));
+        }
+        let id: u64 = row.get("id").unwrap_or_default();
+        let recorded_at_ms: i64 = row.get("recorded_at_ms").unwrap_or_default();
+        tx.exec_drop(
+            "DELETE e FROM headgate_durable_event e LEFT JOIN
+             (SELECT id FROM headgate_durable_event WHERE scope=? ORDER BY id DESC LIMIT ?) keep ON keep.id=e.id
+             WHERE e.scope=? AND keep.id IS NULL",
+            (&event.scope, DURABLE_EVENT_LIMIT, &event.scope),
+        ).await.map_err(map_err)?;
+        tx.commit().await.map_err(map_err)?;
+        Ok((
+            DurableEvent {
+                event_id: id,
+                recorded_at_ms,
+                ..event.clone()
+            },
+            inserted,
+        ))
+    }
+
+    async fn list_durable_events(
+        &self,
+        scope: &str,
+        before_event_id: Option<u64>,
+        limit: u32,
+    ) -> Result<Vec<DurableEvent>, StoreError> {
+        headgate_core::validate_durable_event_limit(limit)?;
+        let mut c = self.raw_conn().await?;
+        let rows: Vec<Row> = c.exec(
+            "SELECT id,scope,topic,idempotency_key,payload,source,recorded_at_ms FROM headgate_durable_event
+             WHERE scope=? AND (?=0 OR id<?) ORDER BY id DESC LIMIT ?",
+            (scope, before_event_id.unwrap_or(0), before_event_id.unwrap_or(0), limit),
+        ).await.map_err(map_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| DurableEvent {
+                event_id: row.get("id").unwrap_or_default(),
+                scope: row.get("scope").unwrap_or_default(),
+                topic: row.get("topic").unwrap_or_default(),
+                idempotency_key: row.get("idempotency_key").unwrap_or_default(),
+                payload: row.get("payload").unwrap_or_default(),
+                source: row.get("source").unwrap_or_default(),
+                recorded_at_ms: row.get("recorded_at_ms").unwrap_or_default(),
+            })
+            .collect())
+    }
+
     async fn heartbeat_worker(&self, w: &WorkerMeta) -> Result<Option<String>, StoreError> {
         let mut c = self.raw_conn().await?;
         let queues = serde_json::to_string(&w.queues).unwrap_or_else(|_| "[]".into());
@@ -1285,12 +1377,12 @@ impl Inspect for MysqlStore {
         worker_id: &str,
         command: Option<&str>,
     ) -> Result<(), StoreError> {
-        if let Some(cmd) = command {
-            if !headgate_core::valid_worker_command(cmd) {
-                return Err(StoreError::Invalid(
-                    "command must be quiet, resume, restart, terminate, or resign".into(),
-                ));
-            }
+        if let Some(cmd) = command
+            && !headgate_core::valid_worker_command(cmd)
+        {
+            return Err(StoreError::Invalid(
+                "command must be quiet, resume, restart, terminate, or resign".into(),
+            ));
         }
         let mut c = self.raw_conn().await?;
         // CLIENT_FOUND_ROWS (crate contract): matched-rows semantics, so clearing an
@@ -1473,6 +1565,29 @@ impl Inspect for MysqlStore {
         Ok(())
     }
 
+    async fn schedule_pending_job(&self, id: &str, at_ms: i64) -> Result<(), StoreError> {
+        if at_ms <= 0 {
+            return Err(StoreError::Invalid(
+                "pending schedule timestamp must be positive".into(),
+            ));
+        }
+        let mut c = self.raw_conn().await?;
+        c.exec_drop(
+            "UPDATE headgate_job SET state='scheduled', scheduled_at_ms=?
+             WHERE ulid=? AND state='pending'",
+            (at_ms, id),
+        )
+        .await
+        .map_err(map_err)?;
+        if c.affected_rows() == 1 {
+            Ok(())
+        } else {
+            Err(StoreError::Invalid(
+                "workflow_schedule is defined only from pending".into(),
+            ))
+        }
+    }
+
     async fn delete_queue(&self, queue: &str, force: bool) -> Result<Option<String>, StoreError> {
         let mut c = self.raw_conn().await?;
         let mut tx = c
@@ -1564,6 +1679,35 @@ impl Inspect for MysqlStore {
         }
         Ok(queues.len() as u32)
     }
+}
+
+fn validate_durable_event(event: &DurableEvent) -> Result<(), StoreError> {
+    if event.scope.is_empty()
+        || event.scope.len() > 512
+        || event.topic.is_empty()
+        || event.topic.len() > 255
+        || event.idempotency_key.is_empty()
+        || event.idempotency_key.len() > 255
+    {
+        return Err(StoreError::Invalid(
+            "durable event scope, topic, or idempotency key is invalid".into(),
+        ));
+    }
+    if event.payload.len() > headgate_core::MAX_DURABLE_EVENT_PAYLOAD_BYTES
+        || serde_json::from_slice::<serde_json::Value>(&event.payload).is_err()
+    {
+        return Err(StoreError::Invalid(
+            "durable event payload must be valid JSON of at most 65536 bytes".into(),
+        ));
+    }
+    if event.source.len() > headgate_core::MAX_DURABLE_EVENT_SOURCE_BYTES
+        || serde_json::from_slice::<serde_json::Value>(&event.source).is_err()
+    {
+        return Err(StoreError::Invalid(
+            "durable event source must be valid JSON of at most 16384 bytes".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[async_trait::async_trait]

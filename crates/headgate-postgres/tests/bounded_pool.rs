@@ -184,7 +184,7 @@ async fn connection_budget_keeps_renewal_acks_and_duties_live_behind_held_transa
     let (admin, admin_driver) = tokio_postgres::connect(&conninfo, NoTls)
         .await
         .expect("admin connect");
-    let admin_task = tokio::spawn(async move { admin_driver.await });
+    let admin_task = tokio::spawn(admin_driver);
     let queue = format!("cb-rust-pg-{}", std::process::id());
     let worker_id = format!("cb-rust-pg-w-{}", std::process::id());
     admin

@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use axum::extract::DefaultBodyLimit;
 use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{FromRequest, FromRequestParts, Path, Query, State};
-use axum::http::{HeaderValue, Method, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router};
@@ -130,6 +130,25 @@ pub fn router(store: Arc<dyn Inspect>, cfg: ApiConfig) -> Router {
         .route("/workers", get(workers))
         .route("/cluster", get(cluster))
         .route("/workers/{worker_id}/signal", post(signal_worker))
+        .route("/workflows", get(workflow_list))
+        .route("/workflows/{id}", get(workflow_detail))
+        .route("/workflows/{id}/events", get(workflow_events))
+        .route("/workflows/{id}/nodes/{node}", get(workflow_node))
+        .route(
+            "/workflows/{id}/nodes/{node}/dependencies",
+            get(workflow_dependencies),
+        )
+        .route(
+            "/workflows/{id}/nodes/{node}/dependents",
+            get(workflow_dependents),
+        )
+        .route(
+            "/workflows/{id}/signals",
+            get(workflow_signals).post(workflow_signal),
+        )
+        .route("/workflows/{id}/grafts", post(workflow_graft))
+        .route("/workflows/{id}/retry", post(workflow_retry))
+        .route("/workflows/{id}/cancel", post(workflow_cancel))
         .route("/events", get(events))
         .route("/rate-classes", get(rate_classes))
         .route("/rate-classes/{name}", put(put_rate_class))
@@ -398,6 +417,7 @@ fn client_error(error: headgate::ClientError) -> Response {
     }
 }
 
+#[allow(clippy::result_large_err)] // Axum handlers use a concrete Response as the uniform API error.
 fn authorize_http_enqueue(
     state: &ApiState,
     identity: Option<Extension<headgate::EnqueueIdentity>>,
@@ -409,6 +429,285 @@ fn authorize_http_enqueue(
 }
 
 type ApiResult = Result<Response, Response>;
+
+fn workflow_err(error: headgate_workflow::WorkflowError) -> Response {
+    let message = error.to_string();
+    let status = if message.contains("was not found") {
+        StatusCode::NOT_FOUND
+    } else if message.contains("revision conflict") {
+        StatusCode::CONFLICT
+    } else {
+        StatusCode::BAD_REQUEST
+    };
+    err_response(status, &message)
+}
+
+#[derive(Deserialize)]
+struct WorkflowSignalBody {
+    signal: String,
+    #[serde(default)]
+    payload: serde_json::Value,
+    #[serde(default = "default_signal_source")]
+    source: serde_json::Value,
+}
+
+fn default_signal_source() -> serde_json::Value {
+    serde_json::json!({})
+}
+
+async fn workflow_signal(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<WorkflowSignalBody>,
+) -> ApiResult {
+    let key = headers
+        .get("idempotency-key")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    let receipt = headgate_workflow::emit_signal_with(
+        s.store.as_ref(),
+        &id,
+        headgate_workflow::SignalEmission {
+            signal: body.signal,
+            idempotency_key: key.into(),
+            payload: body.payload,
+            source: body.source,
+        },
+    )
+    .await
+    .map_err(workflow_err)?;
+    Ok(Json(json!({ "matched": receipt.matched, "promoted": receipt.promoted, "inserted": receipt.inserted, "emission": receipt.emission })).into_response())
+}
+
+#[derive(Deserialize)]
+struct WorkflowSignalsQuery {
+    cursor: Option<u64>,
+    limit: Option<u32>,
+}
+
+async fn workflow_signals(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+    Query(query): Query<WorkflowSignalsQuery>,
+) -> ApiResult {
+    let limit = query.limit.unwrap_or(100);
+    let signals = headgate_workflow::list_signals(s.store.as_ref(), &id, query.cursor, limit)
+        .await
+        .map_err(workflow_err)?;
+    let next_cursor = (signals.len() == limit as usize)
+        .then(|| signals.last().map(|signal| signal.id))
+        .flatten();
+    Ok(Json(json!({"signals": signals, "next_cursor": next_cursor})).into_response())
+}
+
+#[derive(Deserialize)]
+struct WorkflowRetryBody {
+    expected_revision: u64,
+    #[serde(default)]
+    recoveries: Vec<WorkflowRecoveryBody>,
+}
+
+#[derive(Deserialize)]
+struct WorkflowRecoveryBody {
+    node: String,
+    #[serde(default)]
+    payload: Option<String>,
+    #[serde(default)]
+    schema_version: Option<u32>,
+    #[serde(default)]
+    release_quarantine: bool,
+}
+
+#[allow(clippy::result_large_err)] // Keeps base64 validation on the same concrete API error path.
+async fn workflow_retry(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<WorkflowRetryBody>,
+) -> ApiResult {
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let recoveries = body
+        .recoveries
+        .into_iter()
+        .map(|recovery| {
+            let payload = recovery
+                .payload
+                .map(|payload| {
+                    b64.decode(payload).map_err(|_| {
+                        err_response(StatusCode::BAD_REQUEST, "recovery payload must be base64")
+                    })
+                })
+                .transpose()?;
+            Ok(headgate_workflow::WorkflowRecovery {
+                node: recovery.node,
+                payload,
+                schema_version: recovery.schema_version,
+                release_quarantine: recovery.release_quarantine,
+            })
+        })
+        .collect::<Result<Vec<_>, Response>>()?;
+    let receipt = headgate_workflow::request_failed_subgraph_retry_with_recovery(
+        s.store.as_ref(),
+        &id,
+        body.expected_revision,
+        &recoveries,
+    )
+    .await
+    .map_err(workflow_err)?;
+    Ok(
+        Json(json!({ "revision": receipt.revision, "generation": receipt.generation }))
+            .into_response(),
+    )
+}
+
+#[derive(Deserialize)]
+struct WorkflowCancelBody {
+    #[serde(default = "default_true")]
+    propagate_children: bool,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+async fn workflow_cancel(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<WorkflowCancelBody>,
+) -> ApiResult {
+    let receipt =
+        headgate_workflow::cancel_workflow(s.store.as_ref(), &id, body.propagate_children)
+            .await
+            .map_err(workflow_err)?;
+    Ok(Json(json!({ "workflows": receipt.workflows, "jobs": receipt.jobs })).into_response())
+}
+
+async fn workflow_events(State(s): State<ApiState>, Path(id): Path<String>) -> ApiResult {
+    let events = headgate_workflow::workflow_events(s.store.as_ref(), &id)
+        .await
+        .map_err(workflow_err)?;
+    Ok(Json(json!({ "events": events })).into_response())
+}
+
+async fn workflow_detail(State(s): State<ApiState>, Path(id): Path<String>) -> ApiResult {
+    let snapshot = headgate_workflow::inspect_workflow(s.store.as_ref(), &id)
+        .await
+        .map_err(workflow_err)?;
+    Ok(Json(snapshot).into_response())
+}
+
+#[derive(Deserialize)]
+struct WorkflowListParams {
+    cursor: Option<String>,
+    limit: Option<u32>,
+}
+
+async fn workflow_list(
+    State(s): State<ApiState>,
+    ApiQuery(params): ApiQuery<WorkflowListParams>,
+) -> ApiResult {
+    let page = headgate_workflow::list_workflows(
+        s.store.as_ref(),
+        params.cursor.as_deref(),
+        params.limit.unwrap_or(50),
+    )
+    .await
+    .map_err(workflow_err)?;
+    Ok(Json(page).into_response())
+}
+
+async fn workflow_node(
+    State(s): State<ApiState>,
+    Path((id, node)): Path<(String, String)>,
+) -> ApiResult {
+    let node = headgate_workflow::workflow_node(s.store.as_ref(), &id, &node)
+        .await
+        .map_err(workflow_err)?;
+    Ok(Json(node).into_response())
+}
+
+async fn workflow_dependencies(
+    State(s): State<ApiState>,
+    Path((id, node)): Path<(String, String)>,
+) -> ApiResult {
+    let dependencies = headgate_workflow::workflow_dependencies(s.store.as_ref(), &id, &node)
+        .await
+        .map_err(workflow_err)?;
+    Ok(Json(json!({ "dependencies": dependencies })).into_response())
+}
+
+async fn workflow_dependents(
+    State(s): State<ApiState>,
+    Path((id, node)): Path<(String, String)>,
+) -> ApiResult {
+    let dependents = headgate_workflow::workflow_dependents(s.store.as_ref(), &id, &node)
+        .await
+        .map_err(workflow_err)?;
+    Ok(Json(json!({ "dependents": dependents })).into_response())
+}
+
+#[derive(Deserialize)]
+struct WorkflowGraftBody {
+    expected_revision: u64,
+    #[serde(default)]
+    queue: Option<String>,
+    tasks: Vec<WorkflowGraftTaskBody>,
+}
+
+#[derive(Deserialize)]
+struct WorkflowGraftTaskBody {
+    name: String,
+    #[serde(default)]
+    deps: Vec<String>,
+    kind: String,
+    payload: String,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    queue: Option<String>,
+    #[serde(default)]
+    schema_version: Option<u32>,
+}
+
+async fn workflow_graft(
+    State(s): State<ApiState>,
+    identity: Option<Extension<headgate::EnqueueIdentity>>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<WorkflowGraftBody>,
+) -> ApiResult {
+    let mut graft = headgate_workflow::WorkflowGraft::new(&id, body.expected_revision);
+    if let Some(queue) = body.queue {
+        graft = graft.queue(queue);
+    }
+    let b64 = base64::engine::general_purpose::STANDARD;
+    for task in body.tasks {
+        let payload = b64
+            .decode(task.payload)
+            .map_err(|_| err_response(StatusCode::BAD_REQUEST, "payload must be base64"))?;
+        let kind = task.kind;
+        let envelope = Envelope {
+            id: task.id.unwrap_or_default(),
+            fingerprint: fingerprint(&kind, &payload),
+            kind,
+            payload,
+            queue: task.queue.unwrap_or_default(),
+            schema_version: task.schema_version.unwrap_or(1),
+            ..Default::default()
+        };
+        graft = graft.add(task.name, envelope, task.deps);
+    }
+    let batch = graft.prepare().map_err(workflow_err)?;
+    let context = headgate::EnqueueContext::http(identity.map(|Extension(value)| value));
+    s.producer
+        .enqueue_with_context(&context, &batch)
+        .await
+        .map_err(client_error)?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({ "receipt_id": batch[0].id })),
+    )
+        .into_response())
+}
 
 // ---------- handlers ----------
 
@@ -454,6 +753,7 @@ fn default_control_page_limit() -> usize {
     200
 }
 
+#[allow(clippy::result_large_err)] // Axum handlers consume this concrete response directly.
 fn control_page(length: usize, query: &ControlPageQuery) -> Result<(usize, usize), Response> {
     if query.limit == 0 || query.limit > 200 {
         return Err(err_response(
@@ -1190,7 +1490,7 @@ async fn put_concurrency_limit(
         ));
     }
     let on_saturated =
-        SaturationStrategy::try_from(body.on_saturated.as_str()).map_err(|e| store_err(e))?;
+        SaturationStrategy::try_from(body.on_saturated.as_str()).map_err(store_err)?;
     s.store
         .upsert_concurrency_limit(&ConcurrencyLimitConfig {
             name,

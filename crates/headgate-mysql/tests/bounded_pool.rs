@@ -268,7 +268,7 @@ async fn connection_budget_keeps_renewal_acks_and_duties_live_behind_held_transa
     sampler.await.expect("pool sampler");
     let peak = peak_connections.load(Ordering::Relaxed);
     assert!(
-        peak >= HELD_TRANSACTIONS && peak <= POOL_BUDGET,
+        (HELD_TRANSACTIONS..=POOL_BUDGET).contains(&peak),
         "peak physical MySQL connections={peak}, want {HELD_TRANSACTIONS}..{POOL_BUDGET}"
     );
     // A zero is allowed: the pool can schedule the short transient calls without a

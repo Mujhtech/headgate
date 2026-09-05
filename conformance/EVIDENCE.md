@@ -696,6 +696,82 @@ NOTE: round 32ab. The graceful tests drive the real admission loop, hold a child
 - go: headgateworkflow/workflow_test.go::TestCoordinatorUsesDurableCompletionEvidenceAfterRetention
 NOTE: round 32u plus workflow-aware retention hardening. Both builders pin the durable batch shape and reject missing dependencies and cycles. They clamp short child retention to the workflow retention. The coordinator records observed completions in a fenced cursor before promoting descendants; both languages prove retained evidence still resolves a dependency after its ordinary job row disappears, while an unrecorded missing dependency remains a failure. The Rust live test enqueues one real coordinator plus four pending application jobs into Postgres, repeatedly runs the ordinary worker runtime, and requires `extract` first, `join` last, and both fan-out branches exactly once between them. Go independently drives the resolver through root promotion, two-way fan-out, and an archived branch; the still-pending join is deleted before execution and the workflow settles failed. The graph is static and bounded by coordinator payload size. Signals, timers, CEL waits, dynamic graph mutation, workflow retry, and graph UI are not claimed.
 
+### Workflow signals
+- rust: crates/headgate-api/tests/api.rs::workflow_control_routes_share_the_idempotency_boundary
+- go: headgateapi/api_test.go::TestWorkflowMutationRoutesRequireIdempotencyKey
+- rust: crates/headgate-workflow/src/lib.rs::signal_is_pending_work_and_early_completion_waits_for_dependencies
+- rust: crates/headgate-workflow/tests/live.rs::live_postgres_buffers_and_idempotently_replays_workflow_signal
+- rust: crates/headgate-workflow/tests/live.rs::workflow_experiments_postgres_matrix_cell
+- rust: crates/headgate-workflow/tests/live.rs::workflow_experiments_redis_matrix_cell
+- rust-mysql: crates/headgate-workflow/tests/live_mysql.rs::workflow_experiments_mysql_matrix_cell
+- go: headgateworkflow/workflow_test.go::TestSignalEmissionIsDurableBufferedAndIdempotent
+- go: headgateworkflow/live_matrix_test.go::TestWorkflowExperimentsPostgresMatrixCell
+- go: headgateworkflow/live_matrix_test.go::TestWorkflowExperimentsRedisMatrixCell
+- go-mysql: headgateworkflow/live_mysql_test.go::TestWorkflowExperimentsMySQLMatrixCell
+NOTE: both SDKs use a retained pending signal job, buffer early delivery, and make replay idempotent. `TestSignalEmissionIsDurableBufferedAndIdempotent` and the two API boundary tests require a store-timestamped emission containing the idempotency key, JSON payload, and caller-supplied JSON source; replay returns the original record, conflicting content is rejected, and the bounded newest-first list reads it back. The shared matrix scenario combines early signal delivery with CEL, a relative timer, automatic retry, and durable history. On 2026-09-04 all six PostgreSQL/Redis/MySQL × Rust/Go cells ran live and passed; migration v13 adds the portable signal event store used by the richer contract. Payload is bounded to 64 KiB, source to 16 KiB, and each workflow retains 100 emissions.
+
+### Workflow timers
+- rust: crates/headgate-workflow/src/lib.rs::timer_uses_absolute_schedule_and_buffers_until_dependencies_complete
+- go: headgateworkflow/workflow_test.go::TestTimerUsesStoreScheduleAndBuffersUntilDependenciesComplete
+- go: headgateworkflow/workflow_test.go::TestRelativeTimerCheckpointsBeforeStoreTimeSnooze
+- rust: crates/headgate-workflow/src/lib.rs::relative_timer_anchors_to_dependency_completion
+- rust: crates/headgate-workflow/tests/live.rs::workflow_experiments_postgres_matrix_cell
+- rust: crates/headgate-workflow/tests/live.rs::workflow_experiments_redis_matrix_cell
+- rust-mysql: crates/headgate-workflow/tests/live_mysql.rs::workflow_experiments_mysql_matrix_cell
+- go: headgateworkflow/live_matrix_test.go::TestWorkflowExperimentsPostgresMatrixCell
+- go: headgateworkflow/live_matrix_test.go::TestWorkflowExperimentsRedisMatrixCell
+- go-mysql: headgateworkflow/live_mysql_test.go::TestWorkflowExperimentsMySQLMatrixCell
+NOTE: relative timers anchor to the latest dependency's store-stamped finalization and use the narrow pending-to-scheduled store operation. The six-cell scenario covers the complete runtime path and passed live on 2026-09-04. Its first Redis runs failed because the new Lua branch read ARGV[3]/ARGV[4] instead of ARGV[2]/ARGV[3], then omitted the future-score admission route; both failures are now regression-covered by the matrix.
+
+### Workflow conditional waits (CEL)
+- rust: crates/headgate-workflow/src/lib.rs::automatic_retry_policy_and_cel_condition_are_validated
+- rust: crates/headgate-workflow/tests/live.rs::workflow_experiments_postgres_matrix_cell
+- rust: crates/headgate-workflow/tests/live.rs::workflow_experiments_redis_matrix_cell
+- rust-mysql: crates/headgate-workflow/tests/live_mysql.rs::workflow_experiments_mysql_matrix_cell
+- go: headgateworkflow/workflow_test.go::TestAutomaticRetryPolicyAndCELConditionAreValidated
+- go: headgateworkflow/live_matrix_test.go::TestWorkflowExperimentsPostgresMatrixCell
+- go: headgateworkflow/live_matrix_test.go::TestWorkflowExperimentsRedisMatrixCell
+- go-mysql: headgateworkflow/live_mysql_test.go::TestWorkflowExperimentsMySQLMatrixCell
+NOTE: both implementations reject malformed or oversized expressions before enqueue, expose the same four typed variables, require a boolean result, and promote a condition as an ordinary pending internal job. The condition path passed in every live matrix cell on 2026-09-04.
+
+### Workflow graph mutation
+- rust: crates/headgate-api/tests/api.rs::workflow_control_routes_share_the_idempotency_boundary
+- go: headgateapi/api_test.go::TestWorkflowMutationRoutesRequireIdempotencyKey
+- rust: crates/headgate-workflow/src/lib.rs::revisioned_graft_prepares_one_atomic_receipt_and_pending_tasks
+- rust: crates/headgate-workflow/tests/live.rs::live_postgres_accepts_one_revisioned_workflow_graft_atomically
+- go: headgateworkflow/workflow_test.go::TestRevisionedGraftPersistsGraphBeforePromotingReceipt
+- go: headgateworkflow/workflow_test.go::TestInvalidCombinedGraftIsRemovedWithoutAdvancingRevision
+NOTE: both SDKs derive the same deterministic next-revision receipt, atomically enqueue it with pending tasks, validate the combined DAG, and persist acceptance before promotion. The authenticated/idempotency-key HTTP route exists and acceptance enters bounded history. Grafts remain additive ordinary-task mutations on a live coordinator; that is the claimed boundary, not missing evidence.
+
+### Workflow graph inspection
+- rust: crates/headgate-workflow/src/lib.rs::workflow_snapshot_answers_topology_queries
+- rust: crates/headgate-api/tests/api.rs::workflow_control_routes_share_the_idempotency_boundary
+- go: headgateworkflow/workflow_test.go::TestInspectWorkflowReturnsTopologyAndExecutionState
+- go: headgateapi/api_test.go::TestWorkflowInspectionRoutesAreReadOnlyAndBoundedToKnownNodes
+- go: headgateapi/api_test.go::TestWorkflowInspectionRoutesReturnTopologyWithoutPayloads
+NOTE: both workflow libraries expose the accepted graph and reverse topology without payloads, and their dependency/dependent lookups fail explicitly for unknown nodes. The Rust live API proof reads an enqueued graph and its dependency route; the Go route proofs pin read-only access, 404 behavior, graph/node/dependency/dependent response shapes, while the package test checks revision, generation, completion time, state, dependencies, and dependents.
+
+### Workflow-level retry
+- rust: crates/headgate-workflow/src/lib.rs::failed_subgraph_retry_is_explicit_in_the_coordinator_payload
+- rust: crates/headgate-workflow/tests/live.rs::live_postgres_retries_only_the_failed_workflow_subgraph
+- go: headgateworkflow/workflow_test.go::TestFailedSubgraphRetryPreservesSuccessAndReopensOnlyFailure
+- go: headgateworkflow/workflow_test.go::TestFailedSubgraphRetryRequiresExplicitTerminalRecovery
+- go: headgateapi/api_test.go::TestWorkflowMutationRoutesRequireIdempotencyKey
+- rust: crates/headgate-workflow/src/lib.rs::automatic_retry_policy_and_cel_condition_are_validated
+- rust: crates/headgate-workflow/tests/live.rs::workflow_experiments_postgres_matrix_cell
+- go: headgateworkflow/workflow_test.go::TestAutomaticRetryPolicyAndCELConditionAreValidated
+- go: headgateworkflow/live_matrix_test.go::TestWorkflowExperimentsPostgresMatrixCell
+NOTE: manual and automatic retries preserve completed ancestors, advance revision/generation, and use deterministic receipts. Recovery requires explicit quarantine release or a replacement undecodable payload/schema, and child-link retries propagate. The route and bounded history exist. The automatic retry path passed all six live cells on 2026-09-04, including terminal history surviving cursor-step completion.
+
+### Nested workflows
+- rust: crates/headgate-workflow/src/lib.rs::child_workflow_is_an_explicit_pending_node
+- rust: crates/headgate-workflow/tests/live.rs::live_postgres_parent_waits_for_child_workflow
+- go: headgateworkflow/workflow_test.go::TestChildWorkflowNodeMirrorsCoordinatorTerminalState
+- rust: crates/headgate-workflow/src/lib.rs::atomic_bundle_rejects_cross_workflow_cycles
+- go: headgateworkflow/workflow_test.go::TestAtomicBundleRejectsCrossWorkflowCycles
+- go: headgateworkflow/workflow_test.go::TestCancelWorkflowPropagatesToChildrenAndAllLiveBranches
+NOTE: explicit child-link jobs mirror the child coordinator. Atomic bundles require every child, reject cross-workflow cycles, and return one enqueue batch. Cancellation traverses all live parent branches and linked children by default; failed-link retry requests child retry first. These SDK/runtime semantics are the claimed capability; UI controls are tracked separately.
+
 ### Death handler
 - rust: crates/headgate/tests/death_handler.rs::death_handler_runs_once_only_after_the_archive_is_durable
 - go: death_handler_test.go::TestDeathHandlerRunsOnceOnlyAfterArchiveIsDurable

@@ -298,12 +298,17 @@ pub fn lifecycle_transition(from: State, ev: LifecycleEvent) -> Option<State> {
         (State::Retryable, LifecycleEvent::BackoffDue) => Some(State::Available),
         // step replay a resumed job whose step set changed under it must NOT silently restart
         (State::Running, LifecycleEvent::CheckpointStale) => Some(State::Undecodable),
-        (State::Archived | State::Cancelled, LifecycleEvent::OperatorRetry) => {
-            Some(State::Available)
-        }
+        (
+            State::Archived | State::Cancelled | State::Undecodable,
+            LifecycleEvent::OperatorRetry,
+        ) => Some(State::Available),
         (State::Quarantined, LifecycleEvent::OperatorRelease) => Some(State::Available),
         (
-            State::Pending | State::Available | State::Scheduled | State::Running,
+            State::Pending
+            | State::Available
+            | State::Scheduled
+            | State::Running
+            | State::Retryable,
             LifecycleEvent::OperatorCancel,
         ) => Some(State::Cancelled),
         _ => None,
@@ -1200,6 +1205,15 @@ pub fn validate_schedule_event_limit(limit: u32) -> Result<(), StoreError> {
     }
 }
 
+pub fn validate_durable_event_limit(limit: u32) -> Result<(), StoreError> {
+    if limit == 0 || limit > DURABLE_EVENT_LIMIT {
+        return Err(StoreError::Invalid(
+            "durable event limit must be between 1 and 100".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub struct RateClassState {
     pub name: String,
     pub tokens_available: i64,
@@ -1356,6 +1370,23 @@ pub struct ScheduleEvent {
     /// Stable, low-cardinality classification; never a raw backend error or payload.
     pub reason: String,
     /// Populated from store time by the backend.
+    pub recorded_at_ms: i64,
+}
+
+pub const DURABLE_EVENT_LIMIT: u32 = 100;
+pub const MAX_DURABLE_EVENT_PAYLOAD_BYTES: usize = 64 * 1024;
+pub const MAX_DURABLE_EVENT_SOURCE_BYTES: usize = 16 * 1024;
+
+/// One bounded, store-timestamped fact attached to an application scope. Payload and
+/// source contain valid JSON so every backend preserves the same value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DurableEvent {
+    pub event_id: u64,
+    pub scope: String,
+    pub topic: String,
+    pub idempotency_key: String,
+    pub payload: Vec<u8>,
+    pub source: Vec<u8>,
     pub recorded_at_ms: i64,
 }
 
@@ -1522,7 +1553,8 @@ pub trait Inspect: Store {
     /// available (`operator_release`) and new enqueues are accepted again. Returns how
     /// many jobs were released. A released job re-quarantines on its next crash.
     async fn quarantine_release(&self, fingerprint: &str) -> Result<u64, StoreError>;
-    /// `archived|cancelled → available` (`operator_retry`). Any other state is an
+    /// `archived|cancelled|undecodable → available` (`operator_retry`). Undecodable
+    /// jobs must have their payload/schema repaired before this call. Any other state is an
     /// error — the transition table defines exactly which rows exist.
     async fn operator_retry(&self, id: &str) -> Result<(), StoreError>;
     /// `scheduled|available|running → cancelled` (`operator_cancel`). Cancelling a
@@ -1531,6 +1563,16 @@ pub trait Inspect: Store {
     async fn operator_cancel(&self, id: &str) -> Result<(), StoreError>;
     /// `pending -> available`. No timer or dependency watcher may perform this change.
     async fn promote_job(&self, id: &str) -> Result<(), StoreError>;
+    /// `pending -> scheduled` at an absolute store-clock timestamp. Workflow-relative
+    /// timers use this after reading the store-stamped completion time of every
+    /// dependency; implementations must perform the state and timestamp change as one
+    /// operation. The default keeps third-party inspection adapters source-compatible
+    /// while making lack of this capability explicit at runtime.
+    async fn schedule_pending_job(&self, _id: &str, _at_ms: i64) -> Result<(), StoreError> {
+        Err(StoreError::Invalid(
+            "scheduling a pending job is not supported by this backend".into(),
+        ))
+    }
     /// Delete a non-running job. Deleting mid-flight is refused (asynq's rule).
     async fn delete_job(&self, id: &str) -> Result<(), StoreError>;
     async fn explain_admission(&self, id: &str) -> Result<Option<AdmissionExplain>, StoreError>;
@@ -1588,6 +1630,29 @@ pub trait Inspect: Store {
         before_event_id: Option<u64>,
         limit: u32,
     ) -> Result<Vec<ScheduleEvent>, StoreError>;
+
+    /// Append one idempotent event and retain at most [`DURABLE_EVENT_LIMIT`] events
+    /// per scope. The bool is true only when this call inserted the returned record.
+    async fn append_durable_event(
+        &self,
+        _event: &DurableEvent,
+    ) -> Result<(DurableEvent, bool), StoreError> {
+        Err(StoreError::Invalid(
+            "durable events are not supported by this backend".into(),
+        ))
+    }
+
+    /// Newest first. `limit` must be in `1..=DURABLE_EVENT_LIMIT`.
+    async fn list_durable_events(
+        &self,
+        _scope: &str,
+        _before_event_id: Option<u64>,
+        _limit: u32,
+    ) -> Result<Vec<DurableEvent>, StoreError> {
+        Err(StoreError::Invalid(
+            "durable events are not supported by this backend".into(),
+        ))
+    }
 
     // ----- worker registry + surveyed policy behavior server->worker control channel -----
 
@@ -2661,7 +2726,7 @@ mod tests {
         // Pinned on purpose: adding or removing a transition must be deliberate — the
         // yaml's own invariant requires a conformance scenario per new row.
         assert_eq!(
-            rows, 23,
+            rows, 25,
             "state_machine.yaml row count changed; update the table AND its scenarios"
         );
     }

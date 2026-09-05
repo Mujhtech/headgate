@@ -1174,7 +1174,8 @@ async fn trace_context_and_the_autoscaling_signal_reach_the_facade() {
 
     const TP: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
     // What the handler SAW, so the ctx accessor is asserted from inside a real dispatch.
-    let seen: Arc<std::sync::Mutex<Vec<(String, Option<String>)>>> = Default::default();
+    type SeenTraceContexts = Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>;
+    let seen: SeenTraceContexts = Default::default();
     let release = Arc::new(tokio::sync::Notify::new());
 
     let mut reg = Registry::new();

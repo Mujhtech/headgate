@@ -29,10 +29,12 @@ transitions:
   - {from: running,    on: checkpoint_stale, to: undecodable}
   - {from: archived,   on: operator_retry, to: available}
   - {from: cancelled,  on: operator_retry, to: available}
+  - {from: undecodable, on: operator_retry, to: available}
   - {from: quarantined, on: operator_release, to: available}
   - {from: available,  on: operator_cancel,  to: cancelled}
   - {from: scheduled,  on: operator_cancel,  to: cancelled}
   - {from: pending,    on: operator_cancel,  to: cancelled}
+  - {from: retryable,  on: operator_cancel,  to: cancelled}
   - {from: running,    on: operator_cancel,  to: cancelled}
 
 invariants:

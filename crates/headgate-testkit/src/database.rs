@@ -75,7 +75,7 @@ impl PostgresTestDatabase {
             .map_err(|error| TestDatabaseError::new(format!("create schema {schema}: {error}")))?;
 
         let mut test_config = admin_config.clone();
-        test_config.options(&format!("-c search_path={schema}"));
+        test_config.options(format!("-c search_path={schema}"));
         let migrated = migrate_postgres_in_schema(
             &mut admin,
             &schema,

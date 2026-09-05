@@ -1,0 +1,1 @@
+import{a as e}from"./with-selector-hO0TNhHE.js";import{s as t}from"./console-COYwGlau.js";import{n}from"./workflows-Ci3f-4XF.js";var r=e();function i(){return(0,r.jsx)(n,{...t()})}export{i as component};

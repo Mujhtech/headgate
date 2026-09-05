@@ -152,12 +152,12 @@ impl<S: Store> Worker<S> {
 
         // typed dispatch startup validation: warn on kinds waiting in the store that no
         // registered handler (or alias) answers — before they fail one at a time.
-        if let Some(insp) = self.store.as_inspect() {
-            if let Ok(kinds) = insp.distinct_kinds(1_000).await {
-                for kind in kinds {
-                    if self.registry.get(&kind).is_none() {
-                        tracing::warn!(%kind, "jobs of this kind are waiting but no handler is registered");
-                    }
+        if let Some(insp) = self.store.as_inspect()
+            && let Ok(kinds) = insp.distinct_kinds(1_000).await
+        {
+            for kind in kinds {
+                if self.registry.get(&kind).is_none() {
+                    tracing::warn!(%kind, "jobs of this kind are waiting but no handler is registered");
                 }
             }
         }
@@ -486,10 +486,10 @@ fn finish_task(
             // Aborted (lease lost / shutdown) or panicked with catch_panics=false. In
             // both cases the reclaimer owns the job's fate — an uncaught panic IS a
             // crash and is counted as one.
-            if let Some(i) = inflight.remove(&join_err.id()) {
-                if join_err.is_panic() {
-                    tracing::error!(job = %i.job_id, "handler panicked (catch_panics=false); job left to the reclaimer as a crash");
-                }
+            if let Some(i) = inflight.remove(&join_err.id())
+                && join_err.is_panic()
+            {
+                tracing::error!(job = %i.job_id, "handler panicked (catch_panics=false); job left to the reclaimer as a crash");
             }
         }
     }
@@ -502,6 +502,7 @@ fn finish_task(
 /// carries. it used to return `()`, which is why the "execute a worker" testing
 /// row had nothing behind it: a helper that runs one job but cannot say what happened to it
 /// is `drain` with extra steps.
+#[allow(clippy::too_many_arguments)] // The shared execution boundary mirrors independently optional runtime policies.
 pub(crate) async fn process_one(
     store: Arc<dyn Store>,
     registry: Arc<Registry>,
@@ -1571,8 +1572,7 @@ mod the_runtime_loop_without_a_database {
         let cap = Arc::new(Capture::default());
         let tel: Arc<dyn Telemetry> = cap.clone();
         run_duty(&store, "retention", &tel, &[]).await;
-        let v = cap.0.lock().unwrap().clone();
-        v
+        cap.0.lock().unwrap().clone()
     }
 
     // -----------------------------------------------------------------------

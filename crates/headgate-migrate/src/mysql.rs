@@ -528,8 +528,10 @@ fn split_statements(sql: &str) -> Result<Vec<String>, MigrationError> {
                     Mode::Backtick => '`',
                     _ => unreachable!(),
                 };
-                if ch == '\\' && next.is_some() {
-                    statement.push(next.unwrap());
+                if ch == '\\'
+                    && let Some(next) = next
+                {
+                    statement.push(next);
                     i += 2;
                     continue;
                 }

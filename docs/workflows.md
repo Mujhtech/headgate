@@ -1,66 +1,54 @@
 # Workflows and DAG dependencies
 
-Workflows are an opt-in layer, not part of `headgate-core`. Rust uses the
-`headgate-workflow` crate; Go uses `github.com/mujhtech/headgate/go/headgateworkflow`.
+Workflows are an opt-in orchestration layer: Rust uses `headgate-workflow`, and Go uses
+`github.com/mujhtech/headgate/go/headgateworkflow`. Core admission remains responsible only
+for deciding which ordinary jobs may run.
 
-A workflow builder validates unique task names, missing dependencies, repeated edges,
-and cycles before anything is enqueued. `prepare` returns one batch containing:
+`prepare` validates names, dependencies, edges, and cycles, then returns one atomic batch
+containing a coordinator and pending application jobs. Install `register_coordinator` /
+`RegisterCoordinator` on workers that serve the coordinator queue.
 
-- one ordinary `headgate:workflow` coordinator job; and
-- every application job in the durable `pending` state.
+The coordinator performs bounded point reads. Roots are promoted first; fan-out and
+fan-in follow only after durable completion evidence exists. It copies each child's
+store-stamped `finalized_at_ms` into its fenced cursor before promoting descendants, so
+retention of an old child row cannot erase dependency correctness.
 
-Enqueue that batch through the normal client/store path. Workers serving the coordinator
-queue must install `register_coordinator` / `RegisterCoordinator` and also register the
-application task handlers.
+Every child is retained for at least the workflow retention (seven days by default).
+Retention still begins at that child's finalization. If operators need payload, logs, and
+attempt history after a long workflow completes, configure expected maximum workflow
+duration plus the desired inspection window.
 
-Runnable fan-out/fan-in construction examples are available for
-[Rust](../examples/rust/src/bin/workflow.rs) and [Go](../examples/go/workflow/main.go).
-They validate the graph and print the atomic coordinator-plus-children batch without
-requiring a database. The live coordinator execution proof is
-[`crates/headgate-workflow/tests/live.rs`](../crates/headgate-workflow/tests/live.rs).
+Long-running jobs need normal lease renewal. A sleeping laptop or disconnected host cannot
+renew; reclaim then cancels the stale handler and increments its crash count. Use resumable
+steps and persist a cursor after each safely repeatable unit. Fence verification prevents
+an expired attempt from advancing the cursor or acknowledging success.
 
-The coordinator performs bounded point reads—one per graph node. Roots are promoted
-first. A node is promoted only after every dependency is `completed`; fan-out and fan-in
-therefore use the same mechanism. While work is active the coordinator snoozes without
-consuming an attempt. When all nodes complete it completes normally. If an upstream job
-archives, is cancelled, quarantined, becomes undecodable, is revoked, or disappears, any
-still-pending descendants are deleted before they can run and the coordinator archives.
+The dynamic feature contract—signals, timers, CEL waits, grafts, nested workflow bundles,
+retry/repair, cancellation, API routes, event history, limits, and examples—is documented
+in [Dynamic workflow experiments](workflow-experiments.md). The embedded console currently
+inspects the merged graph, revision, generation, and task details but intentionally exposes
+no workflow mutation controls while that interaction is reviewed.
 
-Every child's retention is raised to at least the workflow retention (seven days by
-default). The coordinator also records observed completions in its own fenced checkpoint
-before promoting descendants. That completion evidence survives an early child's retention
-expiry, so a long retry cannot turn work that already succeeded into a missing dependency.
-An unrecorded missing child still fails the workflow because the coordinator has no durable
-proof that it completed.
+Inspection is also a first-class library and HTTP capability, not a console-only feature.
+`list_workflows` / `ListWorkflows` pages coordinators, while `inspect_workflow` /
+`InspectWorkflow` returns the accepted graph and current execution state; node,
+dependency, and dependent helpers answer topology questions without parsing coordinator
+payloads. HTTP clients can use `GET /api/v1/workflows`, `GET /api/v1/workflows/{id}`, and its
+`nodes/{node}` relationship subresources. These reads never expose application payloads.
 
-Retention is measured from each child's own finalization time, not from workflow completion.
-To keep every child detail visible after a long workflow finishes, configure at least the
-expected maximum workflow runtime plus the desired post-completion inspection window. The
-checkpoint evidence protects dependency correctness; it is not a replacement for the
-expired child's payload, logs, result, or attempt history.
+Terminal workflow executions are immutable. Their accepted graph and recorded outcome
+cannot be rewritten or extended; new work requires a new workflow ID. An explicitly
+preconfigured failed-subgraph retry advances the generation of the unchanged graph and is
+not treated as graph mutation.
 
-The runner renews the lease of a long-running child, but it cannot renew while its host is
-suspended or disconnected. Reclaiming that expired lease and incrementing the crash count
-is expected. Long stages should use `JobCtx::step_cursor` / `headgate.StepCursor` and save
-their cursor after each safely repeatable unit. Cursor writes are fence-verified, so the
-expired holder stops and the replacement attempt resumes from the last accepted cursor
-instead of restarting the full stage.
+Existing nodes and edges are also immutable while a workflow is active. Dynamic extension
+means appending ordinary tasks through a revision-checked graft, not replacing, renaming,
+removing, or rewiring work already accepted by the store. Changes that require a different
+existing graph belong to a new workflow ID.
 
-## Deliberate boundaries
-
-The topology is immutable after the atomic enqueue. This first slice supports durable
-DAG dependencies, fan-out/fan-in, failure propagation, and read-only graph inspection.
-It does not claim River Pro's signals, timers, CEL wait expressions, dynamic
-grafting/appending, nested workflows, or workflow retry. Those can layer on later
-without moving policy evaluation into workers or changing the admission gate.
-
-The embedded operations console now provides read-only graph inspection at `/workflows`.
-It decodes the immutable coordinator payload and reads each child through the ordinary
-bounded job-detail API. This is an operator view, not a new workflow control surface:
-signals, timers, graph mutation, workflow-level retry, and workflow-level cancellation
-remain outside this slice.
-
-Pending jobs cannot be operator-cancelled by the current core transition table. Failed
-dependency propagation therefore deletes descendants that have never run rather than
-inventing a new transition. The archived coordinator remains the durable workflow-level
-failure record.
+Grafts cannot currently add signals, timers, CEL conditions, or child-workflow links.
+Those nodes carry durable orchestration rules beyond an ordinary pending job—buffered
+delivery, store-clock anchoring, expression evaluation, or cross-workflow cycle and
+propagation behavior—and must be present in the initial graph. Plan control-flow nodes up
+front and graft only ordinary tasks that depend on them. If execution needs an unforeseen
+control-flow node, start the revised graph with a new workflow ID.

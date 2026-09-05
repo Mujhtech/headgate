@@ -943,7 +943,7 @@ impl headgate_core::Notifying for RedisStore {
             match tokio::time::timeout_at(deadline, rx.recv()).await {
                 Err(_) => return Ok(None), // timeout: the poll fallback takes it
                 Ok(Ok(queue)) => {
-                    if queues.is_empty() || queues.iter().any(|q| *q == queue) {
+                    if queues.is_empty() || queues.contains(&queue) {
                         return Ok(Some(queue));
                     }
                 }

@@ -11,9 +11,164 @@ use headgate_core::{
     ProgressStore, ProgressUpdate, Schedule, Store,
 };
 use headgate_postgres::PgStore;
+use headgate_workflow::Workflow;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
+
+#[tokio::test]
+async fn workflow_control_routes_share_the_idempotency_boundary() {
+    let Ok(conninfo) = std::env::var("HG_TEST_PG") else {
+        eprintln!("HG_TEST_PG not set; skipping workflow control API proof");
+        return;
+    };
+    let store = Arc::new(PgStore::connect(&conninfo, 2).expect("connect"));
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let workflow_id = format!("api-workflow-{suffix}");
+    let queue = format!("api-workflow-{suffix}");
+    let batch = Workflow::new(&workflow_id)
+        .coordinator_queue(&queue)
+        .add(
+            "prepare",
+            Envelope {
+                kind: "api.workflow.prepare".into(),
+                payload: br#"{"secret":"not-in-graph-response"}"#.to_vec(),
+                queue: queue.clone(),
+                ..Default::default()
+            },
+            Vec::<String>::new(),
+        )
+        .add_signal("approval", "approved", ["prepare"])
+        .prepare()
+        .unwrap();
+    store.enqueue(&batch).await.unwrap();
+    let app = router(store as Arc<dyn Inspect>, ApiConfig::default());
+
+    let (status, workflows) = call_with_key(
+        &app,
+        Method::GET,
+        "/api/v1/workflows?limit=50",
+        None,
+        "unused-on-read",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        workflows["workflows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|workflow| workflow["workflow_id"] == workflow_id)
+    );
+
+    let (status, snapshot) = call_with_key(
+        &app,
+        Method::GET,
+        &format!("/api/v1/workflows/{workflow_id}"),
+        None,
+        "unused-on-read",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(snapshot["nodes"].as_array().unwrap().len(), 2);
+    assert!(!snapshot.to_string().contains("not-in-graph-response"));
+    let (status, dependencies) = call_with_key(
+        &app,
+        Method::GET,
+        &format!("/api/v1/workflows/{workflow_id}/nodes/approval/dependencies"),
+        None,
+        "unused-on-read",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(dependencies["dependencies"][0]["name"], "prepare");
+
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/api/v1/workflows/{workflow_id}/signals"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json!({"signal": "approved"}).to_string()))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let (status, receipt) = call_with_key(
+        &app,
+        Method::POST,
+        &format!("/api/v1/workflows/{workflow_id}/signals"),
+        Some(json!({
+            "signal": "approved",
+            "payload": {"approved": true, "reviewer": "Ada"},
+            "source": {"emitter": "admin-console", "actor": "operator-42"}
+        })),
+        "workflow-signal-1",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(receipt["matched"], 1);
+    assert_eq!(receipt["inserted"], true);
+    assert_eq!(receipt["emission"]["idempotency_key"], "workflow-signal-1");
+    assert_eq!(receipt["emission"]["payload"]["reviewer"], "Ada");
+    assert_eq!(receipt["emission"]["source"]["actor"], "operator-42");
+
+    let (status, history) = call_with_key(
+        &app,
+        Method::GET,
+        &format!("/api/v1/workflows/{workflow_id}/signals?limit=100"),
+        None,
+        "unused-on-read",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(history["signals"].as_array().unwrap().len(), 1);
+    assert_eq!(history["signals"][0], receipt["emission"]);
+
+    let (status, replay) = call_with_key(
+        &app,
+        Method::POST,
+        &format!("/api/v1/workflows/{workflow_id}/signals"),
+        Some(json!({
+            "signal": "approved",
+            "payload": {"approved": true, "reviewer": "Ada"},
+            "source": {"emitter": "admin-console", "actor": "operator-42"}
+        })),
+        "workflow-signal-1",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(replay["inserted"], false);
+    assert_eq!(replay["emission"], receipt["emission"]);
+
+    let (status, graft) = call_with_key(
+        &app,
+        Method::POST,
+        &format!("/api/v1/workflows/{workflow_id}/grafts"),
+        Some(json!({
+            "expected_revision": 1,
+            "queue": queue,
+            "tasks": [{"name": "audit", "kind": "api.workflow.audit", "payload": "e30="}]
+        })),
+        "workflow-graft-1",
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(graft["receipt_id"], format!("{workflow_id}:graft:2"));
+
+    let (status, _) = call_with_key(
+        &app,
+        Method::POST,
+        &format!("/api/v1/workflows/{workflow_id}/cancel"),
+        Some(json!({"propagate_children": true})),
+        "workflow-cancel-1",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
 
 async fn call_with_key(
     app: &axum::Router,
@@ -335,8 +490,10 @@ async fn enqueue_outage_is_service_unavailable_not_a_bad_request() {
         })
         .unwrap(),
     );
-    let mut config = ApiConfig::default();
-    config.enqueue_circuit_breaker = Some(breaker.clone());
+    let config = ApiConfig {
+        enqueue_circuit_breaker: Some(breaker.clone()),
+        ..ApiConfig::default()
+    };
     let app = router(inspect, config);
     let (status, body) = call_with_key(
         &app,
@@ -403,8 +560,10 @@ async fn enqueue_authorization_guards_http_and_periodic_paths() {
         },
     );
     let inspect: Arc<dyn Inspect> = store.clone();
-    let mut config = ApiConfig::default();
-    config.enqueue_authorizer = authorizer;
+    let config = ApiConfig {
+        enqueue_authorizer: authorizer,
+        ..ApiConfig::default()
+    };
     let app = router(inspect, config).layer(axum::Extension(headgate::EnqueueIdentity::new(
         "service:mailer",
     )));
@@ -1349,10 +1508,10 @@ async fn a_real_workers_polling_is_the_number_that_reaches_cluster() {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(secs);
         loop {
             let ws = store.list_workers(900_000).await.unwrap();
-            if let Some(w) = ws.into_iter().find(|w| w.worker_id == wid) {
-                if cond(&w) {
-                    return w;
-                }
+            if let Some(w) = ws.into_iter().find(|w| w.worker_id == wid)
+                && cond(&w)
+            {
+                return w;
             }
             assert!(
                 tokio::time::Instant::now() < deadline,

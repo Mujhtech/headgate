@@ -47,6 +47,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { WorkflowNodeDetail } from "@/components/workflow-node-detail";
 import {
   Empty,
   Failure,
@@ -284,11 +285,13 @@ export function JobDrawer({
   open,
   setOpen,
   notify,
+  workflowId,
 }: {
   id: string | null;
   open: boolean;
   setOpen: (open: boolean) => void;
   notify: ViewProps["notify"];
+  workflowId?: string;
 }) {
   const jobPath = id === null ? null : `/jobs/${encodeURIComponent(id)}`;
   const actionMutation = useApiMutation();
@@ -522,6 +525,10 @@ export function JobDrawer({
                 )}
               </dd>
             </dl>
+
+            {workflowId && id ? (
+              <WorkflowNodeDetail jobId={id} workflowId={workflowId} />
+            ) : null}
 
             <section aria-labelledby="lifecycle-title">
               <h2 className="mb-3 font-semibold text-sm" id="lifecycle-title">

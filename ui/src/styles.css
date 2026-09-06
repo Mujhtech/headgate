@@ -3,6 +3,8 @@
 @import "tw-animate-css";
 @import "@xyflow/react/dist/style.css";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
   --background: oklch(0.985 0.002 247);
   --foreground: oklch(0.19 0.015 258);
@@ -68,20 +70,18 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: oklch(0.17 0.012 260);
-    --foreground: oklch(0.94 0.006 250);
-    --card: oklch(0.21 0.014 258);
-    --muted: oklch(0.27 0.015 258);
-    --muted-foreground: oklch(0.7 0.02 250);
-    --border: oklch(0.31 0.015 258);
-    --primary: oklch(0.68 0.16 251);
-    --secondary: oklch(0.27 0.015 258);
-    --accent: oklch(0.3 0.02 258);
-    --sidebar: oklch(0.19 0.014 258);
-    --sidebar-accent: oklch(0.28 0.02 258);
-  }
+.dark {
+  --background: oklch(0.17 0.012 260);
+  --foreground: oklch(0.94 0.006 250);
+  --card: oklch(0.21 0.014 258);
+  --muted: oklch(0.27 0.015 258);
+  --muted-foreground: oklch(0.7 0.02 250);
+  --border: oklch(0.31 0.015 258);
+  --primary: oklch(0.68 0.16 251);
+  --secondary: oklch(0.27 0.015 258);
+  --accent: oklch(0.3 0.02 258);
+  --sidebar: oklch(0.19 0.014 258);
+  --sidebar-accent: oklch(0.28 0.02 258);
 }
 
 * {
@@ -93,7 +93,11 @@ html {
   background: var(--background);
 }
 html {
-  color-scheme: light dark;
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
 }
 body {
   width: 100%;

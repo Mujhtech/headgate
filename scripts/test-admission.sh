@@ -16,6 +16,9 @@ PGH=${PGHOST:-/tmp}; PGP=${PGPORT:-5433}; PGD=${PGDATABASE:-hg}; RP=${REDIS_PORT
 PSQL="psql -h $PGH -p $PGP -U postgres -d $PGD -qtA"
 RED="redis-cli -p $RP"
 export HG_PG="host=$PGH port=$PGP user=postgres dbname=$PGD"
+if [ -n "${PGPASSWORD:-}" ]; then
+  export HG_PG="$HG_PG password=$PGPASSWORD"
+fi
 H=target/debug/hg-pg-harness
 pass=0; fail=0; skip=0; guarded=0
 

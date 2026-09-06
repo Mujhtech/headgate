@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   mergeQueueHistories,
   type QueueMetric,
+  resolveQueueSelection,
   summarizeHistory,
   summarizeQueues,
 } from "./metrics";
@@ -20,6 +21,20 @@ const queue = (
 });
 
 describe("overview metrics", () => {
+  it("keeps the queue chart selection stable as queue metrics refresh", () => {
+    const first = [queue({ queue: "mail" }), queue({ queue: "reports" })];
+    const refreshed = [
+      queue({ queue: "reports", unfinished_jobs: 12 }),
+      queue({ queue: "mail", unfinished_jobs: 1 }),
+    ];
+
+    expect(resolveQueueSelection(undefined, first)).toBe("all");
+    expect(resolveQueueSelection(undefined, refreshed)).toBe("all");
+    expect(resolveQueueSelection("mail", refreshed)).toBe("mail");
+    expect(resolveQueueSelection("removed", refreshed)).toBe("all");
+    expect(resolveQueueSelection(undefined, [])).toBeUndefined();
+  });
+
   it("finds the oldest job and treats a growing backlog as the worst drain signal", () => {
     const summary = summarizeQueues([
       queue({ queue: "empty" }),

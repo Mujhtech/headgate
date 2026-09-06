@@ -78,19 +78,19 @@ SELECT count(*) FROM information_schema.schemata WHERE schema_name = ?`, databas
 	}
 
 	result, err := MigrateMySQL(ctx, db, Up, Options{})
-	if err != nil || len(result.Steps) != 12 || result.Steps[0].Migration.Version != 1 || result.Steps[11].Migration.Version != 12 {
+	if err != nil || len(result.Steps) != 13 || result.Steps[0].Migration.Version != 1 || result.Steps[12].Migration.Version != 13 {
 		t.Fatalf("fresh up = %#v, %v", result, err)
 	}
 	validation, err := ValidateMySQL(ctx, db)
-	if err != nil || !validation.OK() || validation.CurrentVersion != 12 {
+	if err != nil || !validation.OK() || validation.CurrentVersion != 13 {
 		t.Fatalf("fresh validation = %#v, %v", validation, err)
 	}
 	dry, err := MigrateMySQL(ctx, db, Down, Options{DryRun: true})
-	if err != nil || !dry.DryRun || len(dry.Steps) != 12 {
+	if err != nil || !dry.DryRun || len(dry.Steps) != 13 {
 		t.Fatalf("down dry-run = %#v, %v", dry, err)
 	}
 	downResult, err := MigrateMySQL(ctx, db, Down, Options{})
-	if err != nil || len(downResult.Steps) != 12 {
+	if err != nil || len(downResult.Steps) != 13 {
 		t.Fatalf("down = %#v, %v", downResult, err)
 	}
 	var jobExists, historyRows int
@@ -125,7 +125,7 @@ UPDATE headgate_schema_migration SET checksum = 'tampered' WHERE version = 1`); 
 		t.Fatalf("unversioned up error = %v", err)
 	}
 	adopted, err := AdoptMySQL(ctx, db)
-	if err != nil || len(adopted) != 12 || adopted[11].Version != 12 {
+	if err != nil || len(adopted) != 13 || adopted[12].Version != 13 {
 		t.Fatalf("adopted = %#v, %v", adopted, err)
 	}
 	validation, err = ValidateMySQL(ctx, db)
@@ -259,7 +259,7 @@ SELECT count(*) FROM information_schema.schemata WHERE schema_name = ?`, databas
 	}
 	select {
 	case migrated := <-done:
-		if migrated.err != nil || len(migrated.result.Steps) != 12 {
+		if migrated.err != nil || len(migrated.result.Steps) != 13 {
 			t.Fatalf("configured migration = %#v, %v", migrated.result, migrated.err)
 		}
 	case <-time.After(20 * time.Second):

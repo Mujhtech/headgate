@@ -1,6 +1,7 @@
 import { Dialog as SheetPrimitive } from "@base-ui/react/dialog";
 import { XIcon } from "lucide-react";
 import type * as React from "react";
+
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -56,7 +57,7 @@ function SheetContent({
         {...props}
       >
         {children}
-        {showCloseButton ? (
+        {showCloseButton && (
           <SheetPrimitive.Close
             data-slot="sheet-close"
             render={
@@ -64,13 +65,13 @@ function SheetContent({
                 className="absolute top-3 right-3"
                 size="icon-sm"
                 variant="ghost"
-              />
+              >
+                <XIcon />
+                <span className="sr-only">Close</span>
+              </Button>
             }
-          >
-            <XIcon />
-            <span className="sr-only">Close</span>
-          </SheetPrimitive.Close>
-        ) : null}
+          />
+        )}
       </SheetPrimitive.Popup>
     </SheetPortal>
   );
@@ -99,7 +100,10 @@ function SheetFooter({ className, ...props }: React.ComponentProps<"div">) {
 function SheetTitle({ className, ...props }: SheetPrimitive.Title.Props) {
   return (
     <SheetPrimitive.Title
-      className={cn("font-medium text-base text-foreground", className)}
+      className={cn(
+        "cn-font-heading font-medium text-base text-foreground",
+        className
+      )}
       data-slot="sheet-title"
       {...props}
     />

@@ -30,9 +30,9 @@ export function jobActionDisabledReason(
 
   switch (action) {
     case "retry":
-      return state === "archived"
+      return state === "archived" || state === "cancelled"
         ? null
-        : "Retry is available only for archived jobs.";
+        : "Retry is available only for archived or cancelled jobs.";
     case "cancel":
       return cancellableStates.has(state)
         ? null

@@ -5,10 +5,10 @@ import {
   InfoIcon,
 } from "lucide-react";
 import { useState } from "react";
+import { RelativeTime } from "@/components/relative-time";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { type LogLevel, logLevels, parseAttemptLog } from "@/lib/attempt-log";
-import { formatDate } from "@/lib/format";
 
 const icons = {
   debug: BugIcon,
@@ -64,12 +64,10 @@ export function AttemptLogs({ logs }: { logs: string[] }) {
                   {entry.level.toUpperCase()}
                 </Badge>
                 {entry.at_ms === undefined ? null : (
-                  <span
+                  <RelativeTime
                     className="text-muted-foreground"
-                    title="Captured on the worker clock"
-                  >
-                    {formatDate(entry.at_ms)}
-                  </span>
+                    value={entry.at_ms}
+                  />
                 )}
                 {entry.truncated ? (
                   <span className="text-muted-foreground">Truncated</span>

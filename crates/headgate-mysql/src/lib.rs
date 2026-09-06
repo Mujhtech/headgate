@@ -356,32 +356,6 @@ fn archive_partition(value: &str) -> Result<(String, String), StoreError> {
     Ok((format!("p_{value}"), format!("{year:04}-{month:02}-01")))
 }
 
-#[cfg(test)]
-mod sql_shape_tests {
-    use super::{enqueue_backpressure_depth_sql, lazy_unique_release_sql, unique_holder_sql};
-
-    #[test]
-    fn unique_conflict_queries_stay_on_generated_indexes() {
-        let release = lazy_unique_release_sql(2);
-        assert!(release.contains("WHERE unique_throttle IN (?, ?)"));
-        assert!(!release.contains("WHERE unique_key IN"));
-
-        let holder = unique_holder_sql(2);
-        assert!(holder.contains("unique_active IN (?, ?)"));
-        assert!(holder.contains("unique_throttle IN (?, ?)"));
-        assert!(!holder.contains("WHERE unique_key IN"));
-    }
-
-    #[test]
-    fn enqueue_backpressure_hot_path_uses_constant_size_counters() {
-        let sql = enqueue_backpressure_depth_sql(2).to_ascii_lowercase();
-        assert!(sql.contains("headgate_enqueue_policy"));
-        assert_eq!(sql.matches("headgate_enqueue_counter").count(), 2);
-        assert!(!sql.contains("headgate_job"));
-        assert!(!sql.contains("count("));
-    }
-}
-
 fn map_err(e: mysql_async::Error) -> StoreError {
     match &e {
         mysql_async::Error::Io(_) | mysql_async::Error::Driver(_) => {
@@ -1898,7 +1872,7 @@ async fn reclaim_tx(
         .map_err(map_err)?
         .unwrap_or(0);
     // lease fencing an expired lease is LeaseLost, NEVER Retry: crash_attempt++, attempt stays.
-    let rows: Vec<(
+    type ReclaimRow = (
         i64,
         String,
         String,
@@ -1907,7 +1881,8 @@ async fn reclaim_tx(
         Option<String>,
         Option<String>,
         i64,
-    )> = tx
+    );
+    let rows: Vec<ReclaimRow> = tx
         .exec(
             "SELECT id, ulid, fingerprint, crash_attempt, kind, checkpoint, unique_key,
                     unique_window_ms
@@ -2706,5 +2681,31 @@ impl MysqlStore {
     /// A raw pooled connection — the harness's escape hatch for read-only assertions.
     pub async fn raw_conn(&self) -> Result<Conn, StoreError> {
         self.conn().await
+    }
+}
+
+#[cfg(test)]
+mod sql_shape_tests {
+    use super::{enqueue_backpressure_depth_sql, lazy_unique_release_sql, unique_holder_sql};
+
+    #[test]
+    fn unique_conflict_queries_stay_on_generated_indexes() {
+        let release = lazy_unique_release_sql(2);
+        assert!(release.contains("WHERE unique_throttle IN (?, ?)"));
+        assert!(!release.contains("WHERE unique_key IN"));
+
+        let holder = unique_holder_sql(2);
+        assert!(holder.contains("unique_active IN (?, ?)"));
+        assert!(holder.contains("unique_throttle IN (?, ?)"));
+        assert!(!holder.contains("WHERE unique_key IN"));
+    }
+
+    #[test]
+    fn enqueue_backpressure_hot_path_uses_constant_size_counters() {
+        let sql = enqueue_backpressure_depth_sql(2).to_ascii_lowercase();
+        assert!(sql.contains("headgate_enqueue_policy"));
+        assert_eq!(sql.matches("headgate_enqueue_counter").count(), 2);
+        assert!(!sql.contains("headgate_job"));
+        assert!(!sql.contains("count("));
     }
 }

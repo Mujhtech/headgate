@@ -58,6 +58,7 @@
     "tabs": [
       {
         "tab": "Documentation",
+        "icon": "book-open-text",
         "groups": [
           {
             "group": "Get started",
@@ -120,6 +121,7 @@
       },
       {
         "tab": "SDKs",
+        "icon": "package",
         "groups": [
           {
             "group": "Rust SDK",
@@ -149,6 +151,7 @@
       },
       {
         "tab": "Examples",
+        "icon": "code",
         "groups": [
           {
             "group": "Runnable examples",
@@ -164,10 +167,12 @@
       },
       {
         "tab": "API Reference",
+        "icon": "library",
         "openapi": "api/headgate.openapi.yaml"
       },
       {
         "tab": "Project",
+        "icon": "projector",
         "groups": [
           {
             "group": "Reference",

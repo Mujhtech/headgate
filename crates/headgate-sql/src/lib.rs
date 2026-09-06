@@ -27,6 +27,8 @@ const OBJECTS: &[&str] = &[
     "headgate_enqueue_counter",
     "headgate_job_tag",
     "headgate_queue_sample",
+    "headgate_durable_event_scope",
+    "headgate_durable_event",
     "headgate_archive_policy",
     "headgate_job_archive",
     "headgate_job_archive_before_2025",
@@ -125,6 +127,7 @@ const INDEXES: &[&str] = &[
     "headgate_job_sticky_available",
     "headgate_job_avail_sticky",
     "headgate_job_archive_queue_time",
+    "headgate_durable_event_recent",
 ];
 
 #[derive(Clone, Debug, Default)]
@@ -393,13 +396,17 @@ mod tests {
     }
 
     #[test]
-    fn migration_indexes_and_new_metric_tables_stay_inside_the_explicit_schema() {
+    fn migration_indexes_and_new_tables_stay_inside_the_explicit_schema() {
         let namespace = PostgresNamespace::explicit("tenant").unwrap();
         let rendered = namespace.render(
             "DROP INDEX headgate_job_unique;\n\
              CREATE UNIQUE INDEX headgate_job_unique ON headgate_job (unique_key);\n\
              CREATE TABLE headgate_job_tag (job_id bigint);\n\
-             CREATE TABLE headgate_queue_sample (queue text);",
+             CREATE TABLE headgate_queue_sample (queue text);\n\
+             CREATE TABLE headgate_durable_event_scope (scope text);\n\
+             CREATE TABLE headgate_durable_event (scope text REFERENCES headgate_durable_event_scope(scope));\n\
+             CREATE INDEX headgate_durable_event_recent ON headgate_durable_event (scope);\n\
+             DROP INDEX headgate_durable_event_recent;",
         );
         assert!(rendered.contains("DROP INDEX \"tenant\".headgate_job_unique"));
         assert!(
@@ -407,5 +414,12 @@ mod tests {
         );
         assert!(rendered.contains("CREATE TABLE \"tenant\".headgate_job_tag"));
         assert!(rendered.contains("CREATE TABLE \"tenant\".headgate_queue_sample"));
+        assert!(rendered.contains("CREATE TABLE \"tenant\".headgate_durable_event_scope"));
+        assert!(rendered.contains("CREATE TABLE \"tenant\".headgate_durable_event"));
+        assert!(rendered.contains("REFERENCES \"tenant\".headgate_durable_event_scope"));
+        assert!(rendered.contains(
+            "CREATE INDEX headgate_durable_event_recent ON \"tenant\".headgate_durable_event"
+        ));
+        assert!(rendered.contains("DROP INDEX \"tenant\".headgate_durable_event_recent"));
     }
 }

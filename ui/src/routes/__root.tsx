@@ -8,6 +8,7 @@ import {
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { queryClient } from "@/lib/query";
+import { themeBootstrapScript } from "@/lib/theme";
 import appCss from "../styles.css?url";
 
 export const Route = createRootRoute({
@@ -15,10 +16,14 @@ export const Route = createRootRoute({
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
+      { name: "google", content: "notranslate" },
       { name: "theme-color", content: "#111827" },
       { title: "headgate console" },
     ],
-    links: [{ rel: "stylesheet", href: appCss }],
+    links: [
+      { rel: "stylesheet", href: appCss },
+      { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
+    ],
   }),
   shellComponent: RootDocument,
   notFoundComponent: NotFound,
@@ -48,14 +53,22 @@ function NotFound() {
 
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html
+      className="notranslate"
+      lang="en"
+      suppressHydrationWarning
+      translate="no"
+    >
       <head>
         <HeadContent />
+        <script id="headgate-theme" suppressHydrationWarning>
+          {themeBootstrapScript}
+        </script>
         <script id="headgate-config" suppressHydrationWarning>
           {`window.HEADGATE = window.HEADGATE || {apiBase:"/api/v1",readOnly:false};`}
         </script>
       </head>
-      <body>
+      <body className="scrollbar-thin console-scrollbar">
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>{children}</TooltipProvider>
         </QueryClientProvider>

@@ -28,6 +28,16 @@ export interface QueueSummary {
   unfinished: number;
 }
 
+export function resolveQueueSelection(
+  requested: string | undefined,
+  queues: QueueMetric[]
+) {
+  if (requested && queues.some((queue) => queue.queue === requested)) {
+    return requested;
+  }
+  return queues.length ? "all" : undefined;
+}
+
 export function summarizeQueues(queues: QueueMetric[]): QueueSummary {
   let unfinished = 0;
   let arrivalRate = 0;

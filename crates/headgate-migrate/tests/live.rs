@@ -20,7 +20,7 @@ async fn live_postgres_migration_lifecycle_and_drift_rejection() {
     let (admin, admin_driver) = tokio_postgres::connect(&conninfo, tokio_postgres::NoTls)
         .await
         .expect("admin connect");
-    let admin_task = tokio::spawn(async move { admin_driver.await });
+    let admin_task = tokio::spawn(admin_driver);
     let exists: i64 = admin
         .query_one(
             "SELECT count(*) FROM information_schema.schemata WHERE schema_name = $1",
@@ -38,7 +38,7 @@ async fn live_postgres_migration_lifecycle_and_drift_rejection() {
     let (mut client, driver) = tokio_postgres::connect(&conninfo, tokio_postgres::NoTls)
         .await
         .expect("test connect");
-    let driver_task = tokio::spawn(async move { driver.await });
+    let driver_task = tokio::spawn(driver);
     client
         .batch_execute(&format!("SET search_path TO {schema}"))
         .await
@@ -46,14 +46,14 @@ async fn live_postgres_migration_lifecycle_and_drift_rejection() {
 
     let result: Result<(), Box<dyn Error>> = async {
         let up = migrate_postgres(&mut client, Direction::Up, MigrateOptions::default()).await?;
-        if up.steps.len() != 12
+        if up.steps.len() != 13
             || up.steps[0].migration.version != 1
-            || up.steps[11].migration.version != 12
+            || up.steps[12].migration.version != 13
         {
             return Err(test_error(format!("fresh up steps = {:?}", up.steps)));
         }
         let validation = validate_postgres(&client).await?;
-        if !validation.is_ok() || validation.current_version != 12 {
+        if !validation.is_ok() || validation.current_version != 13 {
             return Err(test_error(format!("fresh validation = {validation:?}")));
         }
         let dry = migrate_postgres(
@@ -65,12 +65,12 @@ async fn live_postgres_migration_lifecycle_and_drift_rejection() {
             },
         )
         .await?;
-        if !dry.dry_run || dry.steps.len() != 12 {
+        if !dry.dry_run || dry.steps.len() != 13 {
             return Err(test_error(format!("down dry run = {:?}", dry.steps)));
         }
         let down =
             migrate_postgres(&mut client, Direction::Down, MigrateOptions::default()).await?;
-        if down.steps.len() != 12 {
+        if down.steps.len() != 13 {
             return Err(test_error(format!("down steps = {:?}", down.steps)));
         }
         let row = client
@@ -119,7 +119,7 @@ async fn live_postgres_migration_lifecycle_and_drift_rejection() {
             ));
         }
         let adopted = adopt_postgres(&mut client).await?;
-        if adopted.last().map(|row| row.version) != Some(12) {
+        if adopted.last().map(|row| row.version) != Some(13) {
             return Err(test_error(format!("adopted history = {adopted:?}")));
         }
         if !validate_postgres(&client).await?.is_ok() {
@@ -203,14 +203,14 @@ async fn live_mysql_migration_lifecycle_and_drift_rejection() {
     let mut conn = pool.get_conn().await.expect("test connect");
     let result: Result<(), Box<dyn Error>> = async {
         let up = migrate_mysql(&mut conn, Direction::Up, MigrateOptions::default()).await?;
-        if up.steps.len() != 12
+        if up.steps.len() != 13
             || up.steps[0].migration.version != 1
-            || up.steps[11].migration.version != 12
+            || up.steps[12].migration.version != 13
         {
             return Err(test_error(format!("fresh up steps = {:?}", up.steps)));
         }
         let validation = validate_mysql(&mut conn).await?;
-        if !validation.is_ok() || validation.current_version != 12 {
+        if !validation.is_ok() || validation.current_version != 13 {
             return Err(test_error(format!("fresh validation = {validation:?}")));
         }
         let dry = migrate_mysql(
@@ -222,11 +222,11 @@ async fn live_mysql_migration_lifecycle_and_drift_rejection() {
             },
         )
         .await?;
-        if !dry.dry_run || dry.steps.len() != 12 {
+        if !dry.dry_run || dry.steps.len() != 13 {
             return Err(test_error(format!("down dry run = {:?}", dry.steps)));
         }
         let down = migrate_mysql(&mut conn, Direction::Down, MigrateOptions::default()).await?;
-        if down.steps.len() != 12 {
+        if down.steps.len() != 13 {
             return Err(test_error(format!("down steps = {:?}", down.steps)));
         }
         let job_exists: Option<u64> = conn
@@ -270,7 +270,7 @@ async fn live_mysql_migration_lifecycle_and_drift_rejection() {
             return Err(test_error("unversioned MySQL schema was migrated as fresh"));
         }
         let adopted = adopt_mysql(&mut conn).await?;
-        if adopted.last().map(|row| row.version) != Some(12) {
+        if adopted.last().map(|row| row.version) != Some(13) {
             return Err(test_error(format!("adopted history = {adopted:?}")));
         }
         if !validate_mysql(&mut conn).await?.is_ok() {
@@ -393,7 +393,7 @@ async fn live_mysql_configured_lock_namespace_avoids_an_application_lock() {
         let migrated = tokio::time::timeout(Duration::from_secs(30), &mut migration)
             .await
             .map_err(|_| test_error("migration still blocked after configured lock release"))??;
-        if migrated.steps.len() != 12 {
+        if migrated.steps.len() != 13 {
             return Err(test_error(format!(
                 "configured migration steps = {:?}",
                 migrated.steps

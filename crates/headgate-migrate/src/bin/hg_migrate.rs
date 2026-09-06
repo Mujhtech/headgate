@@ -242,7 +242,7 @@ fn print_steps(result: &headgate_migrate::MigrateResult) {
 
 async fn run_postgres(cli: &Cli, url: &str) -> Result<(), MigrationError> {
     let (mut client, connection) = tokio_postgres::connect(url, NoTls).await?;
-    let driver = tokio::spawn(async move { connection.await });
+    let driver = tokio::spawn(connection);
     match cli.command {
         Command::Up => {
             let result = match cli.schema.as_deref() {

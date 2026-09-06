@@ -19,7 +19,7 @@ describe("job controls", () => {
     ["running", ["cancel"]],
     ["completed", ["delete"]],
     ["archived", ["retry", "delete"]],
-    ["cancelled", ["delete"]],
+    ["cancelled", ["retry", "delete"]],
     ["undecodable", ["delete"]],
     ["quarantined", ["delete"]],
   ])("enables only valid actions for %s jobs", (state, expected) => {

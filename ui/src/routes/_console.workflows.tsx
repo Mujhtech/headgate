@@ -5,6 +5,7 @@ import { WorkflowsView } from "@/views/workflows";
 
 export interface WorkflowsSearch {
   cursor?: string;
+  cursorTrail?: string;
 }
 
 export const Route = createFileRoute("/_console/workflows")({
@@ -12,6 +13,10 @@ export const Route = createFileRoute("/_console/workflows")({
     cursor:
       typeof search.cursor === "string" && search.cursor
         ? search.cursor
+        : undefined,
+    cursorTrail:
+      typeof search.cursorTrail === "string" && search.cursorTrail
+        ? search.cursorTrail
         : undefined,
   }),
   component: WorkflowsRoute,

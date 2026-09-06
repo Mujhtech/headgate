@@ -1,4 +1,5 @@
 import { Link } from "@tanstack/react-router";
+import { RelativeTime } from "@/components/relative-time";
 import { ActionButton } from "@/components/ui/action-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,7 +21,6 @@ import {
   type ViewProps,
 } from "@/console";
 import { config } from "@/lib/config";
-import { formatDate } from "@/lib/format";
 import { missedPolicyPresentation } from "@/lib/periodic";
 import { Route } from "@/routes/_console.periodic";
 
@@ -126,8 +126,12 @@ export function SchedulesView({ notify }: ViewProps) {
                     <TableRow
                       key={`${event.recorded_at_ms}:${event.tick_ms}:${event.outcome}:${event.job_id ?? "none"}`}
                     >
-                      <TableCell>{formatDate(event.recorded_at_ms)}</TableCell>
-                      <TableCell>{formatDate(event.tick_ms)}</TableCell>
+                      <TableCell>
+                        <RelativeTime value={event.recorded_at_ms} />
+                      </TableCell>
+                      <TableCell>
+                        <RelativeTime value={event.tick_ms} />
+                      </TableCell>
                       <TableCell>
                         <Badge
                           variant={
@@ -216,7 +220,9 @@ export function SchedulesView({ notify }: ViewProps) {
                       <TableCell>
                         {schedule.kind} → {schedule.queue}
                       </TableCell>
-                      <TableCell>{formatDate(schedule.next_run_ms)}</TableCell>
+                      <TableCell>
+                        <RelativeTime value={schedule.next_run_ms} />
+                      </TableCell>
                       <TableCell>
                         <p className="font-medium text-sm">{missed.label}</p>
                         <p className="max-w-64 text-muted-foreground text-xs">

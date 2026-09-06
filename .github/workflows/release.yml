@@ -48,7 +48,7 @@ jobs:
       - name: Install Go toolchain
         uses: actions/setup-go@v7
         with:
-          go-version-file: go/go.work
+          go-version-file: go.work
           cache-dependency-path: "**/go.sum"
 
       - name: Install GoReleaser

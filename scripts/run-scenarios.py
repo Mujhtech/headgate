@@ -69,8 +69,11 @@ os.chdir(ROOT)
 PGHOST = os.environ.get("PGHOST", "/tmp")
 PGPORT = os.environ.get("PGPORT", "5433")
 PGDATABASE = os.environ.get("PGDATABASE", "hg")
+PGPASSWORD = os.environ.get("PGPASSWORD", "")
 REDIS_PORT = os.environ.get("REDIS_PORT", "6380")
 PGCONN = f"host={PGHOST} port={PGPORT} user=postgres dbname={PGDATABASE}"
+if PGPASSWORD:
+    PGCONN += f" password={PGPASSWORD}"
 REDIS_URL = f"redis://127.0.0.1:{REDIS_PORT}"
 
 PASSED = 0

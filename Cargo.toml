@@ -30,3 +30,4 @@ headgate-sql = { version = "0.1.7", path = "crates/headgate-sql" }
 headgate-testkit = { version = "0.1.7", path = "crates/headgate-testkit" }
 headgate-ui = { version = "0.1.7", path = "crates/headgate-ui" }
 headgate-otel = { version = "0.1.7", path = "crates/headgate-otel" }
+headgate-workflow = { version = "0.1.7", path = "crates/headgate-workflow" }

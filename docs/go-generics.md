@@ -1,7 +1,7 @@
 # Go 1.27 and generics in headgate
 
 All Go modules, including the examples, require Go 1.27.0 or newer. CI and release
-builds select their toolchain from `go/go.work`. This upgrades the language baseline;
+builds select their toolchain from the root `go.work`. This upgrades the language baseline;
 it does not request newer third-party dependency versions.
 
 [Go 1.27](https://go.dev/doc/go1.27) adds methods with their own type parameters.

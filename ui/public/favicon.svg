@@ -1,0 +1,17 @@
+<svg
+  fill="none"
+  height="64"
+  viewBox="0 0 64 64"
+  width="64"
+  xmlns="http://www.w3.org/2000/svg"
+>
+  <title>Headgate</title>
+  <rect fill="#0866C6" height="64" rx="16" width="64" />
+  <path
+    d="M20 15V49M20 33H44M44 25V49"
+    stroke="white"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="7"
+  />
+</svg>

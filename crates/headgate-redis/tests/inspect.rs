@@ -265,6 +265,22 @@ async fn the_inspect_surface_answers_over_redis() {
         insp.operator_cancel("nope").await,
         Err(StoreError::NotFound(_))
     ));
+    insp.operator_retry("ri-3").await.unwrap();
+    assert_eq!(
+        insp.get_job("ri-3", false).await.unwrap().unwrap().state,
+        "available"
+    );
+    let mut unique_old = env("ri-u-old", "ri", "k.unique");
+    unique_old.unique_key = Some(b"same-key".to_vec());
+    s.enqueue(&[unique_old.clone()]).await.unwrap();
+    insp.operator_cancel("ri-u-old").await.unwrap();
+    let mut unique_new = unique_old;
+    unique_new.id = "ri-u-new".into();
+    s.enqueue(&[unique_new]).await.unwrap();
+    assert!(matches!(
+        insp.operator_retry("ri-u-old").await,
+        Err(StoreError::Duplicate { existing_id, .. }) if existing_id == "ri-u-new"
+    ));
 
     insp.operator_retry("ri-2").await.unwrap();
     assert_eq!(

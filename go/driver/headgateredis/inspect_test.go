@@ -13,6 +13,26 @@ import (
 	headgate "github.com/mujhtech/headgate/go"
 )
 
+func TestDecodeDurableEventAcceptsCurrentAndLegacyRedisTimestamps(t *testing.T) {
+	fixtures := []string{
+		`{"event_id":7,"scope":"workflow:w1","topic":"approved","idempotency_key":"signal:1","payload":"{\"approved\": true}","source":"{\"emitter\": \"api\"}","recorded_at_ms":1720000000123}`,
+		`{"event_id":7,"scope":"workflow:w1","topic":"approved","idempotency_key":"signal:1","payload":{"approved":true},"source":{"emitter":"api"},"recorded_at_ms":"1720000000123"}`,
+	}
+	for index, fixture := range fixtures {
+		event, err := decodeDurableEvent([]byte(fixture))
+		if err != nil {
+			t.Fatalf("fixture %d: %v", index, err)
+		}
+		if event.EventID != 7 || event.RecordedAtMs != 1720000000123 {
+			t.Fatalf("fixture %d decoded as %#v", index, event)
+		}
+	}
+	current, err := decodeDurableEvent([]byte(fixtures[0]))
+	if err != nil || string(current.Payload) != `{"approved": true}` || string(current.Source) != `{"emitter": "api"}` {
+		t.Fatalf("current payload/source bytes were not preserved: %#v, %v", current, err)
+	}
+}
+
 func TestSchedulerEnqueueEventsAreDurableAndBoundedOnGoRedis(t *testing.T) {
 	s, _, ctx := testStore(t, "gri-audit")
 	for tick := int64(1); tick <= 105; tick++ {
@@ -111,6 +131,29 @@ func TestTheInspectSurfaceAnswersOverGoRedis(t *testing.T) {
 	}
 	if err := s.OperatorCancel(ctx, "g-3"); err == nil {
 		t.Fatal("cancel from cancelled must error")
+	}
+	if err := s.OperatorRetry(ctx, "g-3"); err != nil {
+		t.Fatalf("retry cancelled job: %v", err)
+	}
+	if job, err := s.GetJob(ctx, "g-3", false); err != nil || job == nil || job.State != "available" {
+		t.Fatalf("cancelled retry state: %+v %v", job, err)
+	}
+	uniqueOld := mk("g-u-old", "k.unique")
+	uniqueOld.UniqueKey = []byte("same-key")
+	if err := s.Enqueue(ctx, []headgate.Envelope{uniqueOld}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.OperatorCancel(ctx, uniqueOld.ID); err != nil {
+		t.Fatal(err)
+	}
+	uniqueNew := uniqueOld
+	uniqueNew.ID = "g-u-new"
+	if err := s.Enqueue(ctx, []headgate.Envelope{uniqueNew}); err != nil {
+		t.Fatal(err)
+	}
+	var duplicate *headgate.DuplicateError
+	if err := s.OperatorRetry(ctx, uniqueOld.ID); !errors.As(err, &duplicate) || duplicate.ExistingID != uniqueNew.ID {
+		t.Fatalf("retry must preserve lifecycle uniqueness: %T %v", err, err)
 	}
 	if err := s.OperatorRetry(ctx, "g-2"); err != nil {
 		t.Fatal(err)

@@ -374,6 +374,36 @@ PAIRS = [
         "crates/headgate-migrate/migrations/mysql/0012_worker_control_state.down.sql",
         "go/headgatemigrate/migrations/mysql/0012_worker_control_state.down.sql",
     ),
+    (
+        "Postgres driver ↔ Rust migrator up v13",
+        "crates/headgate-postgres/migrations/0013_durable_events.sql",
+        "crates/headgate-migrate/migrations/postgres/0013_durable_events.up.sql",
+    ),
+    (
+        "MySQL driver ↔ Rust migrator up v13",
+        "crates/headgate-mysql/migrations/0013_durable_events.sql",
+        "crates/headgate-migrate/migrations/mysql/0013_durable_events.up.sql",
+    ),
+    (
+        "Postgres Rust ↔ Go up v13",
+        "crates/headgate-migrate/migrations/postgres/0013_durable_events.up.sql",
+        "go/headgatemigrate/migrations/postgres/0013_durable_events.up.sql",
+    ),
+    (
+        "Postgres Rust ↔ Go down v13",
+        "crates/headgate-migrate/migrations/postgres/0013_durable_events.down.sql",
+        "go/headgatemigrate/migrations/postgres/0013_durable_events.down.sql",
+    ),
+    (
+        "MySQL Rust ↔ Go up v13",
+        "crates/headgate-migrate/migrations/mysql/0013_durable_events.up.sql",
+        "go/headgatemigrate/migrations/mysql/0013_durable_events.up.sql",
+    ),
+    (
+        "MySQL Rust ↔ Go down v13",
+        "crates/headgate-migrate/migrations/mysql/0013_durable_events.down.sql",
+        "go/headgatemigrate/migrations/mysql/0013_durable_events.down.sql",
+    ),
 ]
 
 
@@ -421,11 +451,11 @@ def main() -> int:
             failed = True
 
     cargo = (ROOT / "Cargo.toml").read_text()
-    gowork = (ROOT / "go/go.work").read_text()
+    gowork = (ROOT / "go.work").read_text()
     if '"crates/headgate-migrate"' not in cargo:
         print("FAIL: headgate-migrate is not a Cargo workspace member")
         failed = True
-    if "./headgatemigrate" not in gowork:
+    if "./go/headgatemigrate" not in gowork:
         print("FAIL: headgatemigrate is not a Go workspace module")
         failed = True
 

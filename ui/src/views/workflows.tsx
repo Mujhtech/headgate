@@ -1,6 +1,12 @@
 import { Link } from "@tanstack/react-router";
-import { ArrowLeftIcon, ArrowRightIcon, GitForkIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  GitForkIcon,
+} from "lucide-react";
 import { lazy, Suspense, useMemo } from "react";
+import { RelativeTime } from "@/components/relative-time";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,8 +33,13 @@ import {
   type ViewProps,
 } from "@/console";
 import { ApiError, api } from "@/lib/api";
-import { formatDate } from "@/lib/format";
-import { decodeWorkflowPayload, type WorkflowNode } from "@/lib/workflow";
+import type { JobCheckpoint } from "@/lib/resumable";
+import {
+  decodeWorkflowCursor,
+  decodeWorkflowPayload,
+  type WorkflowCursorProjection,
+  type WorkflowNode,
+} from "@/lib/workflow";
 import { Route as WorkflowsRoute } from "@/routes/_console.workflows";
 
 const WorkflowGraph = lazy(async () => {
@@ -57,6 +68,7 @@ interface JobPage {
 
 interface NodeStatus extends WorkflowNode {
   job: JobSummary | null;
+  recordedCompletion: boolean;
 }
 
 const failedStates = new Set([
@@ -102,10 +114,10 @@ async function loadNodeJobs(nodes: WorkflowNode[], signal: AbortSignal) {
           `/jobs/${encodeURIComponent(node.job_id)}`,
           { signal }
         );
-        results[index] = { ...node, job };
+        results[index] = { ...node, job, recordedCompletion: false };
       } catch (reason) {
         if (reason instanceof ApiError && reason.status === 404) {
-          results[index] = { ...node, job: null };
+          results[index] = { ...node, job: null, recordedCompletion: false };
         } else {
           throw reason;
         }
@@ -116,8 +128,37 @@ async function loadNodeJobs(nodes: WorkflowNode[], signal: AbortSignal) {
   return results;
 }
 
+async function loadWorkflowCursor(
+  coordinatorID: string,
+  signal: AbortSignal
+): Promise<WorkflowCursorProjection> {
+  try {
+    const checkpoint = await api<JobCheckpoint>(
+      `/jobs/${encodeURIComponent(coordinatorID)}/checkpoint`,
+      { signal }
+    );
+    if (checkpoint.cursor_step !== "headgate:workflow-state") {
+      return decodeWorkflowCursor(null);
+    }
+    return decodeWorkflowCursor(checkpoint.cursor);
+  } catch (reason) {
+    if (
+      reason instanceof ApiError &&
+      (reason.status === 404 || reason.status === 501)
+    ) {
+      return decodeWorkflowCursor(null);
+    }
+    throw reason;
+  }
+}
+
+function nodeState(node: NodeStatus) {
+  return node.job?.state ?? (node.recordedCompletion ? "completed" : "missing");
+}
+
 export function WorkflowsView(_props: ViewProps) {
   const search = WorkflowsRoute.useSearch();
+  const navigate = WorkflowsRoute.useNavigate();
   const params = new URLSearchParams({
     kind: "headgate:workflow",
     limit: "50",
@@ -136,13 +177,55 @@ export function WorkflowsView(_props: ViewProps) {
       : String(workflows.error)
     : null;
   const loading = workflows.isPending;
+  const cursorTrail = useMemo<Array<string | null>>(() => {
+    if (!search.cursorTrail) {
+      return [];
+    }
+    try {
+      const value: unknown = JSON.parse(search.cursorTrail);
+      return Array.isArray(value) &&
+        value.every((entry) => entry === null || typeof entry === "string")
+        ? value
+        : [];
+    } catch {
+      return [];
+    }
+  }, [search.cursorTrail]);
+
+  const previousPage = () => {
+    if (!cursorTrail.length) {
+      return;
+    }
+    const previousCursor = cursorTrail.at(-1) ?? undefined;
+    const remaining = cursorTrail.slice(0, -1);
+    void navigate({
+      search: (current) => ({
+        ...current,
+        cursor: previousCursor,
+        cursorTrail: remaining.length ? JSON.stringify(remaining) : undefined,
+      }),
+    });
+  };
+
+  const nextPage = () => {
+    if (!data?.next_cursor) {
+      return;
+    }
+    void navigate({
+      search: (current) => ({
+        ...current,
+        cursor: data.next_cursor,
+        cursorTrail: JSON.stringify([...cursorTrail, search.cursor ?? null]),
+      }),
+    });
+  };
 
   return (
     <>
       <div className="mb-4">
         <h1 className="font-semibold text-lg">Workflows</h1>
         <p className="text-muted-foreground text-sm">
-          Static durable DAGs coordinated through ordinary headgate jobs.
+          Durable DAGs coordinated through ordinary headgate jobs.
         </p>
       </div>
       <Card>
@@ -198,8 +281,12 @@ export function WorkflowsView(_props: ViewProps) {
                             · {job.crash_attempt ?? 0} crashes
                           </span>
                         </TableCell>
-                        <TableCell>{formatDate(job.enqueued_at_ms)}</TableCell>
-                        <TableCell>{formatDate(job.finalized_at_ms)}</TableCell>
+                        <TableCell>
+                          <RelativeTime value={job.enqueued_at_ms} />
+                        </TableCell>
+                        <TableCell>
+                          <RelativeTime value={job.finalized_at_ms} />
+                        </TableCell>
                         <TableCell className="text-right">
                           <Button
                             nativeButton={false}
@@ -210,6 +297,7 @@ export function WorkflowsView(_props: ViewProps) {
                               />
                             }
                             size="sm"
+                            variant="outline"
                           >
                             Inspect
                           </Button>
@@ -220,29 +308,22 @@ export function WorkflowsView(_props: ViewProps) {
                 </TableBody>
               </Table>
               <div className="mt-4 flex justify-end gap-2">
-                {search.cursor && (
-                  <Button
-                    nativeButton={false}
-                    render={<Link search={{}} to="/workflows" />}
-                    size="sm"
-                  >
-                    First page
-                  </Button>
-                )}
-                {data.next_cursor && (
-                  <Button
-                    nativeButton={false}
-                    render={
-                      <Link
-                        search={{ cursor: data.next_cursor }}
-                        to="/workflows"
-                      />
-                    }
-                    size="sm"
-                  >
-                    Next page <ArrowRightIcon />
-                  </Button>
-                )}
+                <Button
+                  disabled={!cursorTrail.length}
+                  onClick={previousPage}
+                  variant="outline"
+                >
+                  <ChevronLeftIcon />
+                  Previous
+                </Button>
+                <Button
+                  disabled={!data.next_cursor}
+                  onClick={nextPage}
+                  variant="outline"
+                >
+                  Next
+                  <ChevronRightIcon />
+                </Button>
               </div>
             </>
           ) : (
@@ -262,17 +343,27 @@ export function WorkflowDetailView({
     ["api", "workflow", workflowId],
     async (signal) => {
       const coordinatorID = `${workflowId}:coordinator`;
-      const coordinator = await api<JobSummary>(
-        `/jobs/${encodeURIComponent(coordinatorID)}?include_payload=true`,
-        { signal }
-      );
+      const [coordinator, cursor] = await Promise.all([
+        api<JobSummary>(
+          `/jobs/${encodeURIComponent(coordinatorID)}?include_payload=true`,
+          { signal }
+        ),
+        loadWorkflowCursor(coordinatorID, signal),
+      ]);
       const workflow = decodeWorkflowPayload(coordinator.payload);
-      const nodes = await loadNodeJobs(workflow.nodes, signal);
-      return { coordinator, nodes, workflow };
+      const graphNodes = [...workflow.nodes, ...cursor.grafts];
+      const loadedNodes = await loadNodeJobs(graphNodes, signal);
+      const nodes = loadedNodes.map((node) => ({
+        ...node,
+        recordedCompletion:
+          node.job === null && cursor.completed.has(node.name),
+      }));
+      return { coordinator, cursor, nodes, workflow };
     }
   );
   const coordinator = detail.data?.coordinator ?? null;
   const workflow = detail.data?.workflow ?? null;
+  const cursor = detail.data?.cursor ?? null;
   const nodes = detail.data?.nodes ?? [];
   const error = detail.error
     ? detail.error instanceof Error
@@ -284,7 +375,7 @@ export function WorkflowDetailView({
   const counts = useMemo(
     () =>
       nodes.reduce<Record<string, number>>((result, node) => {
-        const state = node.job?.state ?? "missing";
+        const state = nodeState(node);
         result[state] = (result[state] ?? 0) + 1;
         return result;
       }, {}),
@@ -311,11 +402,25 @@ export function WorkflowDetailView({
             Workflow dependency graph and live task state.
           </p>
         </div>
-        {coordinator && (
-          <Badge variant={badgeVariant(coordinator.state)}>
-            coordinator: {coordinator.state}
-          </Badge>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {cursor ? (
+            <>
+              <Badge variant="outline">revision {cursor.revision}</Badge>
+              <Badge variant="outline">generation {cursor.generation}</Badge>
+              {cursor.failed ? (
+                <Badge variant="destructive">generation failed</Badge>
+              ) : null}
+            </>
+          ) : null}
+          {workflow?.failed_subgraph_retry ? (
+            <Badge variant="secondary">retry enabled</Badge>
+          ) : null}
+          {coordinator ? (
+            <Badge variant={badgeVariant(coordinator.state)}>
+              coordinator: {coordinator.state}
+            </Badge>
+          ) : null}
+        </div>
       </div>
       {loading ? (
         <Loading />
@@ -372,8 +477,9 @@ export function WorkflowDetailView({
               <div className="min-w-0 flex-1">
                 <CardTitle>Dependency graph</CardTitle>
                 <CardDescription>
-                  Arrows show execution order. Drag or scroll to pan, use the
-                  controls to zoom, and select any task to inspect it.
+                  Lines show execution order from left to right. Drag or scroll
+                  to pan, use the controls to zoom, and select a retained task
+                  to inspect it.
                 </CardDescription>
               </div>
               <div className="flex flex-wrap gap-3 text-muted-foreground text-xs">

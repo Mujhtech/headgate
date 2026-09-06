@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildWorkflowGraph,
   type WorkflowGraphItem,
+  workflowGraphInitialView,
   workflowGraphLayers,
 } from "@/components/workflow-graph";
 
@@ -73,5 +74,58 @@ describe("workflow graph", () => {
     ];
 
     expect(workflowGraphLayers(cyclic)).toEqual([[1, cyclic]]);
+  });
+
+  it("shows retained completion without linking to an expired job", () => {
+    const retained: WorkflowGraphItem[] = [
+      {
+        deps: [],
+        job: null,
+        job_id: "wf:prepare",
+        name: "prepare",
+        recordedCompletion: true,
+      },
+      {
+        deps: ["prepare"],
+        job: { id: "wf:process", kind: "demo:step", state: "running" },
+        job_id: "wf:process",
+        name: "process",
+      },
+    ];
+    const graph = buildWorkflowGraph(retained, "wf");
+    const prepare = graph.nodes.find((node) => node.id === "prepare");
+    const process = graph.nodes.find((node) => node.id === "process");
+
+    expect(prepare?.data).toMatchObject({
+      inspectable: false,
+      state: "completed",
+    });
+    expect(process?.data).toMatchObject({
+      dependencyText: "1 dependency satisfied",
+    });
+    expect(graph.edges[0]?.style).toMatchObject({ stroke: "var(--success)" });
+  });
+
+  it("opens every graph as a topology overview", () => {
+    const smallGraph = buildWorkflowGraph(items, "wf");
+    expect(workflowGraphInitialView(smallGraph, items.length).fitView).toBe(
+      true
+    );
+
+    const largeItems = Array.from({ length: 14 }, (_, index) => ({
+      deps: index === 0 ? [] : [`task-${index - 1}`],
+      job: {
+        id: `wf:task-${index}`,
+        kind: "demo:step",
+        state: index === 8 ? "running" : index < 8 ? "completed" : "pending",
+      },
+      job_id: `wf:task-${index}`,
+      name: `task-${index}`,
+    }));
+    const largeGraph = buildWorkflowGraph(largeItems, "wf");
+    const initialView = workflowGraphInitialView(largeGraph, largeItems.length);
+
+    expect(initialView.fitView).toBe(true);
+    expect(initialView.viewport).toEqual({ x: 24, y: 24, zoom: 1 });
   });
 });

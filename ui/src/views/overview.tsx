@@ -37,6 +37,7 @@ import {
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -62,6 +63,7 @@ import {
   mergeQueueHistories,
   type QueueHistoryBucket,
   type QueueMetric,
+  resolveQueueSelection,
   summarizeHistory,
   summarizeQueues,
 } from "@/lib/metrics";
@@ -343,13 +345,7 @@ export function OverviewView({
     ? queuesQuery.data
     : (queuesQuery.data?.queues ?? []);
   const summary = summarizeQueues(queues);
-  const defaultQueue =
-    summary.slowestDrain?.queue ?? summary.oldest?.queue ?? queues[0]?.queue;
-  const selectedQueue =
-    requestedQueue === "all" ||
-    queues.some((item) => item.queue === requestedQueue)
-      ? requestedQueue
-      : defaultQueue;
+  const selectedQueue = resolveQueueSelection(requestedQueue, queues);
   const selectedRange =
     rangeOptions.find((item) => item.value === range) ?? rangeOptions[1];
   const historySince = Date.now() - selectedRange.duration;
@@ -525,12 +521,14 @@ export function OverviewView({
                   <SelectValue placeholder="Choose queue…" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All queues</SelectItem>
-                  {queues.map((item) => (
-                    <SelectItem key={item.queue} value={item.queue}>
-                      <span translate="no">{item.queue}</span>
-                    </SelectItem>
-                  ))}
+                  <SelectGroup>
+                    <SelectItem value="all">All queues</SelectItem>
+                    {queues.map((item) => (
+                      <SelectItem key={item.queue} value={item.queue}>
+                        <span translate="no">{item.queue}</span>
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
                 </SelectContent>
               </Select>
               <Select
@@ -546,11 +544,13 @@ export function OverviewView({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {rangeOptions.map((item) => (
-                    <SelectItem key={item.value} value={item.value}>
-                      {item.label}
-                    </SelectItem>
-                  ))}
+                  <SelectGroup>
+                    {rangeOptions.map((item) => (
+                      <SelectItem key={item.value} value={item.value}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
                 </SelectContent>
               </Select>
             </div>

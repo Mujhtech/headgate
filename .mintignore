@@ -8,6 +8,7 @@
 /scripts/
 /target/
 /ui/
+/website/
 
 .DS_Store
 .gitignore
@@ -17,6 +18,8 @@ AGENTS.md
 ARCHITECTURE.md
 KICKOFF.md
 LICENSE
+go.work
+go.work.sum
 
 # The Markdown files under docs/ are internal research and implementation
 # notes. Public developer documentation is authored as MDX.

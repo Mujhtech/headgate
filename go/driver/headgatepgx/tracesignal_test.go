@@ -1,14 +1,13 @@
 package headgatepgx
 
-// telemetry and trace context × backlog metrics (round 32) — the Go mirror of the Rust runtime's
-// `trace_context_and_the_autoscaling_signal_reach_the_facade`. Three things this round
+// Trace context and backlog metrics mirror the Rust runtime contract. Three things
 // added, in one live worker loop:
 //
 //  1. THE HANDLER'S CTX SEES THE PRODUCER'S TRACE CONTEXT. A traceparent set at enqueue
 //     is parsed at DISPATCH and reachable via headgate.TraceContextFrom(ctx) — and an
 //     INVALID one is ABSENT rather than an error, which is the half that would have
 //     diverged between the two runtimes without a written rule.
-//  2. THE telemetry and trace context JOB-SPAN HOOK CARRIES IT. One event per attempt, after the handler
+//  2. The job-span hook carries it. One event per attempt, after the handler
 //     returns, with the parsed parent — what an OTel bridge needs to build a child span.
 //  3. THE backlog metrics AUTOSCALING SIGNAL IS REAL. A worker holding jobs reports Inflight > 0 on
 //     its heartbeat, so Utilization > 0 and the fleet aggregate GET /cluster computes is
@@ -25,8 +24,8 @@ import (
 	headgate "github.com/mujhtech/headgate/go"
 )
 
-// captureTelemetry is the telemetry and trace context facade under test. A bridge switches on Type and ignores
-// fields it does not know — which is exactly why round 32 could grow the struct.
+// captureTelemetry is the telemetry facade under test. A bridge switches on Type and
+// ignores fields it does not know, allowing additive event fields.
 type captureTelemetry struct {
 	mu         sync.Mutex
 	spans      []headgate.Event
@@ -91,14 +90,14 @@ func TestTraceContextAndAutoscalingSignalReachTheFacade(t *testing.T) {
 		return nil
 	})
 
-	cap := &captureTelemetry{}
+	telemetry := &captureTelemetry{}
 	cfg := headgate.Config{
 		Queues:          map[string]headgate.QueueConfig{q: {MaxWorkers: 4}},
 		LeaseDuration:   600 * time.Millisecond, // heartbeat ~200ms
 		DisableDuties:   true,                   // this test asserts levels, not sweeps
 		ShutdownTimeout: 500 * time.Millisecond,
 		WorkerID:        workerID,
-		Telemetry:       cap,
+		Telemetry:       telemetry,
 		EmptyPollBackoff: headgate.BackoffConfig{
 			Floor: 20 * time.Millisecond, Ceiling: 60 * time.Millisecond,
 			Multiplier: 2, Jitter: 0.2,
@@ -118,7 +117,7 @@ func TestTraceContextAndAutoscalingSignalReachTheFacade(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// backlog metrics the signal: the registry row this worker writes shows work in flight.
+	// signal: the registry row this worker writes shows work in flight.
 	waitFor(t, 20*time.Second, func() bool {
 		ws, err := s.ListWorkers(context.Background(), 900_000)
 		if err != nil {
@@ -155,8 +154,8 @@ func TestTraceContextAndAutoscalingSignalReachTheFacade(t *testing.T) {
 	if inflightTotal <= 0 || capTotal < 4 {
 		t.Fatalf("the cluster aggregate must include this worker: %d/%d", inflightTotal, capTotal)
 	}
-	// telemetry and trace context the gauges reached the facade with the same numbers, not a second source.
-	_, sat := cap.snapshot()
+	// The gauges reach the facade with the same numbers, not a second source.
+	_, sat := telemetry.snapshot()
 	busy := false
 	for _, ev := range sat {
 		if ev.Inflight > 0 && ev.Capacity == 4 && ev.Utilization > 0 {
@@ -174,7 +173,7 @@ func TestTraceContextAndAutoscalingSignalReachTheFacade(t *testing.T) {
 		return a == "completed" && b == "completed"
 	})
 
-	// telemetry and trace context an INVALID traceparent: a normal enqueue, a normal dispatch, and ABSENT.
+	// An invalid traceparent permits normal enqueue and dispatch with no parsed parent.
 	bad := rtEnv("gosat-bad", "bad")
 	bad.Queue = q
 	bad.Headers = map[string]string{headgate.TraceparentHeader: tpBad}
@@ -211,8 +210,8 @@ func TestTraceContextAndAutoscalingSignalReachTheFacade(t *testing.T) {
 		t.Fatalf("an invalid traceparent is ABSENT to the handler, never an error: %+v", got)
 	}
 
-	// (2) the telemetry and trace context job-span hook carried the same parsed context, once per attempt.
-	spans, _ := cap.snapshot()
+	// The job-span hook carries the same parsed context once per attempt.
+	spans, _ := telemetry.snapshot()
 	nA := 0
 	var spanA, spanBad *headgate.Event
 	for i := range spans {

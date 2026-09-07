@@ -17,7 +17,7 @@ import (
 	headgate "github.com/mujhtech/headgate/go"
 )
 
-// Round 32: a PER-SCHEDULE TIMEZONE, live through the Go store and SchedulerSweep. The
+// Exercise a per-schedule timezone through the live Go store and SchedulerSweep. The
 // zone rides inside the ONE spec string (`CRON_TZ=<IANA> <cron>`), so the schema, the
 // store port and the sweep learn nothing about timezones — and the tick id is still
 // epoch-ms. What the tick proves is that 09:00 is NEW YORK's 09:00: that instant is
@@ -174,7 +174,7 @@ func TestGoSchedulerDutyFiresEveryAndCron(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	// Round 32h: `rows.Next()` returns false on ITERATION ERROR as well as on
+	// rows.Next returns false on iteration error as well as exhaustion, so check rows.Err.
 	// exhaustion, so a mid-stream failure ended this loop with no complaint — and a
 	// zero-row result asserted nothing at all. Both are checked now, the way the MySQL
 	// twin already did.

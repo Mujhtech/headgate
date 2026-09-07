@@ -1,6 +1,6 @@
 package headgatepgx
 
-// push wakeups push wakeup: a dedicated auto-reconnecting LISTEN connection, fanned out to
+// Push wakeup: a dedicated auto-reconnecting LISTEN connection, fanned out to
 // WaitWakeup subscribers. The capability exists only on stores that know how to open
 // that connection (Connect, or WithListen) — a pool-only store polls, honestly, and
 // its Caps say so. Mirrors the Rust adapter's Listener.
@@ -47,6 +47,7 @@ func (s *PgxStore) WithListen(connString string) *PgxStore {
 
 var _ headgate.NotifyingStore = (*PgxStore)(nil)
 
+// WaitWakeup waits for a notification affecting one of queues or until timeout.
 func (s *PgxStore) WaitWakeup(ctx context.Context, queues []string, timeout time.Duration) (string, bool, error) {
 	l := s.listen
 	if l == nil {

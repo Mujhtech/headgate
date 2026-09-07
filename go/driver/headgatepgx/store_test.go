@@ -210,7 +210,7 @@ func TestStoreLifecycleEndToEnd(t *testing.T) {
 		t.Fatalf("retry ack: %v", err)
 	}
 	lost, err := s.Renew(ctx, []headgate.LeaseRef{byID["go-a"], byID["go-b"]}, 30*time.Second)
-	// Round 32h: the comment says renew NAMES both lost leases; the assertion only
+	// Verify the lost lease IDs, not only their count.
 	// counted them, so two empty strings or two copies of one id passed. Named now.
 	sort.Strings(lost)
 	if err != nil || !reflect.DeepEqual(lost, []string{"go-a", "go-b"}) {
@@ -284,7 +284,7 @@ func TestStoreLifecycleEndToEnd(t *testing.T) {
 	if count != 0 {
 		t.Fatal("rolled-back enqueue must not persist")
 	}
-	// Round 32h: count==0 is ALSO what an EnqueueTx that silently wrote nothing leaves
+	// A zero count is also what an EnqueueTx that silently writes nothing leaves
 	// behind — which is the exact failure this test exists to rule out, so "rolled back"
 	// and "never inserted" were indistinguishable. The commit arm is the positive
 	// control: the same call path has to persist a row when told to commit.
@@ -475,7 +475,7 @@ func TestPartitionedArchiveMovesTerminalJobAndGuardsPruning(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ROUND 32L, TASK 3.1 — EnqueuedJobs over a LIVE backend, Go side.
+// EnqueuedJobs is exercised over a live backend, not only a test double.
 //
 // headgatetest.EnqueuedJobs was implemented only by MemStore, so the seam was a claim
 // about a map. Its doc said the live case is "a test implements the same one-method
@@ -492,7 +492,7 @@ func TestPartitionedArchiveMovesTerminalJobAndGuardsPruning(t *testing.T) {
 // ---------------------------------------------------------------------------
 type liveJobs struct{ jobs []headgate.Envelope }
 
-func snapshotLive(t *testing.T, s *PgxStore, ctx context.Context, queue string) *liveJobs {
+func snapshotLive(ctx context.Context, t *testing.T, s *PgxStore, queue string) *liveJobs {
 	t.Helper()
 	out := &liveJobs{}
 	filter := headgate.JobFilter{Queue: headgate.Ptr(queue)}
@@ -547,7 +547,7 @@ func TestRequireEnqueuedReadsALiveStoreThroughTheSameOneMethodInterface(t *testi
 		t.Fatal(err)
 	}
 
-	live := snapshotLive(t, s, ctx, q)
+	live := snapshotLive(ctx, t, s, q)
 
 	if got := headgatetest.RequireEnqueued(t, live, headgatetest.Enqueued{
 		Kind: "goae:t", Queue: headgatetest.Ptr(q), Count: headgatetest.Ptr(3)}); len(got) != 3 {

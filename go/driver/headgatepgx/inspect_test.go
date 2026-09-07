@@ -100,7 +100,7 @@ func TestInspectSurfaceSpotChecks(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("advance: %v %v", ok, err)
 	}
-	// Round 32h: `ok == false` is also what EVERY error path returns, so a broken
+	// Check the error because ok=false is also what every error path returns.
 	// statement read as a correctly-failing CAS. The error is checked now.
 	if ok, err := s.AdvanceSchedule(ctx, "goinsp-s1", 1000, now+120000); ok || err != nil {
 		t.Fatalf("CAS must fail on stale next_run, and must not ERROR: ok=%v err=%v", ok, err)

@@ -147,7 +147,7 @@ func run() error {
 					c.Envelope.PartitionKey, c.Envelope.RateClass)
 			}
 		}
-	// telemetry and trace context . Prints the RAW header exactly as the store returned it and the
+	// Print the raw header exactly as the store returned it and the
 	// PARSED context re-rendered, so one line proves both halves of the contract: the
 	// store round-trips opaque bytes, and the runtime's lenient parse turns an invalid
 	// value into an absent one (empty fields) without failing dispatch.
@@ -422,7 +422,7 @@ func run() error {
 			parts = append(parts, strconv.FormatInt(p, 10))
 		}
 		fmt.Printf("resumed_from=%d|processed=%s|outcome=%s\n", from, strings.Join(parts, ","), outcome)
-	// backlog metrics the BACKLOG DERIVATIVES. Computed in all four adapters, served on GET /queues,
+	// BACKLOG DERIVATIVES. Computed in all four adapters, served on GET /queues,
 	// and asserted by nothing previously — the one diff that transported them emptied
 	// the counters first, so the rates were time-stable at 0. Fixed decimals so the two
 	// languages print byte-identically.
@@ -547,7 +547,7 @@ func run() error {
 	return nil
 }
 
-// traceHeaders sets the two RESERVED telemetry and trace context envelope headers verbatim from tp= / ts=.
+// traceHeaders sets the two reserved trace-context envelope headers verbatim from tp= / ts=.
 // Verbatim is the point: the store must round-trip an INVALID traceparent unchanged
 // (opaque bytes down there), and only the runtime's parse treats it as absent.
 func traceHeaders(m map[string]string) map[string]string {

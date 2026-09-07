@@ -1,7 +1,7 @@
 package headgatepgx
 
 // The Go worker runtime over the pgx store — mirroring the Rust runtime tests: typed
-// dispatch, panic recovery by default, control errors, step replay step replay with a stale
+// dispatch, panic recovery by default, control errors, step replay with a stale
 // step set parking as undecodable, cooperative lost-lease cancellation, and shutdown
 // that releases (not abandons) in-flight work.
 
@@ -235,7 +235,7 @@ func TestGoRunnerCancelsLostLeasesAndReleasesOnShutdown(t *testing.T) {
 	}
 }
 
-// panic-recovery contract round 32 — panic ISOLATION, the Go half. Go's isolation is NATIVE and needs no
+// Panic isolation in Go uses one goroutine per admitted job and needs no additional
 // mechanism: admitOnce gives every job its own goroutine and `invoke`'s deferred
 // recover runs on that goroutine, so a panic unwinds one stack and no other. This
 // asserts it rather than assuming it — a panicking handler and a healthy one run
@@ -254,7 +254,7 @@ func TestGoPanicIsolationDoesNotDisturbAConcurrentHealthyJob(t *testing.T) {
 
 	var slowStarted, panicFired, slowFinished, overlapped atomic.Int32
 	reg := headgate.NewRegistry()
-	err := headgate.RegisterFunc[rtMsg](reg, func(ctx context.Context, job *headgate.Job[rtMsg]) error {
+	err := headgate.RegisterFunc[rtMsg](reg, func(_ context.Context, job *headgate.Job[rtMsg]) error {
 		switch job.Args.Mode {
 		case "panic":
 			for i := 0; i < 2000 && slowStarted.Load() == 0; i++ {
@@ -417,9 +417,9 @@ func TestJobOnceCommitsEffectsAtomicallyWithCompletion(t *testing.T) {
 	}
 }
 
-// ROUND 32L — the money path, Go side. transactional effects's guarantee is that the effect-key claim, the
+// Transactional effects require the effect-key claim, caller writes, and fence-verified
 // caller's writes and the FENCE-VERIFIED completion are ONE transaction, so a superseded
-// holder's half-done writes never commit. Round 32l changed the ErrLeaseLost arm of
+// holder's half-done writes never commit. A regression that commits the ErrLeaseLost arm of
 // `Once` from RollbackTx to CommitTx in BOTH languages — a post-effect failure that
 // double-charges — and the whole gate stayed green: 462 shell assertions, 96 scenarios,
 // both suites. TestJobOnceCommitsEffectsAtomicallyWithCompletion cannot see it, because
@@ -518,7 +518,7 @@ func TestStepOnceEffectsCommitExactlyOnceAcrossRetries(t *testing.T) {
 	var failOnce, charges atomic.Int32
 	failOnce.Store(1)
 	reg := headgate.NewRegistry()
-	_ = headgate.RegisterFunc[rtMsg](reg, func(ctx context.Context, job *headgate.Job[rtMsg]) error {
+	_ = headgate.RegisterFunc[rtMsg](reg, func(ctx context.Context, _ *headgate.Job[rtMsg]) error {
 		if err := headgate.StepOnce(ctx, "charge", func(ctx context.Context, tx headgate.Tx) error {
 			charges.Add(1)
 			pgtx, err := unwrapTx(tx)
@@ -571,7 +571,7 @@ func TestStepOnceEffectsCommitExactlyOnceAcrossRetries(t *testing.T) {
 // INVARIANT 13 — "A checkpoint is durable BEFORE the step's side effects, never after the
 // worker returns. And every step boundary re-verifies the fence."
 //
-// Round 32i mutation-tested this by moving the in-progress `persist` from before `fn(ctx)`
+// Moving the in-progress persist from before fn to after it reproduces River's failure mode;
 // to after it — River's exact mistake — in BOTH languages, and the entire suite stayed
 // green: every Go test, every Rust test, all 364 conformance assertions.
 // TestGoRuntimeDrainStepsAndPanics cannot see it, because what makes a completed step skip
@@ -594,7 +594,7 @@ func TestAStepBoundaryStopsBeforeTheSideEffectWhenTheLeaseIsGone(t *testing.T) {
 	var firstRan, secondRan atomic.Int32
 
 	reg := headgate.NewRegistry()
-	if err := headgate.RegisterFunc[rtMsg](reg, func(ctx context.Context, job *headgate.Job[rtMsg]) error {
+	if err := headgate.RegisterFunc[rtMsg](reg, func(ctx context.Context, _ *headgate.Job[rtMsg]) error {
 		if err := headgate.Step(ctx, "first", func(context.Context) error {
 			firstRan.Add(1)
 			return nil

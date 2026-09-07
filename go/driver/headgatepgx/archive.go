@@ -20,6 +20,7 @@ func archiveMonth(value string) (table, firstDay string, err error) {
 	return "headgate_job_archive_" + value, fmt.Sprintf("%04d-%02d-01", year, month), nil
 }
 
+// SetArchivePolicy enables archival for terminal jobs in queue.
 func (s *PgxStore) SetArchivePolicy(ctx context.Context, queue string, retention time.Duration) error {
 	retentionMs := retention.Milliseconds()
 	if queue == "" || retentionMs <= 0 {
@@ -33,6 +34,7 @@ func (s *PgxStore) SetArchivePolicy(ctx context.Context, queue string, retention
 	return err
 }
 
+// ClearArchivePolicy disables archival for queue.
 func (s *PgxStore) ClearArchivePolicy(ctx context.Context, queue string) error {
 	_, err := s.pool.Exec(ctx, "DELETE FROM headgate_archive_policy WHERE queue = $1", queue)
 	return err

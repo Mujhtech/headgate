@@ -1,6 +1,6 @@
 package headgatepgx
 
-// caller-owned transaction contract the ORM-interop conformance matrix, Go × Postgres cell.
+// The ORM-interop conformance matrix, Go × Postgres cell.
 //
 // Transactional enqueue is the headline feature and it is worth nothing if it cannot
 // join the transaction the application already has open. "The port shape is right" was a
@@ -47,7 +47,7 @@ func ormAdmit(queue, worker, lease string) headgate.AdmitRequest {
 // ormClean runs at START as well as at the end: a previous run that panicked mid-test
 // leaves rows behind, and a matrix that only passes on a pristine database proves
 // nothing.
-func ormClean(t *testing.T, s *PgxStore, ctx context.Context, queue, app string) {
+func ormClean(ctx context.Context, t *testing.T, s *PgxStore, queue, app string) {
 	t.Helper()
 	_, _ = s.pool.Exec(ctx, `DROP TABLE IF EXISTS `+app)
 	_, _ = s.pool.Exec(ctx, `DELETE FROM headgate_job WHERE queue = $1`, queue)
@@ -55,7 +55,7 @@ func ormClean(t *testing.T, s *PgxStore, ctx context.Context, queue, app string)
 	_, _ = s.pool.Exec(ctx, `DELETE FROM headgate_effect WHERE key LIKE $1`, queue+"-%")
 }
 
-func ormCount(t *testing.T, s *PgxStore, ctx context.Context, sql string, args ...any) int64 {
+func ormCount(ctx context.Context, t *testing.T, s *PgxStore, sql string, args ...any) int64 {
 	t.Helper()
 	var n int64
 	if err := s.pool.QueryRow(ctx, sql, args...).Scan(&n); err != nil {
@@ -71,11 +71,11 @@ func TestORMInteropCallerTxCommitIsVisibleAndAdmittable(t *testing.T) {
 	sc := ormScope()
 	queue := "ormgopg-a-" + sc
 	app := "hg_orm_app_a_" + sc
-	ormClean(t, s, ctx, queue, app)
+	ormClean(ctx, t, s, queue, app)
 	if _, err := s.pool.Exec(ctx, `CREATE TABLE `+app+` (id text primary key, note text)`); err != nil {
 		t.Fatalf("create app table: %v", err)
 	}
-	defer ormClean(t, s, ctx, queue, app)
+	defer ormClean(ctx, t, s, queue, app)
 
 	// THE POINT: the transaction is the application's. WrapTx lends it to headgate;
 	// headgate never opens, commits, or owns anything here.
@@ -93,10 +93,10 @@ func TestORMInteropCallerTxCommitIsVisibleAndAdmittable(t *testing.T) {
 		t.Fatalf("commit: %v", err)
 	}
 
-	if n := ormCount(t, s, ctx, `SELECT count(*)::bigint FROM `+app); n != 1 {
+	if n := ormCount(ctx, t, s, `SELECT count(*)::bigint FROM `+app); n != 1 {
 		t.Fatalf("the app write must survive the commit; got %d", n)
 	}
-	if n := ormCount(t, s, ctx, `SELECT count(*)::bigint FROM headgate_job WHERE queue = $1`, queue); n != 1 {
+	if n := ormCount(ctx, t, s, `SELECT count(*)::bigint FROM headgate_job WHERE queue = $1`, queue); n != 1 {
 		t.Fatalf("the enqueue must survive the same commit; got %d", n)
 	}
 
@@ -127,11 +127,11 @@ func TestORMInteropCallerTxRollbackLeavesNeither(t *testing.T) {
 	sc := ormScope()
 	queue := "ormgopg-b-" + sc
 	app := "hg_orm_app_b_" + sc
-	ormClean(t, s, ctx, queue, app)
+	ormClean(ctx, t, s, queue, app)
 	if _, err := s.pool.Exec(ctx, `CREATE TABLE `+app+` (id text primary key, note text)`); err != nil {
 		t.Fatalf("create app table: %v", err)
 	}
-	defer ormClean(t, s, ctx, queue, app)
+	defer ormClean(ctx, t, s, queue, app)
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -147,13 +147,13 @@ func TestORMInteropCallerTxRollbackLeavesNeither(t *testing.T) {
 		t.Fatalf("rollback: %v", err)
 	}
 
-	if n := ormCount(t, s, ctx, `SELECT count(*)::bigint FROM `+app); n != 0 {
+	if n := ormCount(ctx, t, s, `SELECT count(*)::bigint FROM `+app); n != 0 {
 		t.Fatalf("the app write must be gone; got %d", n)
 	}
-	if n := ormCount(t, s, ctx, `SELECT count(*)::bigint FROM headgate_job WHERE queue = $1`, queue); n != 0 {
+	if n := ormCount(ctx, t, s, `SELECT count(*)::bigint FROM headgate_job WHERE queue = $1`, queue); n != 0 {
 		t.Fatalf("the enqueue must be gone WITH it — neither exists; got %d", n)
 	}
-	// Round 32h: this used to be `for _, u := range units { if len(u.Claims) > 0 {...} }`
+	// Do not loop over an empty successful result: that lets an Admit implementation
 	// over a slice that is ALWAYS empty on the pass path — dead code that an `Admit`
 	// hard-wired to `return nil, nil` would satisfy. A committed sibling in the same
 	// per-run queue is the positive control: the gate has to hand back j2 for the
@@ -186,7 +186,7 @@ func TestORMInteropCallerTxRollbackLeavesNeither(t *testing.T) {
 // ormDeliver is one delivery of the job, shaped exactly like Job.Once: claim the effect
 // key, do the application's writes, complete the job — all on ONE transaction the caller
 // owns, so either all three commit or none do. Returns whether the effect ran.
-func ormDeliver(t *testing.T, s *PgxStore, ctx context.Context, lease headgate.LeaseRef, key, app string) bool {
+func ormDeliver(ctx context.Context, t *testing.T, s *PgxStore, lease headgate.LeaseRef, key, app string) bool {
 	t.Helper()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -225,11 +225,11 @@ func TestORMInteropOnceInCallerTxDoesNotDoubleApply(t *testing.T) {
 	sc := ormScope()
 	queue := "ormgopg-c-" + sc
 	app := "hg_orm_app_c_" + sc
-	ormClean(t, s, ctx, queue, app)
+	ormClean(ctx, t, s, queue, app)
 	if _, err := s.pool.Exec(ctx, `CREATE TABLE `+app+` (id text primary key, note text)`); err != nil {
 		t.Fatalf("create app table: %v", err)
 	}
-	defer ormClean(t, s, ctx, queue, app)
+	defer ormClean(ctx, t, s, queue, app)
 
 	jobID := queue + "-j1"
 	if err := s.Enqueue(ctx, []headgate.Envelope{ormEnv(queue, jobID)}); err != nil {
@@ -243,19 +243,19 @@ func TestORMInteropOnceInCallerTxDoesNotDoubleApply(t *testing.T) {
 	lease := headgate.LeaseRef{JobID: c.Envelope.ID, LeaseID: c.LeaseID, Fence: c.Fence}
 	key := queue + "-effect"
 
-	if !ormDeliver(t, s, ctx, lease, key, app) {
+	if !ormDeliver(ctx, t, s, lease, key, app) {
 		t.Fatalf("first delivery must run the effect")
 	}
 	// The crash: the worker died AFTER the commit and before it could report anything,
 	// so the job is delivered again. Once is what makes that safe.
-	if ormDeliver(t, s, ctx, lease, key, app) {
+	if ormDeliver(ctx, t, s, lease, key, app) {
 		t.Fatalf("a redelivery after a committed effect must skip the work entirely")
 	}
 
-	if n := ormCount(t, s, ctx, `SELECT count(*)::bigint FROM `+app); n != 1 {
+	if n := ormCount(ctx, t, s, `SELECT count(*)::bigint FROM `+app); n != 1 {
 		t.Fatalf("the app effect must be applied EXACTLY once; got %d", n)
 	}
-	if n := ormCount(t, s, ctx, `SELECT count(*)::bigint FROM headgate_effect WHERE key = $1`, key); n != 1 {
+	if n := ormCount(ctx, t, s, `SELECT count(*)::bigint FROM headgate_effect WHERE key = $1`, key); n != 1 {
 		t.Fatalf("one effect-key row, claimed once, forever; got %d", n)
 	}
 	var state string

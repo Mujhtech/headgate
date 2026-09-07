@@ -35,6 +35,7 @@ type PostgresTestDatabase struct {
 	cleanupErr  error
 }
 
+// CreatePostgresTestDatabase creates and migrates an isolated PostgreSQL schema.
 func CreatePostgresTestDatabase(ctx context.Context, conninfo string) (database *PostgresTestDatabase, resultErr error) {
 	adminConfig, err := pgx.ParseConfig(conninfo)
 	if err != nil {
@@ -66,10 +67,12 @@ func CreatePostgresTestDatabase(ctx context.Context, conninfo string) (database 
 	}, nil
 }
 
+// Connect opens a connection whose search path targets the isolated schema.
 func (d *PostgresTestDatabase) Connect(ctx context.Context) (*pgx.Conn, error) {
 	return pgx.ConnectConfig(ctx, d.Config.Copy())
 }
 
+// Cleanup drops the isolated PostgreSQL schema once.
 func (d *PostgresTestDatabase) Cleanup(ctx context.Context) error {
 	d.cleanupOnce.Do(func() {
 		admin, err := pgx.ConnectConfig(ctx, d.adminConfig)
@@ -83,6 +86,9 @@ func (d *PostgresTestDatabase) Cleanup(ctx context.Context) error {
 	return d.cleanupErr
 }
 
+// RequirePostgresTestDatabase creates an isolated schema or fails t, then registers cleanup.
+//
+//revive:disable-next-line:context-as-argument testing helpers conventionally take testing.TB first
 func RequirePostgresTestDatabase(t testing.TB, ctx context.Context, conninfo string) *PostgresTestDatabase {
 	t.Helper()
 	database, err := CreatePostgresTestDatabase(ctx, conninfo)
@@ -137,6 +143,7 @@ func mysqlConfig(value, database string) (*mysqlDriver.Config, error) {
 	}, nil
 }
 
+// CreateMySQLTestDatabase creates and migrates an isolated MySQL database.
 func CreateMySQLTestDatabase(ctx context.Context, value string) (databaseResult *MySQLTestDatabase, resultErr error) {
 	adminConfig, err := mysqlConfig(value, "")
 	if err != nil {
@@ -169,8 +176,10 @@ func CreateMySQLTestDatabase(ctx context.Context, value string) (databaseResult 
 	}, nil
 }
 
+// Open creates a database/sql pool for the isolated database.
 func (d *MySQLTestDatabase) Open() (*sql.DB, error) { return sql.Open("mysql", d.DSN) }
 
+// Cleanup drops the isolated MySQL database once.
 func (d *MySQLTestDatabase) Cleanup(ctx context.Context) error {
 	d.cleanupOnce.Do(func() {
 		admin, err := sql.Open("mysql", d.adminDSN)
@@ -184,6 +193,9 @@ func (d *MySQLTestDatabase) Cleanup(ctx context.Context) error {
 	return d.cleanupErr
 }
 
+// RequireMySQLTestDatabase creates an isolated database or fails t, then registers cleanup.
+//
+//revive:disable-next-line:context-as-argument testing helpers conventionally take testing.TB first
 func RequireMySQLTestDatabase(t testing.TB, ctx context.Context, value string) *MySQLTestDatabase {
 	t.Helper()
 	database, err := CreateMySQLTestDatabase(ctx, value)
@@ -208,6 +220,7 @@ type RedisTestNamespace struct {
 	cleanupErr  error
 }
 
+// CreateRedisTestNamespace creates an isolated Redis key prefix and client.
 func CreateRedisTestNamespace(ctx context.Context, value string) (*RedisTestNamespace, error) {
 	options, err := redis.ParseURL(value)
 	if err != nil {
@@ -242,6 +255,7 @@ func (n *RedisTestNamespace) keys(ctx context.Context) ([]string, error) {
 	}
 }
 
+// Cleanup deletes keys under the isolated prefix and closes the client once.
 func (n *RedisTestNamespace) Cleanup(ctx context.Context) error {
 	n.cleanupOnce.Do(func() {
 		keys, err := n.keys(ctx)
@@ -265,6 +279,9 @@ func (n *RedisTestNamespace) Cleanup(ctx context.Context) error {
 	return n.cleanupErr
 }
 
+// RequireRedisTestNamespace creates an isolated prefix or fails t, then registers cleanup.
+//
+//revive:disable-next-line:context-as-argument testing helpers conventionally take testing.TB first
 func RequireRedisTestNamespace(t testing.TB, ctx context.Context, value string) *RedisTestNamespace {
 	t.Helper()
 	namespace, err := CreateRedisTestNamespace(ctx, value)

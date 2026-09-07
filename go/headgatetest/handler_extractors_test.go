@@ -126,7 +126,7 @@ func TestMissingOrWrongTypedInputsFailBeforeHandlerSideEffects(t *testing.T) {
 		}); err != nil {
 		t.Fatal(err)
 	}
-	badMeta := headgate.ExtractMeta(func(metadata headgate.Metadata) (extractorTenant, error) {
+	badMeta := headgate.ExtractMeta(func(headgate.Metadata) (extractorTenant, error) {
 		return "", errors.New("missing tenant header")
 	})
 	if err := headgate.RegisterExtracted1[badMetadataMessage](registry, badMeta,

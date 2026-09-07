@@ -265,9 +265,9 @@ func TestStuckHandlerFiresOnlyForTrackedWorkStillLiveAfterLeaseLossAndFenceRejec
 	store := &loseTrackedRenewStore{MemStore: New()}
 	started := make(chan struct{})
 	release := make(chan struct{})
+	writeFinished := make(chan struct{})
 	events := make(chan headgate.StuckJobEvent, 1)
 	var releaseOnce sync.Once
-	var attemptedAfterStuck atomic.Bool
 	registry := headgate.NewRegistry()
 	if err := headgate.RegisterFunc[trackedTaskMessage](registry,
 		func(ctx context.Context, _ *headgate.Job[trackedTaskMessage]) error {
@@ -277,9 +277,9 @@ func TestStuckHandlerFiresOnlyForTrackedWorkStillLiveAfterLeaseLossAndFenceRejec
 				// but this goroutine remains part of the attempt until the callback
 				// releases it.
 				<-release
-				attemptedAfterStuck.Store(true)
 				lease := store.lastLease.Load().(headgate.LeaseRef)
 				err := store.Ack(context.Background(), lease, headgate.OutcomeSuccess, "", 0)
+				close(writeFinished)
 				if !errors.Is(err, headgate.ErrLeaseLost) {
 					return errors.New("superseded holder crossed the Store fence")
 				}
@@ -325,11 +325,9 @@ func TestStuckHandlerFiresOnlyForTrackedWorkStillLiveAfterLeaseLossAndFenceRejec
 	if event.Threshold() != 20*time.Millisecond {
 		t.Fatalf("event threshold = %s", event.Threshold())
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for !attemptedAfterStuck.Load() && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if !attemptedAfterStuck.Load() {
+	select {
+	case <-writeFinished:
+	case <-time.After(2 * time.Second):
 		t.Fatal("stubborn tracked task never reached its post-cancellation write")
 	}
 	if got := store.rejectedWrites.Load(); got != 1 {

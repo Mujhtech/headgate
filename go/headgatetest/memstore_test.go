@@ -1,7 +1,7 @@
 package headgatetest
 
-// The proof that matters (adaptive admission's port lesson again): the REAL Runner drains the memory
-// store unchanged — typed dispatch, retries, uniqueness, quarantine, retention — with
+// The real Runner drains the memory store unchanged—typed dispatch, retries,
+// uniqueness, quarantine, and retention—with
 // no database anywhere.
 
 import (
@@ -62,7 +62,7 @@ func TestTheRealRunnerDrainsTheMemoryStore(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// Round 32k: the ASSERT-ENQUEUED helper, used rather than merely shipped. It asks the
+	// Exercise the assert-enqueued helper with the question a producer test actually asks.
 	// question a producer test actually has ("did three memtest:msg jobs land on queue
 	// `mem`?") instead of the question the id-lookup form forces ("is `m-ok` present?",
 	// which presumes the answer).
@@ -135,7 +135,7 @@ func TestLifecycleFidelity(t *testing.T) {
 		t.Fatalf("admit: %d %v", len(units), err)
 	}
 	s.NowFunc = func() time.Time { return time.Now().Add(time.Minute) }
-	// Round 32h: this counted two records and inspected only rec[0] — the quarantine
+	// Inspect both records; checking only rec[0] could hide a quarantine regression
 	// arm could have regressed for exactly one of the two and still passed, and the
 	// NAMES of the reclaimed jobs were never checked at all.
 	rec, err := s.ReclaimExpired(ctx, 10)
@@ -471,7 +471,7 @@ func TestWeightedRateCostsAreChargedAndReconciledUnderTheFence(t *testing.T) {
 
 // idempotent enqueue identity the strict caller-supplied id contract, at the store port.
 //
-// Before round 32 every backend answered a repeated id the same wrong way: a bare
+// Repeated IDs must distinguish idempotent replay from conflicting content; a bare
 // "duplicate job id" that the API served as a 400, whether or not the caller was simply
 // retrying the identical enqueue. The contract is now split by CONTENT.
 func TestCallerSuppliedIDIsIdempotentOnMatchAndConflictsOnChange(t *testing.T) {
@@ -552,8 +552,7 @@ func TestStoreEnqueueEnforcesTheKindFormatRule(t *testing.T) {
 }
 
 // ===========================================================================
-// Round 32k. Four capabilities the register claimed and round 32j's evidence linter
-// could not resolve to anything: the assert-enqueued helper, the execute-one-job helper,
+// These tests exercise the assert-enqueued helper, the execute-one-job helper,
 // alias DISPATCH (as opposed to alias declaration), and the IsFailure port. All four are
 // provable with no database, which is why they belong here. Rust twins live in
 // crates/headgate-testkit/tests/memstore.rs.
@@ -666,7 +665,7 @@ func TestAJobEnqueuedUnderTheOldKindDispatchesToTheRenamedHandler(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	// Round 32k: PERFORM_ONE, used rather than merely shipped — one job, real dispatch
+	// PerformOne must use the real dispatch path and return the runtime's own verdict.
 	// path, and the runtime's own verdict rather than a re-read of the store's.
 	first, ok, err := r.PerformOne(ctx)
 	if err != nil || !ok {
@@ -697,8 +696,7 @@ func TestAJobEnqueuedUnderTheOldKindDispatchesToTheRenamedHandler(t *testing.T) 
 	}
 }
 
-// failure classification the IsFailure port — the generalization of OutcomeRateLimited that round 32j found
-// had ZERO coverage in either language: the word appeared in no test file at all.
+// IsFailure generalizes OutcomeRateLimited and needs direct behavioral coverage.
 // Returning false must requeue the job with NO attempt consumed, NO crash attributed and
 // NO failure recorded.
 func TestAnErrorIsFailureDeclinesConsumesNoAttemptAndRecordsNoFailure(t *testing.T) {

@@ -62,8 +62,8 @@ func (s *workflowInspect) GetJob(_ context.Context, id string, _ bool) (*headgat
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if job := s.jobs[id]; job != nil {
-		copy := *job
-		return &copy, nil
+		clone := *job
+		return &clone, nil
 	}
 	return nil, nil
 }
@@ -180,9 +180,9 @@ func (s *workflowInspect) GetJobCheckpoint(_ context.Context, id string) (*headg
 	if checkpoint == nil {
 		return nil, nil
 	}
-	copy := *checkpoint
-	copy.Cursor = append([]byte(nil), checkpoint.Cursor...)
-	return &copy, nil
+	clone := *checkpoint
+	clone.Cursor = append([]byte(nil), checkpoint.Cursor...)
+	return &clone, nil
 }
 
 func task(kind string) headgate.Envelope {

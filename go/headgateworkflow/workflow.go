@@ -3,20 +3,15 @@
 package headgateworkflow
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
-	"strings"
-	"sync"
 	"time"
 
-	"cel.dev/cel-go/cel"
 	headgate "github.com/mujhtech/headgate/go"
 )
 
+// Workflow internal job kinds and bounded graph limits.
 const (
 	CoordinatorKind   = "headgate:workflow"
 	defaultRetention  = int64((7 * 24 * time.Hour) / time.Millisecond)
@@ -61,6 +56,7 @@ type Workflow struct {
 	retryPolicy         *WorkflowRetryPolicy
 }
 
+// WorkflowRetryPolicy bounds automatic failed-subgraph retry generations and delay.
 type WorkflowRetryPolicy struct {
 	MaxGenerations uint32 `json:"max_generations"`
 	BackoffMs      int64  `json:"backoff_ms"`
@@ -145,6 +141,7 @@ func PrepareBundle(workflows ...*Workflow) ([]headgate.Envelope, error) {
 	return batch, nil
 }
 
+// NewGraft creates an additive mutation against an active workflow revision.
 func NewGraft(workflowID string, expectedRevision uint64) *WorkflowGraft {
 	return &WorkflowGraft{
 		workflowID: workflowID, expectedRevision: expectedRevision,
@@ -152,11 +149,13 @@ func NewGraft(workflowID string, expectedRevision uint64) *WorkflowGraft {
 	}
 }
 
+// Queue selects the queue for the graft receipt.
 func (g *WorkflowGraft) Queue(queue string) *WorkflowGraft {
 	g.queue = queue
 	return g
 }
 
+// Retention sets how long the graft receipt is retained after completion.
 func (g *WorkflowGraft) Retention(d time.Duration) error {
 	if d < time.Millisecond {
 		return errors.New("headgate workflow: graft retention must be at least 1ms")
@@ -165,11 +164,13 @@ func (g *WorkflowGraft) Retention(d time.Duration) error {
 	return nil
 }
 
+// Add appends an ordinary task node to the graft.
 func (g *WorkflowGraft) Add(name string, env headgate.Envelope, deps ...string) *WorkflowGraft {
 	g.nodes = append(g.nodes, draftNode{name: name, kind: workflowTask, env: env, deps: append([]string{}, deps...)})
 	return g
 }
 
+// Prepare validates the graft and returns its atomic enqueue batch.
 func (g *WorkflowGraft) Prepare() ([]headgate.Envelope, error) {
 	if g.workflowID == "" {
 		return nil, errors.New("headgate workflow: workflow id must not be empty")
@@ -282,15 +283,18 @@ func validateGraftNodes(nodes []nodeSpec) error {
 	return nil
 }
 
+// New creates an empty workflow builder with default queue and retention settings.
 func New(id string) *Workflow {
 	return &Workflow{id: id, coordinatorQueue: "headgate-workflow", retentionMs: defaultRetention}
 }
 
+// CoordinatorQueue selects the queue used by the workflow coordinator.
 func (w *Workflow) CoordinatorQueue(queue string) *Workflow {
 	w.coordinatorQueue = queue
 	return w
 }
 
+// Retention sets how long completed workflow jobs remain inspectable.
 func (w *Workflow) Retention(d time.Duration) error {
 	if d < time.Millisecond {
 		return errors.New("headgate workflow: retention must be at least 1ms")
@@ -317,6 +321,7 @@ func (w *Workflow) AutomaticRetry(maxGenerations uint32, backoff time.Duration) 
 	return nil
 }
 
+// Add appends an ordinary task node to the workflow.
 func (w *Workflow) Add(name string, env headgate.Envelope, deps ...string) *Workflow {
 	w.nodes = append(w.nodes, draftNode{name: name, kind: workflowTask, env: env, deps: append([]string{}, deps...)})
 	return w
@@ -363,6 +368,7 @@ func (w *Workflow) AddCondition(name, expression string, deps ...string) *Workfl
 	return w
 }
 
+// Prepare validates the graph and returns one atomic coordinator-and-node enqueue batch.
 func (w *Workflow) Prepare() ([]headgate.Envelope, error) {
 	if w.id == "" {
 		return nil, errors.New("headgate workflow: id must not be empty")
@@ -553,6 +559,7 @@ type nodeSpec struct {
 	Condition       string           `json:"condition,omitempty"`
 }
 
+// CoordinatorArgs is the durable payload consumed by the workflow coordinator.
 type CoordinatorArgs struct {
 	WorkflowID          string               `json:"workflow_id"`
 	Nodes               []nodeSpec           `json:"nodes"`
@@ -560,57 +567,73 @@ type CoordinatorArgs struct {
 	RetryPolicy         *WorkflowRetryPolicy `json:"retry_policy,omitempty"`
 }
 
+// Kind returns the workflow coordinator job kind.
 func (CoordinatorArgs) Kind() string { return CoordinatorKind }
 
-const SignalKind = "headgate:workflow-signal"
-const TimerKind = "headgate:workflow-timer"
-const ChildWorkflowKind = "headgate:workflow-child"
-const GraftKind = "headgate:workflow-graft"
-const RetryKind = "headgate:workflow-retry"
-const ConditionKind = "headgate:workflow-condition"
+// Internal workflow job kinds registered by RegisterCoordinator.
+const (
+	SignalKind        = "headgate:workflow-signal"
+	TimerKind         = "headgate:workflow-timer"
+	ChildWorkflowKind = "headgate:workflow-child"
+	GraftKind         = "headgate:workflow-graft"
+	RetryKind         = "headgate:workflow-retry"
+	ConditionKind     = "headgate:workflow-condition"
+)
 
+// SignalArgs is the durable payload for a signal-wait node.
 type SignalArgs struct {
 	WorkflowID string `json:"workflow_id"`
 	Signal     string `json:"signal"`
 }
 
+// Kind returns the workflow signal job kind.
 func (SignalArgs) Kind() string { return SignalKind }
 
+// TimerArgs is the durable payload for an absolute or relative timer node.
 type TimerArgs struct {
 	WorkflowID string `json:"workflow_id"`
 	WakeAtMs   int64  `json:"wake_at_ms"`
 	DelayMs    int64  `json:"delay_ms"`
 }
 
+// Kind returns the workflow timer job kind.
 func (TimerArgs) Kind() string { return TimerKind }
 
+// ChildWorkflowArgs is the durable payload for a child-workflow link.
 type ChildWorkflowArgs struct {
 	ParentWorkflowID string `json:"parent_workflow_id"`
 	ChildWorkflowID  string `json:"child_workflow_id"`
 }
 
+// ConditionArgs is the durable payload for a CEL condition node.
 type ConditionArgs struct {
 	WorkflowID string `json:"workflow_id"`
 	Expression string `json:"expression"`
 }
 
+// Kind returns the workflow condition job kind.
 func (ConditionArgs) Kind() string { return ConditionKind }
 
+// Kind returns the child-workflow link job kind.
 func (ChildWorkflowArgs) Kind() string { return ChildWorkflowKind }
 
+// GraftArgs is the revision-checked durable payload for an additive graph mutation.
 type GraftArgs struct {
 	WorkflowID       string     `json:"workflow_id"`
 	ExpectedRevision uint64     `json:"expected_revision"`
 	Nodes            []nodeSpec `json:"nodes"`
 }
 
+// Kind returns the workflow graft job kind.
 func (GraftArgs) Kind() string { return GraftKind }
 
+// RetryArgs is the revision-checked durable payload for failed-subgraph retry.
 type RetryArgs struct {
 	WorkflowID       string `json:"workflow_id"`
 	ExpectedRevision uint64 `json:"expected_revision"`
 }
 
+// Kind returns the workflow retry job kind.
 func (RetryArgs) Kind() string { return RetryKind }
 
 func graftReceiptID(workflowID string, revision uint64) string {
@@ -621,6 +644,7 @@ func retryReceiptID(workflowID string, revision uint64) string {
 	return fmt.Sprintf("%s:retry:%d", workflowID, revision)
 }
 
+// SignalReceipt summarizes one durable signal emission and immediate promotions.
 type SignalReceipt struct {
 	Matched  int            `json:"matched"`
 	Promoted int            `json:"promoted"`
@@ -628,6 +652,7 @@ type SignalReceipt struct {
 	Emission WorkflowSignal `json:"emission"`
 }
 
+// SignalEmission is an application signal request with idempotency and JSON context.
 type SignalEmission struct {
 	Signal         string
 	IdempotencyKey string
@@ -635,6 +660,7 @@ type SignalEmission struct {
 	Source         json.RawMessage
 }
 
+// WorkflowSignal is a stored signal-history entry.
 type WorkflowSignal struct {
 	ID             uint64          `json:"id"`
 	Signal         string          `json:"signal"`
@@ -644,11 +670,13 @@ type WorkflowSignal struct {
 	RecordedAtMs   int64           `json:"recorded_at_ms"`
 }
 
+// RetryReceipt identifies the workflow revision and generation opened by a retry.
 type RetryReceipt struct {
 	Revision   uint64
 	Generation uint32
 }
 
+// WorkflowRecovery supplies replacement payload and quarantine handling for one failed node.
 type WorkflowRecovery struct {
 	Node              string
 	Payload           []byte
@@ -656,6 +684,7 @@ type WorkflowRecovery struct {
 	ReleaseQuarantine bool
 }
 
+// CancelReceipt counts the workflows and jobs affected by cancellation.
 type CancelReceipt struct {
 	Workflows int `json:"workflows"`
 	Jobs      int `json:"jobs"`
@@ -663,1838 +692,3 @@ type CancelReceipt struct {
 
 // CancelWorkflow cancels the workflow and optionally all linked children. Traversal
 // and point reads are bounded by the workflow node limit.
-func CancelWorkflow(
-	ctx context.Context,
-	inspect headgate.InspectStore,
-	workflowID string,
-	propagateChildren bool,
-) (CancelReceipt, error) {
-	if workflowID == "" {
-		return CancelReceipt{}, errors.New("headgate workflow: workflow id must not be empty")
-	}
-	pending := []string{workflowID}
-	visited := make(map[string]struct{})
-	receipt := CancelReceipt{}
-	for len(pending) != 0 {
-		current := pending[0]
-		pending = pending[1:]
-		if _, exists := visited[current]; exists {
-			continue
-		}
-		visited[current] = struct{}{}
-		if len(visited) > maxWorkflowNodes {
-			return CancelReceipt{}, errors.New("headgate workflow: cancellation exceeds the bounded nested-workflow limit")
-		}
-		coordinatorID := current + ":coordinator"
-		coordinator, err := inspect.GetJob(ctx, coordinatorID, true)
-		if err != nil {
-			return CancelReceipt{}, err
-		}
-		if coordinator == nil {
-			return CancelReceipt{}, fmt.Errorf("headgate workflow: workflow %q was not found", current)
-		}
-		var args CoordinatorArgs
-		if err := json.Unmarshal(coordinator.Payload, &args); err != nil {
-			return CancelReceipt{}, fmt.Errorf("headgate workflow: invalid coordinator: %w", err)
-		}
-		if propagateChildren {
-			for _, node := range args.Nodes {
-				if node.ChildWorkflowID != "" {
-					pending = append(pending, node.ChildWorkflowID)
-				}
-			}
-		}
-		ids := make([]string, 0, len(args.Nodes)+1)
-		for _, node := range args.Nodes {
-			ids = append(ids, node.JobID)
-		}
-		ids = append(ids, coordinatorID)
-		for _, id := range ids {
-			job, err := inspect.GetJob(ctx, id, false)
-			if err != nil {
-				return CancelReceipt{}, err
-			}
-			if job != nil && cancellableWorkflowState(job.State) {
-				if err := inspect.OperatorCancel(ctx, id); err != nil {
-					return CancelReceipt{}, err
-				}
-				receipt.Jobs++
-			}
-		}
-	}
-	receipt.Workflows = len(visited)
-	return receipt, nil
-}
-
-func cancellableWorkflowState(state string) bool {
-	switch state {
-	case "pending", "scheduled", "available", "running", "retryable":
-		return true
-	default:
-		return false
-	}
-}
-
-type WorkflowEvent struct {
-	Sequence   uint64 `json:"sequence"`
-	Event      string `json:"event"`
-	Node       string `json:"node,omitempty"`
-	Revision   uint64 `json:"revision"`
-	Generation uint32 `json:"generation"`
-	AtMs       *int64 `json:"at_ms,omitempty"`
-}
-
-// WorkflowNodeKind identifies the durable role a node plays in a workflow graph.
-type WorkflowNodeKind string
-
-const (
-	WorkflowNodeTask          WorkflowNodeKind = "task"
-	WorkflowNodeSignal        WorkflowNodeKind = "signal"
-	WorkflowNodeTimer         WorkflowNodeKind = "timer"
-	WorkflowNodeChildWorkflow WorkflowNodeKind = "child_workflow"
-	WorkflowNodeCondition     WorkflowNodeKind = "condition"
-)
-
-// WorkflowNode is one node in an inspected graph. Dependencies and Dependents contain
-// node names; JobID identifies the underlying Headgate job.
-type WorkflowNode struct {
-	Name            string           `json:"name"`
-	JobID           string           `json:"job_id"`
-	Kind            WorkflowNodeKind `json:"kind"`
-	JobKind         string           `json:"job_kind"`
-	State           string           `json:"state"`
-	Dependencies    []string         `json:"dependencies"`
-	Dependents      []string         `json:"dependents"`
-	Signal          string           `json:"signal,omitempty"`
-	WakeAtMs        *int64           `json:"wake_at_ms,omitempty"`
-	DelayMs         *int64           `json:"delay_ms,omitempty"`
-	ChildWorkflowID string           `json:"child_workflow_id,omitempty"`
-	Condition       string           `json:"condition,omitempty"`
-	CompletedAtMs   *int64           `json:"completed_at_ms,omitempty"`
-}
-
-// WorkflowSnapshot is a bounded point-in-time view of the complete accepted graph,
-// including additive grafts accepted in later revisions.
-type WorkflowSnapshot struct {
-	WorkflowID          string               `json:"workflow_id"`
-	CoordinatorJobID    string               `json:"coordinator_job_id"`
-	CoordinatorState    string               `json:"coordinator_state"`
-	Revision            uint64               `json:"revision"`
-	Generation          uint32               `json:"generation"`
-	Failed              bool                 `json:"failed"`
-	FailedSubgraphRetry bool                 `json:"failed_subgraph_retry"`
-	RetryPolicy         *WorkflowRetryPolicy `json:"retry_policy,omitempty"`
-	Nodes               []WorkflowNode       `json:"nodes"`
-}
-
-// WorkflowSummary is one coordinator entry returned by ListWorkflows.
-type WorkflowSummary struct {
-	WorkflowID       string `json:"workflow_id"`
-	CoordinatorJobID string `json:"coordinator_job_id"`
-	State            string `json:"state"`
-	EnqueuedAtMs     int64  `json:"enqueued_at_ms"`
-	ScheduledAtMs    int64  `json:"scheduled_at_ms"`
-	FinalizedAtMs    *int64 `json:"finalized_at_ms,omitempty"`
-}
-
-// WorkflowPage is one bounded page of workflow coordinators.
-type WorkflowPage struct {
-	Workflows  []WorkflowSummary `json:"workflows"`
-	NextCursor string            `json:"next_cursor,omitempty"`
-}
-
-// ListWorkflows lists workflow coordinators without loading every graph. Use
-// InspectWorkflow for a selected execution that needs node-level detail.
-func ListWorkflows(ctx context.Context, inspect headgate.InspectStore, cursor string, limit uint32) (WorkflowPage, error) {
-	if limit == 0 || limit > 200 {
-		return WorkflowPage{}, errors.New("headgate workflow: list limit must be between 1 and 200")
-	}
-	page, err := inspect.ListJobs(ctx, headgate.JobFilter{Kind: headgate.Ptr(CoordinatorKind)}, cursor, limit)
-	if err != nil {
-		return WorkflowPage{}, err
-	}
-	workflows := make([]WorkflowSummary, 0, len(page.Jobs))
-	for _, job := range page.Jobs {
-		workflowID := strings.TrimSuffix(job.ID, ":coordinator")
-		workflows = append(workflows, WorkflowSummary{
-			WorkflowID: workflowID, CoordinatorJobID: job.ID, State: job.State,
-			EnqueuedAtMs: job.EnqueuedAtMs, ScheduledAtMs: job.ScheduledAtMs,
-			FinalizedAtMs: job.FinalizedAtMs,
-		})
-	}
-	return WorkflowPage{Workflows: workflows, NextCursor: page.NextCursor}, nil
-}
-
-// Node returns a graph node by its workflow-local name.
-func (s *WorkflowSnapshot) Node(name string) *WorkflowNode {
-	for i := range s.Nodes {
-		if s.Nodes[i].Name == name {
-			return &s.Nodes[i]
-		}
-	}
-	return nil
-}
-
-// Dependencies returns the named node's immediate prerequisites.
-func (s *WorkflowSnapshot) Dependencies(name string) ([]WorkflowNode, bool) {
-	node := s.Node(name)
-	if node == nil {
-		return nil, false
-	}
-	result := make([]WorkflowNode, 0, len(node.Dependencies))
-	for _, dependency := range node.Dependencies {
-		if found := s.Node(dependency); found != nil {
-			result = append(result, *found)
-		}
-	}
-	return result, true
-}
-
-// Dependents returns the nodes that immediately depend on the named node.
-func (s *WorkflowSnapshot) Dependents(name string) ([]WorkflowNode, bool) {
-	node := s.Node(name)
-	if node == nil {
-		return nil, false
-	}
-	result := make([]WorkflowNode, 0, len(node.Dependents))
-	for _, dependent := range node.Dependents {
-		if found := s.Node(dependent); found != nil {
-			result = append(result, *found)
-		}
-	}
-	return result, true
-}
-
-// InspectWorkflow returns graph topology and live execution state without exposing
-// application task payloads.
-func InspectWorkflow(ctx context.Context, inspect headgate.InspectStore, workflowID string) (WorkflowSnapshot, error) {
-	if workflowID == "" {
-		return WorkflowSnapshot{}, errors.New("headgate workflow: workflow id must not be empty")
-	}
-	coordinatorID := workflowID + ":coordinator"
-	coordinator, err := inspect.GetJob(ctx, coordinatorID, true)
-	if err != nil {
-		return WorkflowSnapshot{}, err
-	}
-	if coordinator == nil {
-		return WorkflowSnapshot{}, fmt.Errorf("headgate workflow: workflow %q was not found", workflowID)
-	}
-	var base CoordinatorArgs
-	if err := json.Unmarshal(coordinator.Payload, &base); err != nil {
-		return WorkflowSnapshot{}, fmt.Errorf("headgate workflow: invalid coordinator: %w", err)
-	}
-	cursor, err := loadWorkflowCursor(ctx, inspect, coordinatorID, coordinator.State)
-	if err != nil {
-		return WorkflowSnapshot{}, err
-	}
-	effective := effectiveWorkflow(base, cursor)
-	dependents := make(map[string][]string, len(effective.Nodes))
-	for _, node := range effective.Nodes {
-		for _, dependency := range node.Deps {
-			dependents[dependency] = append(dependents[dependency], node.Name)
-		}
-	}
-	completed := make(map[string]struct{}, len(cursor.Completed))
-	for _, name := range cursor.Completed {
-		completed[name] = struct{}{}
-	}
-	nodes := make([]WorkflowNode, len(effective.Nodes))
-	semaphore := make(chan struct{}, workflowWorkers)
-	var reads sync.WaitGroup
-	var errorMu sync.Mutex
-	var firstError error
-	for index, node := range effective.Nodes {
-		semaphore <- struct{}{}
-		reads.Add(1)
-		go func() {
-			defer reads.Done()
-			defer func() { <-semaphore }()
-			job, err := inspect.GetJob(ctx, node.JobID, false)
-			if err != nil {
-				errorMu.Lock()
-				if firstError == nil {
-					firstError = err
-				}
-				errorMu.Unlock()
-				return
-			}
-			state, jobKind := "missing", ""
-			if job != nil {
-				state, jobKind = job.State, job.Kind
-			} else if _, ok := completed[node.Name]; ok {
-				state = "completed"
-			}
-			var wakeAtMs, delayMs, completedAtMs *int64
-			if node.Kind == workflowTimer {
-				if node.WakeAtMs != 0 {
-					value := node.WakeAtMs
-					wakeAtMs = &value
-				}
-				if node.DelayMs != 0 {
-					value := node.DelayMs
-					delayMs = &value
-				}
-			}
-			if value, ok := cursor.CompletedAtMs[node.Name]; ok {
-				completedAtMs = &value
-			}
-			nodes[index] = WorkflowNode{
-				Name: node.Name, JobID: node.JobID, Kind: publicWorkflowNodeKind(node.Kind),
-				JobKind: jobKind, State: state, Dependencies: workflowNodeNames(node.Deps),
-				Dependents: workflowNodeNames(dependents[node.Name]), Signal: node.Signal,
-				WakeAtMs: wakeAtMs, DelayMs: delayMs, ChildWorkflowID: node.ChildWorkflowID,
-				Condition: node.Condition, CompletedAtMs: completedAtMs,
-			}
-		}()
-	}
-	reads.Wait()
-	if firstError != nil {
-		return WorkflowSnapshot{}, firstError
-	}
-	return WorkflowSnapshot{
-		WorkflowID: workflowID, CoordinatorJobID: coordinatorID, CoordinatorState: coordinator.State,
-		Revision: cursor.Revision, Generation: cursor.Generation, Failed: cursor.Failed,
-		FailedSubgraphRetry: base.FailedSubgraphRetry, RetryPolicy: base.RetryPolicy, Nodes: nodes,
-	}, nil
-}
-
-func workflowNodeNames(names []string) []string {
-	result := make([]string, len(names))
-	copy(result, names)
-	return result
-}
-
-func publicWorkflowNodeKind(kind workflowNodeKind) WorkflowNodeKind {
-	switch kind {
-	case workflowSignal:
-		return WorkflowNodeSignal
-	case workflowTimer:
-		return WorkflowNodeTimer
-	case workflowChild:
-		return WorkflowNodeChildWorkflow
-	case workflowCondition:
-		return WorkflowNodeCondition
-	default:
-		return WorkflowNodeTask
-	}
-}
-
-// GetWorkflowNode returns one node by its workflow-local name.
-func GetWorkflowNode(ctx context.Context, inspect headgate.InspectStore, workflowID, node string) (WorkflowNode, error) {
-	snapshot, err := InspectWorkflow(ctx, inspect, workflowID)
-	if err != nil {
-		return WorkflowNode{}, err
-	}
-	found := snapshot.Node(node)
-	if found == nil {
-		return WorkflowNode{}, fmt.Errorf("headgate workflow: workflow node %q was not found", node)
-	}
-	return *found, nil
-}
-
-// WorkflowDependencies returns a node's immediate prerequisites.
-func WorkflowDependencies(ctx context.Context, inspect headgate.InspectStore, workflowID, node string) ([]WorkflowNode, error) {
-	snapshot, err := InspectWorkflow(ctx, inspect, workflowID)
-	if err != nil {
-		return nil, err
-	}
-	dependencies, ok := snapshot.Dependencies(node)
-	if !ok {
-		return nil, fmt.Errorf("headgate workflow: workflow node %q was not found", node)
-	}
-	return dependencies, nil
-}
-
-// WorkflowDependents returns nodes that immediately depend on the named node.
-func WorkflowDependents(ctx context.Context, inspect headgate.InspectStore, workflowID, node string) ([]WorkflowNode, error) {
-	snapshot, err := InspectWorkflow(ctx, inspect, workflowID)
-	if err != nil {
-		return nil, err
-	}
-	dependents, ok := snapshot.Dependents(node)
-	if !ok {
-		return nil, fmt.Errorf("headgate workflow: workflow node %q was not found", node)
-	}
-	return dependents, nil
-}
-
-func loadWorkflowCursor(ctx context.Context, inspect headgate.InspectStore, coordinatorID, coordinatorState string) (workflowCursor, error) {
-	cursor := workflowCursor{Revision: 1, Generation: 1}
-	checkpointStore, ok := inspect.(headgate.CheckpointInspectStore)
-	if !ok {
-		return workflowCursor{}, errors.New("headgate workflow: inspection requires checkpoint inspection support")
-	}
-	checkpoint, err := checkpointStore.GetJobCheckpoint(ctx, coordinatorID)
-	if err != nil {
-		return workflowCursor{}, err
-	}
-	if checkpoint == nil {
-		return cursor, nil
-	}
-	if checkpoint.CursorStep != "" && checkpoint.CursorStep != "headgate:workflow-state" {
-		return workflowCursor{}, errors.New("headgate workflow: coordinator has no workflow-state checkpoint")
-	}
-	bytes := checkpoint.Cursor
-	if len(bytes) == 0 {
-		if outputStore, ok := inspect.(interface {
-			GetJobOutput(context.Context, string) (*headgate.JobOutput, error)
-		}); ok {
-			output, err := outputStore.GetJobOutput(ctx, coordinatorID)
-			if err != nil {
-				return workflowCursor{}, err
-			}
-			if output != nil {
-				bytes = output.Bytes
-			}
-		}
-	}
-	if len(bytes) == 0 {
-		if terminalWorkflowState(coordinatorState) {
-			return workflowCursor{}, errors.New("headgate workflow: terminal workflow has no durable coordinator output")
-		}
-		return cursor, nil
-	}
-	if err := json.Unmarshal(bytes, &cursor); err != nil {
-		return workflowCursor{}, fmt.Errorf("headgate workflow: invalid cursor: %w", err)
-	}
-	cursor.normalize()
-	return cursor, nil
-}
-
-func terminalWorkflowState(state string) bool {
-	switch state {
-	case "completed", "archived", "cancelled", "quarantined", "undecodable":
-		return true
-	default:
-		return false
-	}
-}
-
-// WorkflowEvents returns the bounded durable event history from the coordinator's
-// fenced checkpoint.
-func WorkflowEvents(ctx context.Context, inspect headgate.InspectStore, workflowID string) ([]WorkflowEvent, error) {
-	checkpointStore, ok := inspect.(headgate.CheckpointInspectStore)
-	if !ok {
-		return nil, errors.New("headgate workflow: history requires checkpoint inspection support")
-	}
-	checkpoint, err := checkpointStore.GetJobCheckpoint(ctx, workflowID+":coordinator")
-	if err != nil {
-		return nil, err
-	}
-	if checkpoint == nil {
-		return nil, fmt.Errorf("headgate workflow: workflow %q was not found", workflowID)
-	}
-	if checkpoint.CursorStep != "" && checkpoint.CursorStep != "headgate:workflow-state" {
-		return nil, errors.New("headgate workflow: coordinator has no workflow-state checkpoint")
-	}
-	bytes := checkpoint.Cursor
-	if len(bytes) == 0 {
-		outputStore, ok := inspect.(interface {
-			GetJobOutput(context.Context, string) (*headgate.JobOutput, error)
-		})
-		if !ok {
-			return nil, errors.New("headgate workflow: history requires output inspection support")
-		}
-		output, err := outputStore.GetJobOutput(ctx, workflowID+":coordinator")
-		if err != nil {
-			return nil, err
-		}
-		if output == nil {
-			return nil, errors.New("headgate workflow: workflow has no durable history")
-		}
-		bytes = output.Bytes
-	}
-	var cursor workflowCursor
-	if err := json.Unmarshal(bytes, &cursor); err != nil {
-		return nil, fmt.Errorf("headgate workflow: invalid cursor: %w", err)
-	}
-	return append([]WorkflowEvent(nil), cursor.Events...), nil
-}
-
-// RequestFailedSubgraphRetry durably enqueues the retry receipt before reopening the
-// archived coordinator. Successful ancestors remain completed.
-func RequestFailedSubgraphRetry(
-	ctx context.Context,
-	inspect headgate.InspectStore,
-	workflowID string,
-	expectedRevision uint64,
-) (RetryReceipt, error) {
-	return RequestFailedSubgraphRetryWithRecovery(ctx, inspect, workflowID, expectedRevision, nil)
-}
-
-func RequestFailedSubgraphRetryWithRecovery(
-	ctx context.Context,
-	inspect headgate.InspectStore,
-	workflowID string,
-	expectedRevision uint64,
-	recoveries []WorkflowRecovery,
-) (RetryReceipt, error) {
-	if workflowID == "" || expectedRevision == 0 {
-		return RetryReceipt{}, errors.New("headgate workflow: workflow id and expected revision must be set")
-	}
-	coordinatorID := workflowID + ":coordinator"
-	coordinator, err := inspect.GetJob(ctx, coordinatorID, true)
-	if err != nil {
-		return RetryReceipt{}, err
-	}
-	if coordinator == nil {
-		return RetryReceipt{}, fmt.Errorf("headgate workflow: workflow %q was not found", workflowID)
-	}
-	var args CoordinatorArgs
-	if err := json.Unmarshal(coordinator.Payload, &args); err != nil {
-		return RetryReceipt{}, fmt.Errorf("headgate workflow: invalid coordinator: %w", err)
-	}
-	if !args.FailedSubgraphRetry {
-		return RetryReceipt{}, errors.New("headgate workflow: failed-subgraph retry was not enabled")
-	}
-	if coordinator.State != "archived" {
-		return RetryReceipt{}, fmt.Errorf("headgate workflow: retry requires an archived coordinator, found %q", coordinator.State)
-	}
-	nodes := make(map[string]nodeSpec, len(args.Nodes))
-	for _, node := range args.Nodes {
-		nodes[node.Name] = node
-	}
-	seenRecovery := make(map[string]struct{}, len(recoveries))
-	for _, recovery := range recoveries {
-		if _, duplicate := seenRecovery[recovery.Node]; duplicate {
-			return RetryReceipt{}, fmt.Errorf("headgate workflow: recovery repeats node %q", recovery.Node)
-		}
-		seenRecovery[recovery.Node] = struct{}{}
-		node, exists := nodes[recovery.Node]
-		if !exists {
-			return RetryReceipt{}, fmt.Errorf("headgate workflow: recovery names unknown node %q", recovery.Node)
-		}
-		job, err := inspect.GetJob(ctx, node.JobID, true)
-		if err != nil {
-			return RetryReceipt{}, err
-		}
-		if job == nil {
-			return RetryReceipt{}, fmt.Errorf("headgate workflow: node %q is missing", node.JobID)
-		}
-		switch job.State {
-		case "quarantined":
-			if !recovery.ReleaseQuarantine {
-				return RetryReceipt{}, fmt.Errorf("headgate workflow: node %q requires explicit quarantine release", recovery.Node)
-			}
-			if _, err := inspect.QuarantineRelease(ctx, job.Fingerprint); err != nil {
-				return RetryReceipt{}, err
-			}
-		case "undecodable":
-			if recovery.Payload == nil || recovery.SchemaVersion == 0 {
-				return RetryReceipt{}, fmt.Errorf("headgate workflow: undecodable node %q requires payload and schema_version", recovery.Node)
-			}
-			if err := inspect.EditPayload(ctx, node.JobID, recovery.Payload, recovery.SchemaVersion,
-				headgate.Fingerprint(job.Kind, recovery.Payload)); err != nil {
-				return RetryReceipt{}, err
-			}
-			if err := inspect.OperatorRetry(ctx, node.JobID); err != nil {
-				return RetryReceipt{}, err
-			}
-		case "archived", "cancelled":
-		case "available":
-			// A retry request may be replayed after recovery completed but before
-			// the coordinator was reopened.
-		default:
-			return RetryReceipt{}, fmt.Errorf("headgate workflow: node %q does not require recovery from %q", recovery.Node, job.State)
-		}
-	}
-	for _, node := range args.Nodes {
-		job, err := inspect.GetJob(ctx, node.JobID, false)
-		if err != nil {
-			return RetryReceipt{}, err
-		}
-		if job != nil && (job.State == "quarantined" || job.State == "undecodable") {
-			return RetryReceipt{}, fmt.Errorf(
-				"headgate workflow: node %q requires recovery from %q", node.Name, job.State,
-			)
-		}
-	}
-	checkpointStore, ok := inspect.(headgate.CheckpointInspectStore)
-	if !ok {
-		return RetryReceipt{}, errors.New("headgate workflow: retry requires checkpoint inspection support")
-	}
-	checkpoint, err := checkpointStore.GetJobCheckpoint(ctx, coordinatorID)
-	if err != nil {
-		return RetryReceipt{}, err
-	}
-	if checkpoint == nil || checkpoint.CursorStep != "headgate:workflow-state" || len(checkpoint.Cursor) == 0 {
-		return RetryReceipt{}, errors.New("headgate workflow: coordinator workflow-state checkpoint is missing")
-	}
-	var cursor workflowCursor
-	if err := json.Unmarshal(checkpoint.Cursor, &cursor); err != nil {
-		return RetryReceipt{}, fmt.Errorf("headgate workflow: invalid coordinator cursor: %w", err)
-	}
-	cursor.normalize()
-	if !cursor.Failed || cursor.Revision != expectedRevision {
-		return RetryReceipt{}, fmt.Errorf("headgate workflow: retry revision conflict: expected %d, current %d", expectedRevision, cursor.Revision)
-	}
-	if cursor.Revision == ^uint64(0) || cursor.Generation == ^uint32(0) {
-		return RetryReceipt{}, errors.New("headgate workflow: retry revision or generation would overflow")
-	}
-	nextRevision := cursor.Revision + 1
-	retry := RetryArgs{WorkflowID: workflowID, ExpectedRevision: expectedRevision}
-	payload, err := json.Marshal(retry)
-	if err != nil {
-		return RetryReceipt{}, err
-	}
-	receipt := headgate.Envelope{
-		ID: retryReceiptID(workflowID, nextRevision), Kind: RetryKind, SchemaVersion: 1,
-		Payload: payload, Queue: coordinator.Queue, Pending: true, RetentionMs: defaultRetention,
-		Fingerprint: headgate.Fingerprint(RetryKind, payload),
-	}
-	if err := inspect.Enqueue(ctx, []headgate.Envelope{receipt}); err != nil {
-		return RetryReceipt{}, err
-	}
-	if err := inspect.OperatorRetry(ctx, coordinatorID); err != nil {
-		current, readErr := inspect.GetJob(ctx, coordinatorID, false)
-		if readErr != nil {
-			return RetryReceipt{}, readErr
-		}
-		if current == nil || (current.State != "available" && current.State != "running") {
-			return RetryReceipt{}, err
-		}
-	}
-	return RetryReceipt{Revision: nextRevision, Generation: cursor.Generation + 1}, nil
-}
-
-// EmitSignal durably emits a named signal for an existing workflow. Repeating an
-// emission after its signal jobs become available, running, or completed succeeds.
-func EmitSignal(ctx context.Context, inspect headgate.InspectStore, workflowID, signal string) (SignalReceipt, error) {
-	return EmitSignalWith(ctx, inspect, workflowID, SignalEmission{
-		Signal: signal, IdempotencyKey: "legacy:" + signal, Payload: json.RawMessage("null"), Source: json.RawMessage("{}"),
-	})
-}
-
-// EmitSignalWith records the payload and emitter metadata before releasing matching
-// signal nodes. A replay with the same key returns the original emission and retries
-// promotion; reusing a key with different content is rejected.
-func EmitSignalWith(ctx context.Context, inspect headgate.InspectStore, workflowID string, emission SignalEmission) (SignalReceipt, error) {
-	signal := emission.Signal
-	if workflowID == "" || signal == "" {
-		return SignalReceipt{}, errors.New("headgate workflow: workflow id and signal must not be empty")
-	}
-	if emission.IdempotencyKey == "" {
-		return SignalReceipt{}, errors.New("headgate workflow: signal idempotency key must not be empty")
-	}
-	if len(emission.Payload) == 0 {
-		emission.Payload = json.RawMessage("null")
-	}
-	if len(emission.Source) == 0 {
-		emission.Source = json.RawMessage("{}")
-	}
-	payload, err := canonicalSignalJSON(emission.Payload)
-	if err != nil {
-		return SignalReceipt{}, errors.New("headgate workflow: signal payload and source must be valid JSON")
-	}
-	source, err := canonicalSignalJSON(emission.Source)
-	if err != nil {
-		return SignalReceipt{}, errors.New("headgate workflow: signal payload and source must be valid JSON")
-	}
-	emission.Payload, emission.Source = payload, source
-	if len(emission.Payload) > maxSignalPayload {
-		return SignalReceipt{}, errors.New("headgate workflow: signal payload must be at most 65536 bytes")
-	}
-	if len(emission.Source) > maxSignalSource {
-		return SignalReceipt{}, errors.New("headgate workflow: signal source must be at most 16384 bytes")
-	}
-	events, ok := inspect.(headgate.DurableEventStore)
-	if !ok {
-		return SignalReceipt{}, errors.New("headgate workflow: durable signal history is not supported by this backend")
-	}
-	coordinator, err := inspect.GetJob(ctx, workflowID+":coordinator", true)
-	if err != nil {
-		return SignalReceipt{}, err
-	}
-	if coordinator == nil {
-		return SignalReceipt{}, fmt.Errorf("headgate workflow: workflow %q was not found", workflowID)
-	}
-	var args CoordinatorArgs
-	if err := json.Unmarshal(coordinator.Payload, &args); err != nil {
-		return SignalReceipt{}, fmt.Errorf("headgate workflow: invalid coordinator: %w", err)
-	}
-	jobs := make([]string, 0)
-	for _, node := range args.Nodes {
-		if node.Kind == workflowSignal && node.Signal == signal {
-			jobs = append(jobs, node.JobID)
-		}
-	}
-	if len(jobs) == 0 {
-		return SignalReceipt{}, fmt.Errorf("headgate workflow: workflow %q has no signal %q", workflowID, signal)
-	}
-	stored, inserted, err := events.AppendDurableEvent(ctx, headgate.DurableEvent{
-		Scope: workflowSignalScope(workflowID), Topic: signal, IdempotencyKey: emission.IdempotencyKey,
-		Payload: emission.Payload, Source: emission.Source,
-	})
-	if err != nil {
-		return SignalReceipt{}, err
-	}
-	receipt := SignalReceipt{Matched: len(jobs), Inserted: inserted, Emission: publicWorkflowSignal(stored)}
-	for _, jobID := range jobs {
-		job, err := inspect.GetJob(ctx, jobID, false)
-		if err != nil {
-			return SignalReceipt{}, err
-		}
-		if job == nil {
-			return SignalReceipt{}, fmt.Errorf("headgate workflow: signal job %q was not found", jobID)
-		}
-		switch job.State {
-		case "pending":
-			if err := inspect.PromoteJob(ctx, jobID); err != nil {
-				current, readErr := inspect.GetJob(ctx, jobID, false)
-				if readErr != nil {
-					return SignalReceipt{}, readErr
-				}
-				if current == nil || !signalReceivedState(current.State) {
-					return SignalReceipt{}, err
-				}
-			} else {
-				receipt.Promoted++
-			}
-		case "available", "running", "completed":
-		default:
-			return SignalReceipt{}, fmt.Errorf("headgate workflow: signal job %q cannot be emitted from state %q", jobID, job.State)
-		}
-	}
-	return receipt, nil
-}
-
-func canonicalSignalJSON(raw json.RawMessage) (json.RawMessage, error) {
-	if !json.Valid(raw) {
-		return nil, errors.New("invalid JSON")
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	var value any
-	if err := decoder.Decode(&value); err != nil {
-		return nil, err
-	}
-	return json.Marshal(value)
-}
-
-func ListSignals(ctx context.Context, inspect headgate.InspectStore, workflowID string, beforeID uint64, limit uint32) ([]WorkflowSignal, error) {
-	if workflowID == "" {
-		return nil, errors.New("headgate workflow: workflow id must not be empty")
-	}
-	events, ok := inspect.(headgate.DurableEventStore)
-	if !ok {
-		return nil, errors.New("headgate workflow: durable signal history is not supported by this backend")
-	}
-	stored, err := events.ListDurableEvents(ctx, workflowSignalScope(workflowID), beforeID, limit)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]WorkflowSignal, len(stored))
-	for i, event := range stored {
-		out[i] = publicWorkflowSignal(event)
-	}
-	return out, nil
-}
-
-func workflowSignalScope(workflowID string) string { return "workflow:" + workflowID + ":signals" }
-func publicWorkflowSignal(event headgate.DurableEvent) WorkflowSignal {
-	return WorkflowSignal{ID: event.EventID, Signal: event.Topic, IdempotencyKey: event.IdempotencyKey, Payload: event.Payload, Source: event.Source, RecordedAtMs: event.RecordedAtMs}
-}
-
-func signalReceivedState(state string) bool {
-	return state == "available" || state == "running" || state == "completed"
-}
-
-// RegisterCoordinator installs the durable dependency resolver. Each tick performs one
-// bounded point read per node; it never scans queue depth.
-func RegisterCoordinator(registry *headgate.Registry, inspect headgate.InspectStore, poll time.Duration) error {
-	if poll < time.Millisecond {
-		return errors.New("headgate workflow: poll interval must be at least 1ms")
-	}
-	if err := registerVirtualHandlers(registry); err != nil {
-		return err
-	}
-	if err := headgate.RegisterFunc[ChildWorkflowArgs](registry, func(ctx context.Context, job *headgate.Job[ChildWorkflowArgs]) error {
-		if job.Args.ChildWorkflowID == "" || job.Args.ChildWorkflowID == job.Args.ParentWorkflowID {
-			return errors.New("headgate workflow: invalid child workflow link")
-		}
-		child, err := inspect.GetJob(ctx, job.Args.ChildWorkflowID+":coordinator", false)
-		if err != nil {
-			return err
-		}
-		if child == nil {
-			return fmt.Errorf("headgate workflow: child workflow %q was not found", job.Args.ChildWorkflowID)
-		}
-		switch child.State {
-		case "completed":
-			return nil
-		case "archived", "cancelled", "quarantined", "undecodable":
-			return headgate.ErrSkipJob
-		default:
-			return headgate.Snooze(poll)
-		}
-	}); err != nil {
-		return err
-	}
-	return headgate.RegisterFunc[CoordinatorArgs](registry, func(ctx context.Context, job *headgate.Job[CoordinatorArgs]) error {
-		return headgate.StepCursor(ctx, "headgate:workflow-state", func(ctx context.Context, cursor workflowCursor) error {
-			cursor.normalize()
-			if len(cursor.Events) == 0 {
-				if err := cursor.recordEvent("workflow_started", "", nil); err != nil {
-					return err
-				}
-				if err := persistWorkflowCursor(ctx, cursor); err != nil {
-					return err
-				}
-			}
-			if cursor.AutomaticRetryPending {
-				if err := enqueueAutomaticRetry(ctx, inspect, job.Args, &cursor, job.Queue); err != nil {
-					return err
-				}
-			}
-			if result, handled, err := reconcileRetry(ctx, inspect, job.Args, &cursor, func(cursor workflowCursor) error {
-				return persistWorkflowCursor(ctx, cursor)
-			}); err != nil {
-				return err
-			} else if handled {
-				if result == tickFailed {
-					return headgate.ErrSkipJob
-				}
-				return headgate.Snooze(poll)
-			}
-			if result, handled, err := reconcileGraft(ctx, inspect, job.Args, &cursor, func(cursor workflowCursor) error {
-				return persistWorkflowCursor(ctx, cursor)
-			}); err != nil {
-				return err
-			} else if handled {
-				if result == tickFailed {
-					return headgate.ErrSkipJob
-				}
-				return headgate.Snooze(poll)
-			}
-			effective := effectiveWorkflow(job.Args, cursor)
-			result, err := tickWithCursor(ctx, inspect, effective, &cursor, func(cursor workflowCursor) error {
-				return persistWorkflowCursor(ctx, cursor)
-			})
-			if err != nil {
-				return err
-			}
-			switch result {
-			case tickWaiting:
-				return headgate.Snooze(poll)
-			case tickFailed:
-				if job.Args.FailedSubgraphRetry {
-					cursor.Failed = true
-					if job.Args.RetryPolicy != nil && cursor.Generation < job.Args.RetryPolicy.MaxGenerations {
-						cursor.AutomaticRetryPending = true
-						if err := cursor.recordEvent("automatic_retry_scheduled", "", nil); err != nil {
-							return err
-						}
-					} else if err := cursor.recordEvent("workflow_failed", "", nil); err != nil {
-						return err
-					}
-					if err := persistWorkflowCursor(ctx, cursor); err != nil {
-						return err
-					}
-				} else {
-					if err := cursor.recordEvent("workflow_failed", "", nil); err != nil {
-						return err
-					}
-					if err := persistWorkflowCursor(ctx, cursor); err != nil {
-						return err
-					}
-				}
-				if cursor.AutomaticRetryPending {
-					return headgate.Snooze(time.Duration(job.Args.RetryPolicy.BackoffMs) * time.Millisecond)
-				}
-				return headgate.ErrSkipJob
-			default:
-				if err := cursor.recordEvent("workflow_succeeded", "", nil); err != nil {
-					return err
-				}
-				if err := persistWorkflowCursor(ctx, cursor); err != nil {
-					return err
-				}
-				return nil
-			}
-		})
-	})
-}
-
-func registerVirtualHandlers(registry *headgate.Registry) error {
-	if err := headgate.RegisterFunc[SignalArgs](registry, func(context.Context, *headgate.Job[SignalArgs]) error { return nil }); err != nil {
-		return err
-	}
-	if err := headgate.RegisterFunc[TimerArgs](registry, func(context.Context, *headgate.Job[TimerArgs]) error {
-		return nil
-	}); err != nil {
-		return err
-	}
-	if err := headgate.RegisterFunc[ConditionArgs](registry, func(context.Context, *headgate.Job[ConditionArgs]) error {
-		return nil
-	}); err != nil {
-		return err
-	}
-	if err := headgate.RegisterFunc[GraftArgs](registry, func(context.Context, *headgate.Job[GraftArgs]) error { return nil }); err != nil {
-		return err
-	}
-	if err := headgate.RegisterFunc[RetryArgs](registry, func(context.Context, *headgate.Job[RetryArgs]) error { return nil }); err != nil {
-		return err
-	}
-	return nil
-}
-
-type workflowCursor struct {
-	Revision              uint64           `json:"revision"`
-	Completed             []string         `json:"completed"`
-	CompletedAtMs         map[string]int64 `json:"completed_at_ms,omitempty"`
-	Grafts                []nodeSpec       `json:"grafts,omitempty"`
-	PendingGraftReceipt   string           `json:"pending_graft_receipt,omitempty"`
-	Generation            uint32           `json:"generation"`
-	Failed                bool             `json:"failed,omitempty"`
-	PendingRetryReceipt   string           `json:"pending_retry_receipt,omitempty"`
-	AutomaticRetryPending bool             `json:"automatic_retry_pending,omitempty"`
-	Events                []WorkflowEvent  `json:"events,omitempty"`
-}
-
-func persistWorkflowCursor(ctx context.Context, cursor workflowCursor) error {
-	bytes, err := json.Marshal(cursor)
-	if err != nil {
-		return err
-	}
-	if err := headgate.SetCursor(ctx, cursor); err != nil {
-		return err
-	}
-	_, err = headgate.PersistOutput(ctx, 1, bytes)
-	return err
-}
-
-func (c *workflowCursor) normalize() {
-	if c.Revision == 0 {
-		c.Revision = 1
-	}
-	if c.Generation == 0 {
-		c.Generation = 1
-	}
-}
-
-func (c *workflowCursor) recordEvent(event, node string, atMs *int64) error {
-	sequence := uint64(1)
-	if len(c.Events) != 0 {
-		if c.Events[len(c.Events)-1].Sequence == math.MaxUint64 {
-			return errors.New("headgate workflow: event sequence overflow")
-		}
-		sequence = c.Events[len(c.Events)-1].Sequence + 1
-	}
-	c.Events = append(c.Events, WorkflowEvent{
-		Sequence: sequence, Event: event, Node: node,
-		Revision: c.Revision, Generation: c.Generation, AtMs: atMs,
-	})
-	if len(c.Events) > maxWorkflowEvents {
-		c.Events = append([]WorkflowEvent(nil), c.Events[len(c.Events)-maxWorkflowEvents:]...)
-	}
-	return nil
-}
-
-type tickResult uint8
-
-const (
-	tickWaiting tickResult = iota
-	tickSucceeded
-	tickFailed
-)
-
-func tick(ctx context.Context, inspect headgate.InspectStore, workflow CoordinatorArgs) (tickResult, error) {
-	cursor := workflowCursor{Revision: 1}
-	return tickWithCursor(ctx, inspect, workflow, &cursor, nil)
-}
-
-func effectiveWorkflow(base CoordinatorArgs, cursor workflowCursor) CoordinatorArgs {
-	nodes := make([]nodeSpec, 0, len(base.Nodes)+len(cursor.Grafts))
-	nodes = append(nodes, base.Nodes...)
-	nodes = append(nodes, cursor.Grafts...)
-	return CoordinatorArgs{
-		WorkflowID: base.WorkflowID, Nodes: nodes,
-		FailedSubgraphRetry: base.FailedSubgraphRetry,
-		RetryPolicy:         base.RetryPolicy,
-	}
-}
-
-func enqueueAutomaticRetry(
-	ctx context.Context,
-	inspect headgate.InspectStore,
-	base CoordinatorArgs,
-	cursor *workflowCursor,
-	queue string,
-) error {
-	if !cursor.Failed {
-		return errors.New("headgate workflow: automatic retry is pending for a non-failed workflow")
-	}
-	if cursor.Revision == math.MaxUint64 {
-		return errors.New("headgate workflow: retry revision would overflow")
-	}
-	retry := RetryArgs{WorkflowID: base.WorkflowID, ExpectedRevision: cursor.Revision}
-	payload, err := json.Marshal(retry)
-	if err != nil {
-		return err
-	}
-	receipt := headgate.Envelope{
-		ID: retryReceiptID(base.WorkflowID, cursor.Revision+1), Kind: RetryKind,
-		SchemaVersion: 1, Payload: payload, Queue: queue, Pending: true,
-		RetentionMs: defaultRetention, Fingerprint: headgate.Fingerprint(RetryKind, payload),
-	}
-	if err := inspect.Enqueue(ctx, []headgate.Envelope{receipt}); err != nil {
-		return err
-	}
-	cursor.AutomaticRetryPending = false
-	return headgate.SetCursor(ctx, *cursor)
-}
-
-func rejectGraft(ctx context.Context, inspect headgate.InspectStore, receiptID string, nodes []nodeSpec) error {
-	jobIDs := make([]string, 0, len(nodes)+1)
-	for _, node := range nodes {
-		jobIDs = append(jobIDs, node.JobID)
-	}
-	jobIDs = append(jobIDs, receiptID)
-	for _, jobID := range jobIDs {
-		job, err := inspect.GetJob(ctx, jobID, false)
-		if err != nil {
-			return err
-		}
-		if job == nil {
-			continue
-		}
-		switch job.State {
-		case "pending", "scheduled", "available", "retryable":
-			if err := inspect.DeleteJob(ctx, jobID); err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("headgate workflow: rejected graft job %q is already %q", jobID, job.State)
-		}
-	}
-	return nil
-}
-
-func failedNodesToRetry(ctx context.Context, inspect headgate.InspectStore, workflow CoordinatorArgs) ([]string, error) {
-	retry := make([]string, 0)
-	for _, node := range workflow.Nodes {
-		job, err := inspect.GetJob(ctx, node.JobID, false)
-		if err != nil {
-			return nil, err
-		}
-		if job == nil {
-			return nil, fmt.Errorf("headgate workflow: retry-enabled node %q is missing", node.JobID)
-		}
-		switch job.State {
-		case "archived", "cancelled":
-			retry = append(retry, node.JobID)
-		case "pending", "scheduled", "retryable", "available", "running", "completed":
-		default:
-			return nil, fmt.Errorf("headgate workflow: node %q cannot be retried from %q", node.JobID, job.State)
-		}
-	}
-	return retry, nil
-}
-
-func retryFailedChildren(ctx context.Context, inspect headgate.InspectStore, workflow CoordinatorArgs) error {
-	checkpointStore, ok := inspect.(headgate.CheckpointInspectStore)
-	if !ok {
-		return errors.New("headgate workflow: child retry propagation requires checkpoint inspection support")
-	}
-	for _, node := range workflow.Nodes {
-		if normalizedKind(node) != workflowChild {
-			continue
-		}
-		link, err := inspect.GetJob(ctx, node.JobID, false)
-		if err != nil {
-			return err
-		}
-		if link == nil || (link.State != "archived" && link.State != "cancelled") {
-			continue
-		}
-		childID := node.ChildWorkflowID + ":coordinator"
-		child, err := inspect.GetJob(ctx, childID, false)
-		if err != nil {
-			return err
-		}
-		if child == nil {
-			return fmt.Errorf("headgate workflow: child workflow %q is missing", node.ChildWorkflowID)
-		}
-		if child.State != "archived" {
-			continue
-		}
-		checkpoint, err := checkpointStore.GetJobCheckpoint(ctx, childID)
-		if err != nil {
-			return err
-		}
-		if checkpoint == nil || len(checkpoint.Cursor) == 0 {
-			return fmt.Errorf("headgate workflow: child workflow %q has no checkpoint", node.ChildWorkflowID)
-		}
-		var childCursor workflowCursor
-		if err := json.Unmarshal(checkpoint.Cursor, &childCursor); err != nil {
-			return err
-		}
-		childCursor.normalize()
-		if _, err := RequestFailedSubgraphRetry(ctx, inspect, node.ChildWorkflowID, childCursor.Revision); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func reopenFailedNodes(ctx context.Context, inspect headgate.InspectStore, jobs []string) error {
-	for _, jobID := range jobs {
-		if err := inspect.OperatorRetry(ctx, jobID); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func reconcileRetry(
-	ctx context.Context,
-	inspect headgate.InspectStore,
-	base CoordinatorArgs,
-	cursor *workflowCursor,
-	persist func(workflowCursor) error,
-) (tickResult, bool, error) {
-	cursor.normalize()
-	if cursor.PendingRetryReceipt != "" {
-		receipt, err := inspect.GetJob(ctx, cursor.PendingRetryReceipt, false)
-		if err != nil {
-			return tickWaiting, true, err
-		}
-		if receipt == nil {
-			return tickWaiting, true, fmt.Errorf("headgate workflow: accepted retry receipt %q is missing", cursor.PendingRetryReceipt)
-		}
-		switch receipt.State {
-		case "pending":
-			jobs, err := failedNodesToRetry(ctx, inspect, effectiveWorkflow(base, *cursor))
-			if err != nil {
-				return tickWaiting, true, err
-			}
-			if err := reopenFailedNodes(ctx, inspect, jobs); err != nil {
-				return tickWaiting, true, err
-			}
-			if err := inspect.PromoteJob(ctx, cursor.PendingRetryReceipt); err != nil {
-				return tickWaiting, true, err
-			}
-			return tickWaiting, true, nil
-		case "available", "running":
-			return tickWaiting, true, nil
-		case "completed":
-			cursor.PendingRetryReceipt = ""
-			if persist != nil {
-				if err := persist(*cursor); err != nil {
-					return tickWaiting, true, err
-				}
-			}
-		default:
-			return tickWaiting, true, fmt.Errorf("headgate workflow: accepted retry receipt entered %q", receipt.State)
-		}
-	}
-	if cursor.Revision == ^uint64(0) {
-		return tickWaiting, true, errors.New("headgate workflow: revision would overflow")
-	}
-	receiptID := retryReceiptID(base.WorkflowID, cursor.Revision+1)
-	receipt, err := inspect.GetJob(ctx, receiptID, true)
-	if err != nil {
-		return tickWaiting, true, err
-	}
-	if receipt == nil {
-		return tickWaiting, false, nil
-	}
-	if receipt.State != "pending" {
-		return tickWaiting, true, fmt.Errorf("headgate workflow: unaccepted retry receipt %q entered %q", receiptID, receipt.State)
-	}
-	var retry RetryArgs
-	if err := json.Unmarshal(receipt.Payload, &retry); err != nil || !base.FailedSubgraphRetry || !cursor.Failed || retry.WorkflowID != base.WorkflowID || retry.ExpectedRevision != cursor.Revision {
-		if rejectErr := rejectGraft(ctx, inspect, receiptID, nil); rejectErr != nil {
-			return tickWaiting, true, rejectErr
-		}
-		if cursor.Failed {
-			return tickFailed, true, nil
-		}
-		return tickWaiting, true, nil
-	}
-	competingGraftID := graftReceiptID(base.WorkflowID, cursor.Revision+1)
-	competing, err := inspect.GetJob(ctx, competingGraftID, true)
-	if err != nil {
-		return tickWaiting, true, err
-	}
-	if competing != nil {
-		if competing.State != "pending" {
-			return tickWaiting, true, fmt.Errorf("headgate workflow: competing graft receipt %q entered %q", competingGraftID, competing.State)
-		}
-		var graft GraftArgs
-		if err := json.Unmarshal(competing.Payload, &graft); err != nil {
-			graft.Nodes = nil
-		}
-		if err := rejectGraft(ctx, inspect, competingGraftID, graft.Nodes); err != nil {
-			return tickWaiting, true, err
-		}
-	}
-	workflow := effectiveWorkflow(base, *cursor)
-	if err := retryFailedChildren(ctx, inspect, workflow); err != nil {
-		return tickWaiting, true, err
-	}
-	jobs, err := failedNodesToRetry(ctx, inspect, workflow)
-	if err != nil {
-		if rejectErr := rejectGraft(ctx, inspect, receiptID, nil); rejectErr != nil {
-			return tickWaiting, true, rejectErr
-		}
-		return tickFailed, true, nil
-	}
-	if cursor.Generation == ^uint32(0) {
-		return tickWaiting, true, errors.New("headgate workflow: generation would overflow")
-	}
-	cursor.Revision++
-	cursor.Generation++
-	cursor.Failed = false
-	if err := cursor.recordEvent("workflow_retry_accepted", "", nil); err != nil {
-		return tickWaiting, true, err
-	}
-	cursor.PendingRetryReceipt = receiptID
-	if persist != nil {
-		if err := persist(*cursor); err != nil {
-			return tickWaiting, true, err
-		}
-	}
-	if err := reopenFailedNodes(ctx, inspect, jobs); err != nil {
-		return tickWaiting, true, err
-	}
-	if err := inspect.PromoteJob(ctx, receiptID); err != nil {
-		return tickWaiting, true, err
-	}
-	return tickWaiting, true, nil
-}
-
-func reconcileGraft(
-	ctx context.Context,
-	inspect headgate.InspectStore,
-	base CoordinatorArgs,
-	cursor *workflowCursor,
-	persist func(workflowCursor) error,
-) (tickResult, bool, error) {
-	cursor.normalize()
-	if cursor.PendingGraftReceipt != "" {
-		receipt, err := inspect.GetJob(ctx, cursor.PendingGraftReceipt, false)
-		if err != nil {
-			return tickWaiting, true, err
-		}
-		if receipt == nil {
-			return tickWaiting, true, fmt.Errorf("headgate workflow: accepted graft receipt %q is missing", cursor.PendingGraftReceipt)
-		}
-		switch receipt.State {
-		case "pending":
-			if err := inspect.PromoteJob(ctx, cursor.PendingGraftReceipt); err != nil {
-				return tickWaiting, true, err
-			}
-			return tickWaiting, true, nil
-		case "available", "running":
-			return tickWaiting, true, nil
-		case "completed":
-			cursor.PendingGraftReceipt = ""
-			if persist != nil {
-				if err := persist(*cursor); err != nil {
-					return tickWaiting, true, err
-				}
-			}
-		default:
-			return tickWaiting, true, fmt.Errorf("headgate workflow: accepted graft receipt entered %q", receipt.State)
-		}
-	}
-	if cursor.Revision == ^uint64(0) {
-		return tickWaiting, true, errors.New("headgate workflow: revision would overflow")
-	}
-	nextRevision := cursor.Revision + 1
-	receiptID := graftReceiptID(base.WorkflowID, nextRevision)
-	receipt, err := inspect.GetJob(ctx, receiptID, true)
-	if err != nil {
-		return tickWaiting, true, err
-	}
-	if receipt == nil {
-		return tickWaiting, false, nil
-	}
-	if receipt.State != "pending" {
-		return tickWaiting, true, fmt.Errorf("headgate workflow: unaccepted graft receipt %q entered %q", receiptID, receipt.State)
-	}
-	var graft GraftArgs
-	if err := json.Unmarshal(receipt.Payload, &graft); err != nil {
-		if rejectErr := rejectGraft(ctx, inspect, receiptID, nil); rejectErr != nil {
-			return tickWaiting, true, rejectErr
-		}
-		return tickWaiting, true, nil
-	}
-	if graft.WorkflowID != base.WorkflowID || graft.ExpectedRevision != cursor.Revision || len(graft.Nodes) == 0 || cursor.Failed {
-		if err := rejectGraft(ctx, inspect, receiptID, graft.Nodes); err != nil {
-			return tickWaiting, true, err
-		}
-		return tickWaiting, true, nil
-	}
-	candidate := effectiveWorkflow(base, *cursor)
-	candidate.Nodes = append(candidate.Nodes, graft.Nodes...)
-	if err := validateCoordinator(candidate); err != nil {
-		if rejectErr := rejectGraft(ctx, inspect, receiptID, graft.Nodes); rejectErr != nil {
-			return tickWaiting, true, rejectErr
-		}
-		return tickWaiting, true, nil
-	}
-	cursor.Revision = nextRevision
-	cursor.Grafts = append(cursor.Grafts, graft.Nodes...)
-	if err := cursor.recordEvent("workflow_graft_accepted", "", nil); err != nil {
-		return tickWaiting, true, err
-	}
-	cursor.PendingGraftReceipt = receiptID
-	if persist != nil {
-		if err := persist(*cursor); err != nil {
-			return tickWaiting, true, err
-		}
-	}
-	if err := inspect.PromoteJob(ctx, receiptID); err != nil {
-		return tickWaiting, true, err
-	}
-	return tickWaiting, true, nil
-}
-
-// tickWithEvidence remains a narrow test seam for the retained-completion behavior.
-func tickWithEvidence(
-	ctx context.Context,
-	inspect headgate.InspectStore,
-	workflow CoordinatorArgs,
-	completed map[string]struct{},
-	persist func(workflowCursor) error,
-) (tickResult, error) {
-	cursor := workflowCursor{Revision: 1, Completed: completedNames(workflow, completed)}
-	result, err := tickWithCursor(ctx, inspect, workflow, &cursor, persist)
-	for _, name := range cursor.Completed {
-		completed[name] = struct{}{}
-	}
-	return result, err
-}
-
-func tickWithCursor(
-	ctx context.Context,
-	inspect headgate.InspectStore,
-	workflow CoordinatorArgs,
-	cursor *workflowCursor,
-	persist func(workflowCursor) error,
-) (tickResult, error) {
-	if err := validateCoordinator(workflow); err != nil {
-		return tickWaiting, err
-	}
-	completed := completedSet(workflow, cursor.Completed)
-	state := make(map[string]*headgate.JobSummary, len(workflow.Nodes))
-	type readResult struct {
-		name string
-		job  *headgate.JobSummary
-		err  error
-	}
-	readCtx, cancelReads := context.WithCancel(ctx)
-	defer cancelReads()
-	work := make(chan nodeSpec)
-	results := make(chan readResult, len(workflow.Nodes))
-	workers := min(workflowWorkers, len(workflow.Nodes))
-	var reads sync.WaitGroup
-	for range workers {
-		reads.Go(func() {
-			for node := range work {
-				job, err := inspect.GetJob(readCtx, node.JobID, false)
-				select {
-				case results <- readResult{name: node.Name, job: job, err: err}:
-				case <-readCtx.Done():
-					return
-				}
-				if err != nil {
-					cancelReads()
-					return
-				}
-			}
-		})
-	}
-	go func() {
-		defer close(work)
-		for _, node := range workflow.Nodes {
-			select {
-			case work <- node:
-			case <-readCtx.Done():
-				return
-			}
-		}
-	}()
-	go func() { reads.Wait(); close(results) }()
-	for result := range results {
-		if result.err != nil {
-			return tickWaiting, result.err
-		}
-		state[result.name] = result.job
-	}
-	before := make(map[string]struct{}, len(completed))
-	for name := range completed {
-		before[name] = struct{}{}
-	}
-	changed := false
-	for _, node := range workflow.Nodes {
-		if kind := normalizedKind(node); kind == workflowTask || kind == workflowChild {
-			if job := state[node.Name]; job != nil && job.State == "completed" {
-				if _, exists := completed[node.Name]; !exists {
-					completed[node.Name] = struct{}{}
-					changed = true
-				}
-				if job.FinalizedAtMs != nil {
-					if cursor.CompletedAtMs == nil {
-						cursor.CompletedAtMs = make(map[string]int64)
-					}
-					if prior, exists := cursor.CompletedAtMs[node.Name]; !exists || prior != *job.FinalizedAtMs {
-						cursor.CompletedAtMs[node.Name] = *job.FinalizedAtMs
-						changed = true
-					}
-				}
-			}
-		}
-	}
-	for {
-		added := false
-		for _, node := range workflow.Nodes {
-			if kind := normalizedKind(node); kind != workflowSignal && kind != workflowTimer && kind != workflowCondition {
-				continue
-			}
-			if _, exists := completed[node.Name]; !exists {
-				job := state[node.Name]
-				if job == nil || job.State != "completed" || !dependenciesCompleted(node, completed) {
-					continue
-				}
-				completed[node.Name] = struct{}{}
-				if job.FinalizedAtMs != nil {
-					if cursor.CompletedAtMs == nil {
-						cursor.CompletedAtMs = make(map[string]int64)
-					}
-					cursor.CompletedAtMs[node.Name] = *job.FinalizedAtMs
-				}
-				changed = true
-				added = true
-			}
-		}
-		if !added {
-			break
-		}
-	}
-	for _, node := range workflow.Nodes {
-		_, wasComplete := before[node.Name]
-		_, isComplete := completed[node.Name]
-		if !wasComplete && isComplete {
-			var atMs *int64
-			if completedAt, ok := cursor.CompletedAtMs[node.Name]; ok {
-				value := completedAt
-				atMs = &value
-			}
-			if err := cursor.recordEvent("node_completed", node.Name, atMs); err != nil {
-				return tickWaiting, err
-			}
-		}
-	}
-	if changed {
-		cursor.Completed = completedNames(workflow, completed)
-		if persist != nil {
-			if err := persist(*cursor); err != nil {
-				return tickWaiting, err
-			}
-		}
-	}
-	failedNodes := workflowFailedSet(workflow, state, completed)
-	type mutation struct {
-		jobID  string
-		delete bool
-	}
-	mutations := make([]mutation, 0)
-	for _, node := range workflow.Nodes {
-		job := effectiveJob(state[node.Name], node, completed)
-		if _, failed := failedNodes[node.Name]; failed {
-			if !workflow.FailedSubgraphRetry && job != nil && deletableWorkflowState(job.State) {
-				mutations = append(mutations, mutation{jobID: node.JobID, delete: true})
-			}
-			continue
-		}
-		if (normalizedKind(node) == workflowTask || normalizedKind(node) == workflowChild) &&
-			job != nil && job.State == "pending" &&
-			dependenciesComplete(workflow, node, state, completed) {
-			mutations = append(mutations, mutation{jobID: node.JobID})
-		}
-		if normalizedKind(node) == workflowCondition && job != nil && job.State == "pending" &&
-			dependenciesComplete(workflow, node, state, completed) {
-			ready, err := evaluateCondition(node, cursor, workflow, state, completed)
-			if err != nil {
-				return tickWaiting, err
-			}
-			if ready {
-				mutations = append(mutations, mutation{jobID: node.JobID})
-			}
-		}
-		if normalizedKind(node) == workflowTimer && node.DelayMs > 0 &&
-			job != nil && job.State == "pending" &&
-			dependenciesComplete(workflow, node, state, completed) {
-			scheduler, ok := inspect.(headgate.PendingScheduleStore)
-			if !ok {
-				return tickWaiting, errors.New("headgate workflow: backend cannot schedule pending timers")
-			}
-			anchor, err := dependencyCompletionAnchor(node, cursor.CompletedAtMs)
-			if err != nil {
-				return tickWaiting, err
-			}
-			if node.DelayMs > math.MaxInt64-anchor {
-				return tickWaiting, fmt.Errorf("headgate workflow: timer %q deadline overflow", node.Name)
-			}
-			if err := scheduler.SchedulePendingJob(ctx, node.JobID, anchor+node.DelayMs); err != nil {
-				return tickWaiting, err
-			}
-			return tickWaiting, nil
-		}
-	}
-	if len(mutations) > 0 {
-		mutationWork := make(chan mutation)
-		mutationErrors := make(chan error, len(mutations))
-		mutationCtx, cancelMutations := context.WithCancel(ctx)
-		defer cancelMutations()
-		workers = min(workflowWorkers, len(mutations))
-		var writes sync.WaitGroup
-		for range workers {
-			writes.Go(func() {
-				for mutation := range mutationWork {
-					var err error
-					if mutation.delete {
-						err = inspect.DeleteJob(mutationCtx, mutation.jobID)
-					} else {
-						err = inspect.PromoteJob(mutationCtx, mutation.jobID)
-					}
-					if err != nil {
-						mutationErrors <- err
-						cancelMutations()
-						return
-					}
-				}
-			})
-		}
-		go func() {
-			defer close(mutationWork)
-			for _, mutation := range mutations {
-				select {
-				case mutationWork <- mutation:
-				case <-mutationCtx.Done():
-					return
-				}
-			}
-		}()
-		writes.Wait()
-		select {
-		case err := <-mutationErrors:
-			return tickWaiting, err
-		default:
-		}
-		return tickWaiting, nil
-	}
-	failed := false
-	for _, node := range workflow.Nodes {
-		if _, nodeFailed := failedNodes[node.Name]; nodeFailed {
-			failed = true
-			continue
-		}
-		job := effectiveJob(state[node.Name], node, completed)
-		if job == nil || isFailed(job.State) {
-			failed = true
-			continue
-		}
-		if job.State != "completed" {
-			return tickWaiting, nil
-		}
-	}
-	if failed {
-		return tickFailed, nil
-	}
-	return tickSucceeded, nil
-}
-
-func completedSet(workflow CoordinatorArgs, names []string) map[string]struct{} {
-	valid := make(map[string]struct{}, len(workflow.Nodes))
-	for _, node := range workflow.Nodes {
-		valid[node.Name] = struct{}{}
-	}
-	completed := make(map[string]struct{}, len(names))
-	for _, name := range names {
-		if _, ok := valid[name]; ok {
-			completed[name] = struct{}{}
-		}
-	}
-	return completed
-}
-
-func completedNames(workflow CoordinatorArgs, completed map[string]struct{}) []string {
-	names := make([]string, 0, len(completed))
-	for _, node := range workflow.Nodes {
-		if _, ok := completed[node.Name]; ok {
-			names = append(names, node.Name)
-		}
-	}
-	return names
-}
-
-func effectiveJob(job *headgate.JobSummary, node nodeSpec, completed map[string]struct{}) *headgate.JobSummary {
-	if _, ok := completed[node.Name]; ok {
-		return &headgate.JobSummary{State: "completed"}
-	}
-	if kind := normalizedKind(node); (kind == workflowSignal || kind == workflowTimer || kind == workflowCondition) && job != nil && job.State == "completed" {
-		return &headgate.JobSummary{State: "pending"}
-	}
-	if job != nil {
-		return job
-	}
-	return nil
-}
-
-func dependenciesCompleted(node nodeSpec, completed map[string]struct{}) bool {
-	for _, dep := range node.Deps {
-		if _, ok := completed[dep]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
-func dependencyCompletionAnchor(node nodeSpec, completedAtMs map[string]int64) (int64, error) {
-	if len(node.Deps) == 0 {
-		return 0, fmt.Errorf("headgate workflow: relative timer %q requires at least one dependency", node.Name)
-	}
-	var anchor int64
-	for _, dependency := range node.Deps {
-		completedAt, ok := completedAtMs[dependency]
-		if !ok {
-			return 0, fmt.Errorf(
-				"headgate workflow: timer %q has no durable completion timestamp for %q",
-				node.Name, dependency,
-			)
-		}
-		if completedAt > anchor {
-			anchor = completedAt
-		}
-	}
-	return anchor, nil
-}
-
-func evaluateCondition(
-	node nodeSpec,
-	cursor *workflowCursor,
-	workflow CoordinatorArgs,
-	state map[string]*headgate.JobSummary,
-	completed map[string]struct{},
-) (bool, error) {
-	env, err := conditionEnv()
-	if err != nil {
-		return false, err
-	}
-	ast, issues := env.Compile(node.Condition)
-	if issues != nil && issues.Err() != nil {
-		return false, fmt.Errorf("headgate workflow: condition %q: %w", node.Name, issues.Err())
-	}
-	program, err := env.Program(ast)
-	if err != nil {
-		return false, err
-	}
-	states := make(map[string]string, len(workflow.Nodes))
-	completion := make(map[string]bool, len(workflow.Nodes))
-	for _, candidate := range workflow.Nodes {
-		job := effectiveJob(state[candidate.Name], candidate, completed)
-		states[candidate.Name] = "missing"
-		if job != nil {
-			states[candidate.Name] = job.State
-		}
-		_, completion[candidate.Name] = completed[candidate.Name]
-	}
-	out, _, err := program.Eval(map[string]any{
-		"revision": cursor.Revision, "generation": uint64(cursor.Generation),
-		"states": states, "completed": completion,
-	})
-	if err != nil {
-		return false, fmt.Errorf("headgate workflow: condition %q failed: %w", node.Name, err)
-	}
-	value, ok := out.Value().(bool)
-	if !ok {
-		return false, fmt.Errorf("headgate workflow: condition %q must return bool", node.Name)
-	}
-	return value, nil
-}
-
-func dependenciesComplete(workflow CoordinatorArgs, node nodeSpec, state map[string]*headgate.JobSummary, completed map[string]struct{}) bool {
-	for _, dep := range node.Deps {
-		upstream := effectiveJob(state[dep], findNode(workflow, dep), completed)
-		if upstream == nil || upstream.State != "completed" {
-			return false
-		}
-	}
-	return true
-}
-
-func dependencyFailed(workflow CoordinatorArgs, node nodeSpec, state map[string]*headgate.JobSummary, completed map[string]struct{}) bool {
-	for _, dep := range node.Deps {
-		if _, failed := workflowFailedSet(workflow, state, completed)[dep]; failed {
-			return true
-		}
-	}
-	return false
-}
-
-func workflowFailedSet(workflow CoordinatorArgs, state map[string]*headgate.JobSummary, completed map[string]struct{}) map[string]struct{} {
-	failed := make(map[string]struct{})
-	for _, node := range workflow.Nodes {
-		job := effectiveJob(state[node.Name], node, completed)
-		if job == nil || isFailed(job.State) {
-			failed[node.Name] = struct{}{}
-		}
-	}
-	for {
-		before := len(failed)
-		for _, node := range workflow.Nodes {
-			for _, dependency := range node.Deps {
-				if _, upstreamFailed := failed[dependency]; upstreamFailed {
-					failed[node.Name] = struct{}{}
-					break
-				}
-			}
-		}
-		if len(failed) == before {
-			return failed
-		}
-	}
-}
-
-func deletableWorkflowState(state string) bool {
-	switch state {
-	case "pending", "scheduled", "available", "retryable":
-		return true
-	default:
-		return false
-	}
-}
-
-func normalizedKind(node nodeSpec) workflowNodeKind {
-	if node.Kind == "" {
-		return workflowTask
-	}
-	return node.Kind
-}
-
-func findNode(workflow CoordinatorArgs, name string) nodeSpec {
-	for _, node := range workflow.Nodes {
-		if node.Name == name {
-			return node
-		}
-	}
-	return nodeSpec{Name: name}
-}
-
-func validateCoordinator(workflow CoordinatorArgs) error {
-	if workflow.WorkflowID == "" {
-		return errors.New("headgate workflow: coordinator workflow id must not be empty")
-	}
-	if len(workflow.Nodes) == 0 || len(workflow.Nodes) > maxWorkflowNodes {
-		return fmt.Errorf("headgate workflow: coordinator must contain 1-%d tasks", maxWorkflowNodes)
-	}
-	if workflow.RetryPolicy != nil && (workflow.RetryPolicy.MaxGenerations < 2 ||
-		workflow.RetryPolicy.BackoffMs <= 0 || !workflow.FailedSubgraphRetry) {
-		return errors.New("headgate workflow: coordinator contains an invalid retry policy")
-	}
-	names := make(map[string]struct{}, len(workflow.Nodes))
-	edges := 0
-	for _, node := range workflow.Nodes {
-		node.Kind = normalizedKind(node)
-		if node.Name == "" || node.JobID == "" || len(node.Name) > 128 || len(node.JobID) > headgate.MaxJobIdentifierLen ||
-			(node.Kind == workflowSignal && node.Signal == "") ||
-			(node.Kind == workflowTimer && (!validTimerSchedule(node.WakeAtMs, node.DelayMs) ||
-				(node.DelayMs > 0 && len(node.Deps) == 0))) ||
-			(node.Kind != workflowSignal && node.Signal != "") || (node.Kind != workflowTimer && node.WakeAtMs != 0) ||
-			(node.Kind != workflowTimer && node.DelayMs != 0) ||
-			(node.Kind == workflowChild && node.ChildWorkflowID == "") ||
-			(node.Kind != workflowChild && node.ChildWorkflowID != "") ||
-			(node.Kind == workflowCondition && validateCondition(node.Condition) != nil) ||
-			(node.Kind != workflowCondition && node.Condition != "") ||
-			(node.Kind != workflowTask && node.Kind != workflowSignal && node.Kind != workflowTimer && node.Kind != workflowChild && node.Kind != workflowCondition) {
-			return errors.New("headgate workflow: coordinator contains an invalid task")
-		}
-		if _, exists := names[node.Name]; exists {
-			return errors.New("headgate workflow: coordinator repeats a task name")
-		}
-		names[node.Name] = struct{}{}
-		edges += len(node.Deps)
-	}
-	if edges > maxWorkflowEdges {
-		return fmt.Errorf("headgate workflow: coordinator must contain at most %d dependency edges", maxWorkflowEdges)
-	}
-	degree := make(map[string]int, len(workflow.Nodes))
-	outgoing := make(map[string][]string)
-	for _, node := range workflow.Nodes {
-		seen := make(map[string]struct{}, len(node.Deps))
-		for _, dep := range node.Deps {
-			if _, exists := names[dep]; !exists {
-				return errors.New("headgate workflow: coordinator contains a missing dependency")
-			}
-			if _, exists := seen[dep]; exists {
-				return errors.New("headgate workflow: coordinator repeats a dependency")
-			}
-			seen[dep] = struct{}{}
-			degree[node.Name]++
-			outgoing[dep] = append(outgoing[dep], node.Name)
-		}
-	}
-	ready := make([]string, 0, len(workflow.Nodes))
-	for name := range names {
-		if degree[name] == 0 {
-			ready = append(ready, name)
-		}
-	}
-	visited := 0
-	for len(ready) > 0 {
-		name := ready[0]
-		ready = ready[1:]
-		visited++
-		for _, child := range outgoing[name] {
-			degree[child]--
-			if degree[child] == 0 {
-				ready = append(ready, child)
-			}
-		}
-	}
-	if visited != len(workflow.Nodes) {
-		return errors.New("headgate workflow: coordinator dependency graph contains a cycle")
-	}
-	return nil
-}
-
-func validTimerSchedule(wakeAtMs, delayMs int64) bool {
-	return (wakeAtMs > 0 && delayMs == 0) || (wakeAtMs == 0 && delayMs > 0)
-}
-
-func conditionEnv() (*cel.Env, error) {
-	return cel.NewEnv(
-		cel.Variable("revision", cel.UintType),
-		cel.Variable("generation", cel.UintType),
-		cel.Variable("states", cel.MapType(cel.StringType, cel.StringType)),
-		cel.Variable("completed", cel.MapType(cel.StringType, cel.BoolType)),
-	)
-}
-
-func validateCondition(expression string) error {
-	if len(expression) == 0 || len(expression) > 1_024 {
-		return errors.New("CEL condition must contain 1-1024 bytes")
-	}
-	env, err := conditionEnv()
-	if err != nil {
-		return err
-	}
-	_, issues := env.Compile(expression)
-	if issues != nil && issues.Err() != nil {
-		return fmt.Errorf("invalid CEL condition: %w", issues.Err())
-	}
-	return nil
-}
-
-func isFailed(state string) bool {
-	switch state {
-	case "archived", "cancelled", "quarantined", "undecodable":
-		return true
-	default:
-		return false
-	}
-}

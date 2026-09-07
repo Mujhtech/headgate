@@ -758,7 +758,7 @@ func TestEnqueueOutageIs503AndTheAPIHasNoImplicitBuffer(t *testing.T) {
 	}
 }
 
-// TestStoreErrTaxonomy is the teeth on round 32g's headline fix. Before it, storeErr
+// TestStoreErrTaxonomy prevents store errors from collapsing into string-prefix classification.
 // dispatched on a string prefix with NO 5xx arm at all: every one of these — a refused
 // dial included — was answered 400, which tells a client library "your request was
 // wrong, do not retry".
@@ -1070,10 +1070,8 @@ func TestRequiredFieldsRejected(t *testing.T) {
 	}
 }
 
-// ROUND 32L — authorization boundary read-only enforcement, Go side.
-//
-// The UI auth posture row's own NOTE said it: "only Rust's read-only ENFORCEMENT is
-// tested; Go's byte-identical 403 has no test." Round 32l made `HandlerWithConfig` ignore
+// Read-only mode is an authorization boundary, not merely disabled UI controls.
+// A regression that makes HandlerWithConfig ignore
 // `cfg.ReadOnly` entirely — every mutating route open on a server an operator believes is
 // read-only — and NOTHING went red: not the 462 shell assertions, not the control API contract mutation
 // byte-diff (which never starts a read-only server), not the Go suite. The Rust half is

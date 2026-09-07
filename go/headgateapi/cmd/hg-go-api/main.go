@@ -1,5 +1,4 @@
-// Serve the control API contract control API, Go edition — the handler speaks only to the
-// InspectStore port, so the same binary fronts either backend.
+// Command hg-go-api serves the control API and embedded console for any InspectStore backend.
 //
 //	HG_STORE = "pg" (default) | "redis" | "mysql"
 //	HG_PG = conninfo (pg), HG_REDIS = url + HG_REDIS_PREFIX (redis), HG_MYSQL = url
@@ -57,9 +56,7 @@ func main() {
 		}
 		store = s
 	case "mysql":
-		// the Go MySQL driver answers InspectStore, so the same handler
-		// fronts the third backend and control API contract's response parity extends to 6 server
-		// configurations (2 languages × 3 backends).
+		// The MySQL driver implements InspectStore, so it uses the same handler.
 		url := os.Getenv("HG_MYSQL")
 		if url == "" {
 			url = "mysql://root:hg@127.0.0.1:3307/hg"
@@ -73,24 +70,23 @@ func main() {
 		log.Fatalf("HG_STORE must be pg, redis, or mysql, got %q", backend)
 	}
 	readOnly := os.Getenv("HG_READ_ONLY") == "1"
-	// authorization boundary an unauthenticated queue console reachable beyond loopback is a breach
-	// waiting for a port scan. Failing to start is the correct behavior.
+	// Refuse an unauthenticated console beyond loopback unless the operator explicitly
+	// confirms that an external authentication layer protects it.
 	loopback := strings.HasPrefix(addr, "127.") || strings.HasPrefix(addr, "localhost") ||
 		strings.HasPrefix(addr, "[::1]")
 	if !loopback && os.Getenv("HG_API_ALLOW_REMOTE") != "1" {
 		log.Fatalf("refusing to bind %s: no authentication ships with this binary (authorization boundary). "+
 			"Put it behind your own auth and set HG_API_ALLOW_REMOTE=1, or bind loopback.", addr)
 	}
-	// the backend NAME reaches /meta from the same switch that chose the
-	// store, so the two can never disagree.
+	// Derive the /meta backend name from the same switch that selected the store.
 	api := headgateapi.HandlerWithConfig(store,
 		headgateapi.Config{ReadOnly: readOnly, Backend: backend})
-	// embedded console contract/embeddable-console boundary the embedded console, at /admin, speaking the co-mounted API.
+	// Mount the embedded console at /admin beside the API it consumes.
 	ui := headgateui.NewHandler(headgateui.Config{APIBase: "/api/v1", ReadOnly: readOnly})
 	// A prefix dispatch rather than an outer http.ServeMux, because ServeMux CLEANS
 	// paths and 307-redirects `/api/v1//queues` before the API handler ever sees it —
 	// where the Rust binary, whose axum Router does no path cleaning, answers 404.
-	// control API contract parity is the whole response of the shipped binary, not just the handler's.
+	// Response parity applies to the shipped server, including its path behavior.
 	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/admin" || strings.HasPrefix(r.URL.Path, "/admin/") {
 			ui.ServeHTTP(w, r)

@@ -1,0 +1,26 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/mujhtech/headgate/go
+cpu: Apple M2 Pro
+                │ previous-allocator.txt │ default.txt │
+                │                      sec/op                      │     sec/op      vs base               │
+DecodeArgs1K                                           1.778µ ± 3%      1.778µ ± 2%       ~ (p=0.493 n=10)
+TypedDispatch1K                                        1.860µ ± 1%      1.836µ ± 2%       ~ (p=0.055 n=10)
+MarshalArgs1K                                          1.192µ ± 2%      1.188µ ± 1%       ~ (p=0.361 n=10)
+geomean                                                1.580µ           1.571µ       -0.57%
+
+                │ previous-allocator.txt │ default.txt │
+                │                       B/op                       │     B/op      vs base                 │
+DecodeArgs1K                                          1.094Ki ± 0%   1.094Ki ± 0%       ~ (p=1.000 n=10) ¹
+TypedDispatch1K                                       1.250Ki ± 0%   1.250Ki ± 0%       ~ (p=1.000 n=10) ¹
+MarshalArgs1K                                         1.219Ki ± 0%   1.219Ki ± 0%       ~ (p=1.000 n=10) ¹
+geomean                                               1.186Ki        1.186Ki       +0.00%
+¹ all samples are equal
+
+                │ previous-allocator.txt │ default.txt │
+                │                    allocs/op                     │  allocs/op    vs base                 │
+DecodeArgs1K                                            3.000 ± 0%     3.000 ± 0%       ~ (p=1.000 n=10) ¹
+TypedDispatch1K                                         4.000 ± 0%     4.000 ± 0%       ~ (p=1.000 n=10) ¹
+MarshalArgs1K                                           3.000 ± 0%     3.000 ± 0%       ~ (p=1.000 n=10) ¹
+geomean                                                 3.302          3.302       +0.00%
+¹ all samples are equal

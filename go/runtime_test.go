@@ -15,14 +15,18 @@ package headgate
 // asserted here is that a non-zero count reaches the telemetry and trace context facade instead of the floor.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"runtime/pprof"
+	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -173,90 +177,95 @@ func (c *captureTelemetry) eventsOf(typ string) []Event {
 }
 
 func TestMemoryGuardEmitsSampleAndRequestsBoundedRestartAtLimit(t *testing.T) {
-	cap := &captureTelemetry{}
-	r := NewRunner(&evictStub{}, NewRegistry(), Config{
-		DisableDuties:       true,
-		MemoryLimitBytes:    100,
-		MemoryCheckInterval: time.Millisecond,
-		MemorySampler: MemorySamplerFunc(func() (uint64, error) {
-			return 125, nil
-		}),
-		Telemetry: cap,
-	})
-	done := make(chan error, 1)
-	go func() { done <- r.Run(context.Background()) }()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
+	synctest.Test(t, func(t *testing.T) {
+		cap := &captureTelemetry{}
+		r := NewRunner(&evictStub{}, NewRegistry(), Config{
+			DisableDuties:       true,
+			MemoryLimitBytes:    100,
+			MemoryCheckInterval: time.Millisecond,
+			MemorySampler: MemorySamplerFunc(func() (uint64, error) {
+				return 125, nil
+			}),
+			Telemetry: cap,
+		})
+		done := make(chan error, 1)
+		go func() { done <- r.Run(context.Background()) }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("memory guard did not stop admission and begin shutdown")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("memory guard did not stop admission and begin shutdown")
-	}
-	events := cap.eventsOf("worker_memory")
-	if len(events) != 1 {
-		t.Fatalf("got %d memory samples, want the threshold sample", len(events))
-	}
-	if got := events[0]; got.MemoryBytes != 125 || got.MemoryLimitBytes != 100 || !got.RestartRequested {
-		t.Fatalf("threshold telemetry = %+v", got)
-	}
+		events := cap.eventsOf("worker_memory")
+		if len(events) != 1 {
+			t.Fatalf("got %d memory samples, want the threshold sample", len(events))
+		}
+		if got := events[0]; got.MemoryBytes != 125 || got.MemoryLimitBytes != 100 || !got.RestartRequested {
+			t.Fatalf("threshold telemetry = %+v", got)
+		}
+	})
 }
 
 func TestMemoryGuardSamplesBelowLimitWithoutStoppingWorker(t *testing.T) {
-	cap := &captureTelemetry{}
-	r := NewRunner(&evictStub{}, NewRegistry(), Config{
-		DisableDuties:       true,
-		MemoryLimitBytes:    100,
-		MemoryCheckInterval: time.Millisecond,
-		MemorySampler: MemorySamplerFunc(func() (uint64, error) {
-			return 75, nil
-		}),
-		Telemetry: cap,
+	synctest.Test(t, func(t *testing.T) {
+		cap := &captureTelemetry{}
+		r := NewRunner(&evictStub{}, NewRegistry(), Config{
+			DisableDuties:       true,
+			MemoryLimitBytes:    100,
+			MemoryCheckInterval: time.Millisecond,
+			MemorySampler: MemorySamplerFunc(func() (uint64, error) {
+				return 75, nil
+			}),
+			Telemetry: cap,
+		})
+		done := make(chan error, 1)
+		go func() { done <- r.Run(context.Background()) }()
+		synctest.Wait()
+		synctest.Sleep(time.Millisecond)
+		select {
+		case <-done:
+			t.Fatal("a below-limit memory sample stopped the worker")
+		default:
+		}
+		r.Shutdown()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		events := cap.eventsOf("worker_memory")
+		if len(events) == 0 || events[0].RestartRequested {
+			t.Fatalf("below-limit telemetry = %+v", events)
+		}
 	})
-	done := make(chan error, 1)
-	go func() { done <- r.Run(context.Background()) }()
-	deadline := time.Now().Add(time.Second)
-	for len(cap.eventsOf("worker_memory")) == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	select {
-	case <-done:
-		t.Fatal("a below-limit memory sample stopped the worker")
-	default:
-	}
-	r.Shutdown()
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	events := cap.eventsOf("worker_memory")
-	if len(events) == 0 || events[0].RestartRequested {
-		t.Fatalf("below-limit telemetry = %+v", events)
-	}
 }
 
 func TestRollingRestartDrainIgnoresOrdinaryShutdownTimeout(t *testing.T) {
-	r := NewRunner(&evictStub{}, NewRegistry(), Config{ShutdownTimeout: time.Millisecond})
-	var mu sync.Mutex
-	inflight := map[string]*inflightJob{}
-	var wg sync.WaitGroup
-	wg.Add(1)
-	done := make(chan struct{})
-	go func() {
-		r.drain(context.Background(), &mu, inflight, &wg, true)
-		close(done)
-	}()
-	time.Sleep(10 * time.Millisecond)
-	select {
-	case <-done:
-		t.Fatal("rolling restart returned at the ordinary shutdown timeout")
-	default:
-	}
-	wg.Done()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("rolling restart did not finish after in-flight work completed")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		r := NewRunner(&evictStub{}, NewRegistry(), Config{ShutdownTimeout: time.Millisecond})
+		var mu sync.Mutex
+		inflight := map[string]*inflightJob{}
+		var wg sync.WaitGroup
+		wg.Add(1)
+		done := make(chan struct{})
+		go func() {
+			r.drain(context.Background(), &mu, inflight, &wg, true)
+			close(done)
+		}()
+		synctest.Wait()
+		synctest.Sleep(10 * time.Millisecond)
+		select {
+		case <-done:
+			t.Fatal("rolling restart returned at the ordinary shutdown timeout")
+		default:
+		}
+		wg.Done()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("rolling restart did not finish after in-flight work completed")
+		}
+	})
 }
 
 func TestRetentionSweepIsNeverSilent(t *testing.T) {
@@ -350,6 +359,221 @@ func (s *ackStub) actualWeights() []string {
 type rjArgs struct{}
 
 func (rjArgs) Kind() string { return "rj" }
+
+type registryMethodArgs struct{ Value int }
+
+func (registryMethodArgs) Kind() string          { return "profile.test" }
+func (registryMethodArgs) KindAliases() []string { return []string{"profile.old"} }
+
+type registryMethodWorker struct {
+	work func(context.Context, *Job[registryMethodArgs]) error
+}
+
+func (w registryMethodWorker) Work(ctx context.Context, job *Job[registryMethodArgs]) error {
+	return w.work(ctx, job)
+}
+
+func TestRegistryMethodsPreserveValidationAndDispatch(t *testing.T) {
+	for _, name := range []string{"function", "worker"} {
+		t.Run(name, func(t *testing.T) {
+			reg := NewRegistry()
+			calls := 0
+			handler := func(_ context.Context, job *Job[registryMethodArgs]) error {
+				calls++
+				if job.Args.Value != 42 || job.ID != "method-job" {
+					t.Errorf("decoded job = %+v", job)
+				}
+				return nil
+			}
+			var err error
+			if name == "worker" {
+				err = reg.RegisterWorker[registryMethodArgs](registryMethodWorker{handler})
+			} else {
+				err = reg.RegisterFunc(handler) // Infer T from the typed callback.
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, kind := range []string{"profile.test", "profile.old"} {
+				if err := reg.handlers[kind](context.Background(), Claim{Envelope: Envelope{
+					ID: "method-job", Kind: kind, Payload: []byte(`{"Value":42}`),
+				}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if calls != 2 {
+				t.Fatalf("calls = %d", calls)
+			}
+			if err := RegisterFunc(reg, handler); err == nil {
+				t.Fatal("package registration did not see method registration")
+			}
+			if err := reg.RegisterFunc[vkBadAlias](func(context.Context, *Job[vkBadAlias]) error { return nil }); err == nil {
+				t.Fatal("invalid alias was accepted")
+			}
+			if _, ok := reg.handlers["fine:kind"]; ok {
+				t.Fatal("failed registration was not atomic")
+			}
+			if err := reg.handlers["profile.test"](context.Background(), Claim{Envelope: Envelope{Payload: []byte(`{`)}}); err == nil {
+				t.Fatal("malformed payload reached handler")
+			}
+			if calls != 2 {
+				t.Fatal("invalid payload caused a side effect")
+			}
+		})
+	}
+}
+
+func TestWorkerProfileLabelsFollowDispatchAndRestoreCaller(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	reg := NewRegistry()
+	store := &ackStub{}
+	runner := NewRunner(store, reg, Config{DisableDuties: true})
+	ready := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	checkLabels := func(ctx context.Context) {
+		for key, want := range map[string]string{
+			"headgate.worker": runner.workerID, "headgate.role": "job",
+			"headgate.queue": "profile-queue", "headgate.kind": "profile.test", "application": "preserved",
+		} {
+			if got, ok := pprof.Label(ctx, key); !ok || got != want {
+				t.Errorf("label %s = %q, %v; want %q", key, got, ok, want)
+			}
+		}
+	}
+	if err := reg.RegisterFunc[registryMethodArgs](func(ctx context.Context, _ *Job[registryMethodArgs]) error {
+		checkLabels(ctx)
+		return Track(ctx, func(ctx context.Context) error {
+			checkLabels(ctx)
+			close(ready)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			return nil
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	claim := Claim{Envelope: Envelope{ID: "private-job-marker", Kind: "profile.test", Queue: "profile-queue",
+		Payload: []byte(`{"Value":42}`), PartitionKey: "private-tenant-marker"}}
+	done := make(chan string, 1)
+	go func() {
+		pprof.Do(ctx, pprof.Labels("application", "preserved"), func(ctx context.Context) {
+			steps := newStepState(store, claim)
+			outcome := runner.processOne(withStepState(ctx, steps), claim, steps)
+			// Inspect this still-running caller: ending the goroutine would hide
+			// a missing label restoration just as effectively as restoring it.
+			var restored bytes.Buffer
+			if err := pprof.Lookup("goroutine").WriteTo(&restored, 1); err != nil {
+				t.Error(err)
+			}
+			if strings.Contains(restored.String(), `"headgate.kind":"profile.test"`) {
+				t.Error("dispatch did not restore caller labels")
+			}
+			if !strings.Contains(restored.String(), `"application":"preserved"`) {
+				t.Error("dispatch dropped caller labels")
+			}
+			done <- outcome
+		})
+	}()
+	select {
+	case <-ready:
+	case <-ctx.Done():
+		t.Fatal("tracked handler did not start")
+	}
+	var profile bytes.Buffer
+	if err := pprof.Lookup("goroutine").WriteTo(&profile, 1); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(profile.String(), `"headgate.kind":"profile.test"`) {
+		t.Fatalf("profile is missing job labels: %s", profile.String())
+	}
+	for _, private := range []string{"private-job-marker", "private-tenant-marker"} {
+		if strings.Contains(profile.String(), private) {
+			t.Fatalf("profile leaked %s", private)
+		}
+	}
+	// Cancellation also proves labels leave the handler's cancellation context intact.
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("dispatch ignored cancellation")
+	}
+	profile.Reset()
+	if err := pprof.Lookup("goroutine").WriteTo(&profile, 1); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(profile.String(), `"headgate.kind":"profile.test"`) {
+		t.Fatal("job labels survived dispatch")
+	}
+	if pprof.Lookup("goroutineleak") == nil {
+		t.Fatal("Go 1.27 leak profile is unavailable")
+	}
+}
+
+type profileLoopStore struct {
+	evictStub
+	worker string
+	seen   chan string
+	t      *testing.T
+}
+
+func (s *profileLoopStore) check(ctx context.Context, role string) {
+	if got, _ := pprof.Label(ctx, "headgate.worker"); got != s.worker {
+		s.t.Errorf("worker label = %q", got)
+	}
+	if got, _ := pprof.Label(ctx, "headgate.role"); got != role {
+		s.t.Errorf("role label = %q, want %q", got, role)
+	}
+}
+
+func (s *profileLoopStore) Admit(ctx context.Context, _ AdmitRequest) ([]AdmissionUnit, error) {
+	s.check(ctx, "worker")
+	s.seen <- "admit"
+	return nil, nil
+}
+
+func (s *profileLoopStore) ClaimDuty(ctx context.Context, duty, _ string, _ time.Duration) (bool, error) {
+	s.check(ctx, "duty")
+	if got, _ := pprof.Label(ctx, "headgate.duty"); got != duty {
+		s.t.Errorf("duty label = %q, want %q", got, duty)
+	}
+	s.seen <- duty
+	return false, nil
+}
+
+func TestWorkerAndDutyProfileLabels(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := &profileLoopStore{t: t, seen: make(chan string, 100)}
+		runner := NewRunner(store, NewRegistry(), Config{DutyInterval: time.Second})
+		store.worker = runner.workerID
+		done := make(chan error, 1)
+		go func() { done <- runner.Run(context.Background()) }()
+		synctest.Wait()
+		synctest.Sleep(time.Second)
+		runner.Shutdown()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		close(store.seen)
+		seen := map[string]bool{}
+		for role := range store.seen {
+			seen[role] = true
+		}
+		if !seen["admit"] {
+			t.Fatal("worker never admitted")
+		}
+		for _, duty := range singletonDuties {
+			if !seen[duty] {
+				t.Errorf("duty %s did not run", duty)
+			}
+		}
+	})
+}
 
 func (c *captureTelemetry) rejections() [][3]any {
 	c.mu.Lock()

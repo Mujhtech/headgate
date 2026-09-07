@@ -1991,10 +1991,8 @@ func tickWithCursor(
 	results := make(chan readResult, len(workflow.Nodes))
 	workers := min(workflowWorkers, len(workflow.Nodes))
 	var reads sync.WaitGroup
-	reads.Add(workers)
 	for range workers {
-		go func() {
-			defer reads.Done()
+		reads.Go(func() {
 			for node := range work {
 				job, err := inspect.GetJob(readCtx, node.JobID, false)
 				select {
@@ -2007,7 +2005,7 @@ func tickWithCursor(
 					return
 				}
 			}
-		}()
+		})
 	}
 	go func() {
 		defer close(work)
@@ -2154,10 +2152,8 @@ func tickWithCursor(
 		defer cancelMutations()
 		workers = min(workflowWorkers, len(mutations))
 		var writes sync.WaitGroup
-		writes.Add(workers)
 		for range workers {
-			go func() {
-				defer writes.Done()
+			writes.Go(func() {
 				for mutation := range mutationWork {
 					var err error
 					if mutation.delete {
@@ -2171,7 +2167,7 @@ func tickWithCursor(
 						return
 					}
 				}
-			}()
+			})
 		}
 		go func() {
 			defer close(mutationWork)

@@ -1,6 +1,7 @@
 package headgateapi
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,10 +13,101 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	headgate "github.com/mujhtech/headgate/go"
 )
+
+type streamAPIStore struct {
+	errStore
+	wake    chan string
+	stopped chan struct{}
+}
+
+func (s *streamAPIStore) Caps() headgate.Caps { return headgate.CapInspect | headgate.CapNotifying }
+
+func (s *streamAPIStore) WaitWakeup(ctx context.Context, _ []string, _ time.Duration) (string, bool, error) {
+	select {
+	case q := <-s.wake:
+		return q, true, nil
+	case <-ctx.Done():
+		close(s.stopped)
+		return "", false, ctx.Err()
+	}
+}
+
+func TestEventStreamHeartbeatCoalescingAndCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := &streamAPIStore{wake: make(chan string, 2), stopped: make(chan struct{})}
+		finished := make(chan struct{})
+		handler := Handler(store)
+		server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer close(finished)
+			handler.ServeHTTP(w, r)
+		}))
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://control.example/api/v1/events", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/event-stream" {
+			t.Fatalf("status=%d headers=%v", resp.StatusCode, resp.Header)
+		}
+		frames := make(chan string, 4)
+		readDone := make(chan struct{})
+		go func() {
+			defer close(readDone)
+			scanner := bufio.NewScanner(resp.Body)
+			var frame strings.Builder
+			for scanner.Scan() {
+				if scanner.Text() == "" {
+					frames <- frame.String()
+					frame.Reset()
+				} else {
+					frame.WriteString(scanner.Text() + "\n")
+				}
+			}
+		}()
+		assertNoFrame := func() {
+			t.Helper()
+			select {
+			case frame := <-frames:
+				t.Fatalf("early frame: %q", frame)
+			default:
+			}
+		}
+		synctest.Sleep(15*time.Second - time.Nanosecond)
+		assertNoFrame()
+		synctest.Sleep(time.Nanosecond)
+		if frame := <-frames; frame != ": hb\n" {
+			t.Fatalf("heartbeat = %q", frame)
+		}
+		store.wake <- "critical"
+		store.wake <- "critical"
+		synctest.Wait()
+		synctest.Sleep(200*time.Millisecond - time.Nanosecond)
+		assertNoFrame()
+		synctest.Sleep(time.Nanosecond)
+		if frame := <-frames; frame != "event: queue_activity\ndata: {\"queues\":[\"critical\"]}\n" {
+			t.Fatalf("coalesced frame = %q", frame)
+		}
+		// Disconnect while a fresh coalescing timer and a store wait are active.
+		store.wake <- "default"
+		synctest.Wait()
+		cancel()
+		<-store.stopped
+		<-finished
+		<-readDone
+		assertNoFrame()
+	})
+}
 
 // errStore answers every Inspect call the API can make with one canned error. It
 // exists to exercise the arms of storeErr that need a BROKEN store — the ones no

@@ -2,9 +2,9 @@ package headgate
 
 // Type-safe, in-process data for workers and job attempts.
 //
-// Go does not permit generic methods, so the container is Extensions and the typed
-// operations are package functions. The map is keyed by reflect.Type rather than a
-// string. A typed box preserves even a typed nil value without an unsafe cast.
+// The map is keyed by reflect.Type rather than a string. A typed box preserves
+// even a typed nil value without an unsafe cast. Generic methods and the original
+// package functions share the same storage and synchronization.
 
 import (
 	"context"
@@ -27,6 +27,24 @@ type Extensions struct {
 }
 
 func NewExtensions() *Extensions { return &Extensions{} }
+
+// Set stores value under exactly T and returns its previous value, if present.
+// Like SetExtension, it panics when extensions is nil.
+func (extensions *Extensions) Set[T any](value T) (previous T, replaced bool) {
+	return SetExtension[T](extensions, value)
+}
+
+// Get returns the value stored under exactly T. A nil receiver or missing type
+// returns the zero value and false.
+func (extensions *Extensions) Get[T any]() (value T, ok bool) {
+	return Extension[T](extensions)
+}
+
+// Remove deletes and returns the value stored under exactly T. A nil receiver or
+// missing type returns the zero value and false.
+func (extensions *Extensions) Remove[T any]() (value T, ok bool) {
+	return RemoveExtension[T](extensions)
+}
 
 type extensionBox[T any] struct{ value T }
 

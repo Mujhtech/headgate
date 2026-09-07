@@ -1,13 +1,10 @@
 module github.com/mujhtech/headgate/go/headgatecrypto
 
-go 1.25.0
+go 1.27.0
 
 require github.com/mujhtech/headgate/go v0.1.7
 
-require (
-	github.com/mujhtech/headgate/go/headgatetest v0.1.7 // indirect
-	golang.org/x/text v0.40.0 // indirect
-)
+require github.com/mujhtech/headgate/go/headgatetest v0.1.7 // indirect
 
 replace github.com/mujhtech/headgate/go => ..
 

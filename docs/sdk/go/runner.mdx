@@ -6,7 +6,7 @@ icon: "server"
 
 ```go
 registry := headgate.NewRegistry()
-err := headgate.RegisterFunc[GenerateInvoice](registry,
+err := registry.RegisterFunc[GenerateInvoice](
     func(ctx context.Context, job *headgate.Job[GenerateInvoice]) error {
         headgate.Log(ctx, "generating "+job.Args.InvoiceID)
         return nil

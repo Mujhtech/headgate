@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"os"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"sync"
@@ -63,6 +64,21 @@ type Registry struct {
 }
 
 func NewRegistry() *Registry { return &Registry{handlers: map[string]erasedHandler{}} }
+
+// RegisterWorker registers a typed worker using the same validation as RegisterWorker.
+func (r *Registry) RegisterWorker[T Args](worker Worker[T]) error {
+	return RegisterWorker[T](r, worker)
+}
+
+// RegisterFunc registers a typed handler for T's kind and aliases.
+func (r *Registry) RegisterFunc[T Args](work func(context.Context, *Job[T]) error) error {
+	return RegisterFunc[T](r, work)
+}
+
+// RegisterBatchFunc registers a typed chunk handler with positional member results.
+func (r *Registry) RegisterBatchFunc[T Args](maxSize int, maxDelay time.Duration, work func([]BatchJob[T]) []error) error {
+	return RegisterBatchFunc[T](r, maxSize, maxDelay, work)
+}
 
 // RegisterWorker registers w for T's kind and aliases. Payloads decode via the default
 // JSON codec (payload codecs); a Versioned T gets its Upcast called for foreign schema versions.
@@ -465,6 +481,14 @@ type inflightJob struct {
 // Run until Shutdown() (or ctx cancellation). Store outages degrade to backoff-and-
 // retry, never a crash of the loop.
 func (r *Runner) Run(ctx context.Context) error {
+	var err error
+	pprof.Do(ctx, pprof.Labels("headgate.worker", r.workerID, "headgate.role", "worker"), func(ctx context.Context) {
+		err = r.run(ctx)
+	})
+	return err
+}
+
+func (r *Runner) run(ctx context.Context) error {
 	heartbeatEvery := r.cfg.LeaseDuration / 3
 	if heartbeatEvery < 10*time.Millisecond {
 		heartbeatEvery = 10 * time.Millisecond
@@ -832,6 +856,10 @@ func (r *Runner) drain(ctx context.Context, mu *sync.Mutex, inflight map[string]
 
 func (r *Runner) dutyLoop(ctx context.Context, duty string, dutyStop <-chan struct{}, wg *sync.WaitGroup) {
 	defer wg.Done()
+	parent := ctx
+	ctx = pprof.WithLabels(ctx, pprof.Labels("headgate.role", "duty", "headgate.duty", duty))
+	pprof.SetGoroutineLabels(ctx)
+	defer pprof.SetGoroutineLabels(parent)
 	for {
 		select {
 		case <-ctx.Done():
@@ -930,6 +958,19 @@ func (r *Runner) runDuty(ctx context.Context, duty string) {
 // had nothing behind it: a helper that runs one job but cannot say what happened to it is
 // Drain with extra steps.
 func (r *Runner) processOne(ctx context.Context, claim Claim, steps *stepState) string {
+	var outcome string
+	// Stable operational metadata identifies blocked work without copying payloads,
+	// tenant keys, headers, or per-job IDs into profiles and crash tracebacks.
+	pprof.Do(ctx, pprof.Labels(
+		"headgate.worker", r.workerID, "headgate.role", "job",
+		"headgate.queue", claim.Envelope.Queue, "headgate.kind", claim.Envelope.Kind,
+	), func(ctx context.Context) {
+		outcome = r.processClaim(ctx, claim, steps)
+	})
+	return outcome
+}
+
+func (r *Runner) processClaim(ctx context.Context, claim Claim, steps *stepState) string {
 	// A fresh job map for EVERY invocation. The worker map is shared deliberately; the
 	// job map is not, which makes two concurrent jobs storing the same T independent.
 	ctx = withTaskData(ctx, r.cfg.Extensions)

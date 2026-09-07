@@ -1,0 +1,16 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+# Apply the new gate to changes while existing lint debt is addressed separately.
+issues:
+  new-from-rev: HEAD

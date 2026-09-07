@@ -46,12 +46,14 @@ same map; cloning `JobCtx` shares only that job's map.
 
 ## Go
 
-Go does not permit generic methods, so `Extensions` is the container and its typed
-operations are package functions:
+With Go 1.27, `Extensions` exposes generic `Set`, `Get`, and `Remove` methods.
+The original `SetExtension`, `Extension`, and `RemoveExtension` package functions
+remain supported and operate on the same map:
 
 ```go
 extensions := headgate.NewExtensions()
-headgate.SetExtension(extensions, databasePool{/* ... */})
+extensions.Set(databasePool{/* ... */})
+pool, ok := extensions.Get[databasePool]()
 
 runner := headgate.NewRunner(store, registry, headgate.Config{
     Extensions: extensions,

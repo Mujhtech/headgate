@@ -99,5 +99,10 @@ func main() {
 		api.ServeHTTP(w, r)
 	})
 	log.Printf("hg-go-api (%s) listening on %s — console at http://%s/admin", backend, addr, addr)
-	log.Fatal(http.ListenAndServe(addr, root))
+	server := &http.Server{
+		Addr: addr, Handler: root,
+		// Bound header fan-out separately from net/http's byte limit.
+		MaxHeaderValueCount: 128,
+	}
+	log.Fatal(server.ListenAndServe())
 }

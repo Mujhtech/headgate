@@ -1,10 +1,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -21,5 +26,48 @@ func TestClientUsesBoundedControlAPIAndBearerAuthentication(t *testing.T) {
 	c := client{base: "https://control.example", token: "secret", http: httpClient}
 	if err := c.call(http.MethodGet, "/queues", nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestClientTimeoutCancelsRequestAndBodyRead(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		name := "waiting-for-headers"
+		if streaming {
+			name = "waiting-for-body"
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				started, stopped := make(chan struct{}), make(chan struct{})
+				server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					defer close(stopped)
+					if streaming {
+						w.WriteHeader(http.StatusOK)
+						if err := http.NewResponseController(w).Flush(); err != nil {
+							t.Error(err)
+							return
+						}
+					}
+					close(started)
+					<-r.Context().Done()
+				}))
+				httpClient := server.Client()
+				httpClient.Timeout = 30 * time.Second
+				c := client{base: "http://control.example", http: httpClient}
+				result := make(chan error, 1)
+				go func() { result <- c.call(http.MethodGet, "/queues", nil) }()
+				<-started
+				synctest.Sleep(30*time.Second - time.Nanosecond)
+				select {
+				case err := <-result:
+					t.Fatalf("request ended before timeout: %v", err)
+				default:
+				}
+				synctest.Sleep(time.Nanosecond)
+				if err := <-result; !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("timeout = %v, want DeadlineExceeded", err)
+				}
+				<-stopped
+			})
+		})
 	}
 }

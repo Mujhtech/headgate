@@ -94,7 +94,7 @@ parity, and test inventory checks passed through the full gate.
 
 The tooling refresh installed gopls 0.23.0 and golangci-lint 2.13.2 (built with
 Go 1.27). Generic-method diagnostics and lint checks pass. The root
-`.golangci.yml` checks changed code with govet, staticcheck, ineffassign and unused.
+`.golangci.yml` checks the full Go workspace with govet, staticcheck, ineffassign, and unused.
 See [dependency updates and measurements](go-upgrade-performance.md) for versions,
 benchmark methodology, raw samples, and the limits of the performance claims.
 

@@ -1,7 +1,6 @@
 package headgatemysql
 
-// The sixth corner: the SAME Go worker runtime, unchanged, over the Go MySQL driver —
-// adaptive admission's port test on the third backend, second language. The gate's policy step is the
+// This exercises the same Go worker runtime over MySQL. The gate's policy step is the
 // byte-identical eligible.sql the Rust adapter runs; this proves the Go transaction
 // around it drives it identically. Opt-in via HG_TEST_MYSQL; skips cleanly without it.
 //
@@ -269,7 +268,7 @@ func TestMySQLUniqueConflictQueriesUseGeneratedIndexes(t *testing.T) {
 // harness — so the Go reclaimer's crash attribution, its suspect re-stamp and its
 // quarantine arm had no unit-level assertion at all on this backend.
 //
-// SHARED-DATABASE DISCIPLINE, learned the hard way in round 31: ReclaimExpired is
+// ReclaimExpired is global, so shared-database tests must isolate expired leases.
 // GLOBAL. It sweeps every expired lease in the container, including strays from other
 // suites and from aborted runs. So every assertion here is on THIS test's own
 // $-scoped ids and never on a sweep count or a table total.
@@ -531,7 +530,7 @@ func TestTheGoRuntimeRunsUnchangedOverGoMysql(t *testing.T) {
 		t.Fatalf("checkpoint must skip the completed step; downloads=%d", n)
 	}
 
-	// runtime capability boundary capability honesty: Transactional (InnoDB) | Inspect (round 32c), never
+	// The MySQL store is transactional and inspectable, but never notifying.
 	// Notifying. The method set and the Caps bit are asserted TOGETHER on purpose —
 	// invariant 5's failure mode is a bit that claims what the methods cannot do, and
 	// the reverse (methods present, bit missing) silently disables every duty the
@@ -540,7 +539,7 @@ func TestTheGoRuntimeRunsUnchangedOverGoMysql(t *testing.T) {
 		t.Fatal("MySQL must not claim NotifyingStore — poll only, permanently")
 	}
 	if _, ok := any(s).(headgate.InspectStore); !ok {
-		t.Fatal("the Go MySQL driver must implement InspectStore (round 32c)")
+		t.Fatal("the Go MySQL driver must implement InspectStore")
 	}
 	if s.Caps() != headgate.CapTransactional|headgate.CapInspect {
 		t.Fatalf("caps: %b", s.Caps())
@@ -557,7 +556,7 @@ func TestTheGoRuntimeRunsUnchangedOverGoMysql(t *testing.T) {
 	if err := s.RollbackTx(ctx, tx); err != nil {
 		t.Fatal(err)
 	}
-	// Round 32h: `jobField` returns "" for a MISSING ROW and for a NULL column alike, so
+	// jobField returns "" for both a missing row and a NULL column, so
 	// "rollback discarded it" and "EnqueueTx silently wrote nothing" were the same
 	// answer — and the latter is the exact failure this test exists to rule out. The
 	// commit arm now runs FIRST, as the positive control that the path can write at all.

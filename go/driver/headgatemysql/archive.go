@@ -20,6 +20,7 @@ func archivePartition(value string) (partition, firstDay string, err error) {
 	return "p_" + value, fmt.Sprintf("%04d-%02d-01", year, month), nil
 }
 
+// SetArchivePolicy enables archival for terminal jobs in queue.
 func (s *MysqlStore) SetArchivePolicy(ctx context.Context, queue string, retention time.Duration) error {
 	retentionMs := retention.Milliseconds()
 	if queue == "" || retentionMs <= 0 {
@@ -33,11 +34,13 @@ func (s *MysqlStore) SetArchivePolicy(ctx context.Context, queue string, retenti
 	return err
 }
 
+// ClearArchivePolicy disables archival for queue.
 func (s *MysqlStore) ClearArchivePolicy(ctx context.Context, queue string) error {
 	_, err := s.db.ExecContext(ctx, "DELETE FROM headgate_archive_policy WHERE queue = ?", queue)
 	return err
 }
 
+// PruneArchiveMonth removes an expired closed monthly archive table.
 func (s *MysqlStore) PruneArchiveMonth(ctx context.Context, month string) (int64, error) {
 	partition, firstDay, err := archivePartition(month)
 	if err != nil {

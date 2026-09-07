@@ -1,6 +1,6 @@
 package headgatemysql
 
-// runtime capability boundary the Transactional port — the reason MySQL is in the same tier as Postgres:
+// The Transactional port — the reason MySQL is in the same tier as Postgres:
 // InnoDB makes transactional enqueue/completion work identically (push wakeups). MysqlTx wraps
 // *sql.Tx; Unwrap hands the concrete handle back to callers doing their own writes
 // inside the same transaction (caller-owned transaction contract), and a foreign handle is a hard error.
@@ -14,6 +14,7 @@ import (
 	headgate "github.com/mujhtech/headgate/go"
 )
 
+// MysqlTx adapts a database/sql transaction to Headgate's transaction interface.
 type MysqlTx struct{ tx *sql.Tx }
 
 func (t *MysqlTx) Unwrap() any { return t.tx }
@@ -30,6 +31,7 @@ func own(tx headgate.Tx) (*sql.Tx, error) {
 	return m.tx, nil
 }
 
+// BeginTx begins a transaction for the generic transactional store interface.
 func (s *MysqlStore) BeginTx(ctx context.Context) (headgate.Tx, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -46,6 +48,7 @@ func (s *MysqlStore) BeginTx(ctx context.Context) (headgate.Tx, error) {
 // transfer: the caller still commits or rolls back its own transaction.
 func WrapTx(tx *sql.Tx) headgate.Tx { return &MysqlTx{tx: tx} }
 
+// CommitTx commits tx.
 func (s *MysqlStore) CommitTx(_ context.Context, tx headgate.Tx) error {
 	t, err := own(tx)
 	if err != nil {
@@ -54,6 +57,7 @@ func (s *MysqlStore) CommitTx(_ context.Context, tx headgate.Tx) error {
 	return t.Commit()
 }
 
+// RollbackTx rolls back tx.
 func (s *MysqlStore) RollbackTx(_ context.Context, tx headgate.Tx) error {
 	t, err := own(tx)
 	if err != nil {
@@ -62,6 +66,7 @@ func (s *MysqlStore) RollbackTx(_ context.Context, tx headgate.Tx) error {
 	return t.Rollback()
 }
 
+// EnqueueTx inserts jobs using an existing Headgate transaction.
 func (s *MysqlStore) EnqueueTx(ctx context.Context, tx headgate.Tx, batch []headgate.Envelope) error {
 	t, err := own(tx)
 	if err != nil {
@@ -70,10 +75,12 @@ func (s *MysqlStore) EnqueueTx(ctx context.Context, tx headgate.Tx, batch []head
 	return headgate.WrapUnavailable(s.enqueueOn(ctx, t, batch))
 }
 
+// CompleteTx completes a leased job in tx.
 func (s *MysqlStore) CompleteTx(ctx context.Context, tx headgate.Tx, lease headgate.LeaseRef) error {
 	return s.CompleteTxWithActualWeight(ctx, tx, lease, nil)
 }
 
+// CompleteTxWithActualWeight completes a job and reconciles admission cost in tx.
 func (s *MysqlStore) CompleteTxWithActualWeight(ctx context.Context, tx headgate.Tx, lease headgate.LeaseRef, actualWeight *uint32) error {
 	t, err := own(tx)
 	if err != nil {
@@ -95,6 +102,7 @@ func (s *MysqlStore) CompleteTxWithActualWeight(ctx context.Context, tx headgate
 	return nil
 }
 
+// ClaimEffect atomically claims an idempotent side-effect key in tx.
 func (s *MysqlStore) ClaimEffect(ctx context.Context, tx headgate.Tx, key string) (bool, error) {
 	t, err := own(tx)
 	if err != nil {
@@ -114,6 +122,7 @@ func (s *MysqlStore) ClaimEffect(ctx context.Context, tx headgate.Tx, key string
 	return false, err
 }
 
+// CheckpointTx records a fenced checkpoint in tx.
 func (s *MysqlStore) CheckpointTx(ctx context.Context, tx headgate.Tx, lease headgate.LeaseRef, cp headgate.Checkpoint) error {
 	t, err := own(tx)
 	if err != nil {

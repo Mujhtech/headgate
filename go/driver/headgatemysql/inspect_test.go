@@ -1,7 +1,7 @@
 package headgatemysql
 
 // The Go MySQL Inspect surface, live — and the runner duties it activates. Until
-// round 32c this driver declined InspectStore, so the control plane console, the surveyed policy behavior control
+// Before this driver implemented InspectStore, the control plane console and worker control
 // channel and the scheduler/operations/quarantine/retention duties all compiled and
 // stayed dormant over MySQL. These are the spot checks that the ported statements
 // actually answer, mirroring headgatepgx/inspect_test.go against the third backend.
@@ -195,7 +195,7 @@ func TestGoMysqlInspectSurfaceSpotChecks(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// Round 32h: this loop had no `found` flag and discarded the error, so an empty
+	// Require both a matching value and a nil error; an empty result must not pass.
 	// `classes` — or a RateClasses that failed — meant invariant 16's KILL SWITCH was
 	// never asserted at all. The `found` guard is the pattern this same file already
 	// uses ten lines above; it was simply not applied here.
@@ -256,7 +256,7 @@ func TestGoMysqlInspectSurfaceSpotChecks(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("advance: %v %v", ok, err)
 	}
-	// Round 32h: `ok == false` is also what every error path returns, so a broken
+	// Check the error because ok=false is also what every error path returns.
 	// statement read as a correctly-failing CAS.
 	if ok, err := s.AdvanceSchedule(ctx, sid, 1000, now+120000); ok || err != nil {
 		t.Fatalf("CAS must fail on stale next_run, and must not ERROR: ok=%v err=%v", ok, err)

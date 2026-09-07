@@ -1,7 +1,7 @@
 package headgatemysql
 
 // surveyed policy behavior the Go scheduler duty over MySQL, live — the duty that was compiled but
-// unreachable on this driver until InspectStore existed here (round 32c). A real
+// unreachable on this driver before it implemented InspectStore. A real
 // Runner fires a periodic schedule through SchedulerSweep: @every AND cron, plus the
 // per-schedule timezone contract, mirroring headgatepgx/scheduler_test.go on the third
 // backend.
@@ -23,7 +23,7 @@ import (
 	headgate "github.com/mujhtech/headgate/go"
 )
 
-// Round 32's per-schedule timezone, live through the Go MySQL store and SchedulerSweep.
+// Exercise a per-schedule timezone through the live Go MySQL store and SchedulerSweep.
 // The zone rides inside the ONE spec string (`CRON_TZ=<IANA> <cron>`), so the schema,
 // the store port and the sweep learn nothing about timezones — and the tick id is still
 // epoch-ms. What the tick proves is that 09:00 is NEW YORK's 09:00: that instant is

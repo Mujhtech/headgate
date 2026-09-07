@@ -9,10 +9,12 @@ const (
 	InspectionMemorySampleLimit   = 1_000
 )
 
+// AgeMillis returns the non-negative age of a timestamp.
 func AgeMillis(nowMs, atMs int64) int64 {
 	return max(nowMs-atMs, 0)
 }
 
+// TimeToDrainMillis estimates drain time, or nil when the queue is not draining.
 func TimeToDrainMillis(backlog int64, arrivalRate, drainRate float64) *int64 {
 	if drainRate <= arrivalRate || drainRate <= 0 {
 		return nil

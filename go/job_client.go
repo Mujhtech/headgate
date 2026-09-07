@@ -9,8 +9,10 @@ import (
 	"errors"
 )
 
+// ErrClientFromContextUnavailable means no producer is bound to the context.
 var ErrClientFromContextUnavailable = errors.New("headgate: client is only available inside a handler")
 
+// JobClient is a producer bound to one running handler context.
 type JobClient struct {
 	ctx      context.Context
 	client   *Client
@@ -61,6 +63,7 @@ func (client *JobClient) Enqueue(batch []Envelope) error {
 	return client.client.Enqueue(client.ctx, batch)
 }
 
+// Context returns the handler context used for follow-on enqueue operations.
 func (client *JobClient) Context() context.Context {
 	if client == nil {
 		return nil

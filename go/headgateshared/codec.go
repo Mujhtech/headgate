@@ -5,11 +5,13 @@ import (
 	"strings"
 )
 
+// EncodeStringList returns the canonical JSON representation of values.
 func EncodeStringList(values []string) string {
 	encoded, _ := json.Marshal(values)
 	return string(encoded)
 }
 
+// DecodeStringList parses a JSON string list and returns nil for malformed input.
 func DecodeStringList(encoded string) []string {
 	var values []string
 	if json.Unmarshal([]byte(encoded), &values) != nil {

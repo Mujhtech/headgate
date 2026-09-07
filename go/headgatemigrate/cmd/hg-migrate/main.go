@@ -1,3 +1,4 @@
+// Command hg-migrate validates, adopts, applies, and reverts Headgate schemas.
 package main
 
 import (

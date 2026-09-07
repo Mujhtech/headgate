@@ -5,8 +5,10 @@ import (
 	"time"
 )
 
+// StuckReason identifies why a handler was expected to stop.
 type StuckReason string
 
+// Reasons reported to a StuckJobHandler.
 const (
 	StuckCancellation StuckReason = "cancellation"
 	StuckTimeout      StuckReason = "timeout"
@@ -29,8 +31,13 @@ func newStuckJobEvent(envelope Envelope, reason StuckReason, threshold time.Dura
 	}
 }
 
-func (e StuckJobEvent) Envelope() Envelope       { return cloneEnqueueBatch([]Envelope{e.envelope})[0] }
-func (e StuckJobEvent) Reason() StuckReason      { return e.reason }
+// Envelope returns a deep copy of the stuck job envelope.
+func (e StuckJobEvent) Envelope() Envelope { return cloneEnqueueBatch([]Envelope{e.envelope})[0] }
+
+// Reason returns why the handler was expected to stop.
+func (e StuckJobEvent) Reason() StuckReason { return e.reason }
+
+// Threshold returns how long cancellation remained unobserved.
 func (e StuckJobEvent) Threshold() time.Duration { return e.threshold }
 
 // StuckJobHandler is the singular operational escalation point for attempts that fail
@@ -39,8 +46,10 @@ type StuckJobHandler interface {
 	HandleStuck(context.Context, StuckJobEvent)
 }
 
+// StuckJobHandlerFunc adapts a function to StuckJobHandler.
 type StuckJobHandlerFunc func(context.Context, StuckJobEvent)
 
+// HandleStuck calls f with the stuck-job event.
 func (f StuckJobHandlerFunc) HandleStuck(ctx context.Context, event StuckJobEvent) {
 	f(ctx, event)
 }

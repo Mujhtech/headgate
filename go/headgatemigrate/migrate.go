@@ -14,20 +14,25 @@ import (
 	"fmt"
 )
 
+// Backend identifies a supported database migration family.
 type Backend string
 
+// Supported migration backends.
 const (
 	Postgres Backend = "postgres"
 	MySQL    Backend = "mysql"
 )
 
+// Direction identifies whether migrations are applied or reverted.
 type Direction string
 
+// Supported migration directions.
 const (
 	Up   Direction = "up"
 	Down Direction = "down"
 )
 
+// Migration is one immutable embedded schema version.
 type Migration struct {
 	Version    int
 	Name       string
@@ -225,6 +230,7 @@ var byBackend = map[Backend][]Migration{
 	},
 }
 
+// Migrations returns an owned copy of the migrations for backend.
 func Migrations(backend Backend) []Migration {
 	source := byBackend[backend]
 	result := make([]Migration, len(source))
@@ -232,6 +238,7 @@ func Migrations(backend Backend) []Migration {
 	return result
 }
 
+// GetMigration looks up one migration version for backend.
 func GetMigration(backend Backend, version int) (Migration, bool) {
 	for _, migration := range byBackend[backend] {
 		if migration.Version == version {
@@ -241,6 +248,7 @@ func GetMigration(backend Backend, version int) (Migration, bool) {
 	return Migration{}, false
 }
 
+// LatestVersion returns the newest embedded migration version for backend.
 func LatestVersion(backend Backend) int {
 	all := byBackend[backend]
 	if len(all) == 0 {
@@ -249,10 +257,12 @@ func LatestVersion(backend Backend) int {
 	return all[len(all)-1].Version
 }
 
+// Checksum returns the immutable SHA-256 checksum of a migration's up SQL.
 func Checksum(migration Migration) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(migration.UpSQL)))
 }
 
+// AppliedMigration is one migration-history row read from a database.
 type AppliedMigration struct {
 	Version     int
 	Name        string
@@ -260,36 +270,44 @@ type AppliedMigration struct {
 	AppliedAtMS int64
 }
 
+// Options bounds and configures a migration plan.
 type Options struct {
 	TargetVersion *int
 	MaxSteps      *int
 	DryRun        bool
 }
 
+// Step pairs a migration with the direction in which it will run.
 type Step struct {
 	Direction Direction
 	Migration Migration
 }
 
+// Result reports planned or executed migration steps.
 type Result struct {
 	DryRun bool
 	Steps  []Step
 }
 
+// InstallationState classifies the database's migration history.
 type InstallationState string
 
+// Database installation states.
 const (
 	Empty       InstallationState = "empty"
 	Unversioned InstallationState = "unversioned"
 	Versioned   InstallationState = "versioned"
 )
 
+// ErrUnversionedSchema means Headgate tables exist without migration history.
 var ErrUnversionedSchema = errors.New("headgate tables exist without migration history; validate and adopt the current schema before migrating")
 
+// HistoryError reports inconsistent or unknown migration history.
 type HistoryError struct{ Message string }
 
 func (e *HistoryError) Error() string { return "invalid migration history: " + e.Message }
 
+// SchemaError reports one or more differences from the expected schema manifest.
 type SchemaError struct{ Messages []string }
 
 func (e *SchemaError) Error() string {
@@ -304,6 +322,7 @@ func (e *SchemaError) Error() string {
 	return message
 }
 
+// ValidateHistory checks ordering, names, and checksums against embedded migrations.
 func ValidateHistory(backend Backend, applied []AppliedMigration) error {
 	known := byBackend[backend]
 	for index, row := range applied {
@@ -334,6 +353,7 @@ func ValidateHistory(backend Backend, applied []AppliedMigration) error {
 	return nil
 }
 
+// Plan returns the bounded migration steps needed to reach the requested target.
 func Plan(backend Backend, applied []AppliedMigration, direction Direction, options Options) ([]Step, error) {
 	if backend != Postgres && backend != MySQL {
 		return nil, fmt.Errorf("unknown migration backend %q", backend)

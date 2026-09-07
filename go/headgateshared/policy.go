@@ -3,6 +3,7 @@ package headgateshared
 // Outcome is the portable lifecycle result written by every worker runtime and store.
 type Outcome int
 
+// Supported worker outcomes.
 const (
 	OutcomeSuccess Outcome = iota
 	OutcomeRetry
@@ -37,6 +38,7 @@ func (o Outcome) String() string {
 	}
 }
 
+// ParseOutcome parses the wire spelling of a worker outcome.
 func ParseOutcome(value string) (Outcome, bool) {
 	switch value {
 	case "success":
@@ -63,6 +65,7 @@ func ParseOutcome(value string) (Outcome, bool) {
 // SaturationStrategy is the wire/storage spelling used by every admission gate.
 type SaturationStrategy string
 
+// Supported concurrency saturation strategies.
 const (
 	SaturateQueue          SaturationStrategy = "queue"
 	SaturateDiscard        SaturationStrategy = "discard"
@@ -70,6 +73,7 @@ const (
 	SaturateCancelIncoming SaturationStrategy = "cancel_incoming"
 )
 
+// Valid reports whether s is a supported saturation strategy.
 func (s SaturationStrategy) Valid() bool {
 	switch s {
 	case SaturateQueue, SaturateDiscard, SaturateCancelRunning, SaturateCancelIncoming:
@@ -82,6 +86,7 @@ func (s SaturationStrategy) Valid() bool {
 // MissedPolicy decides what happens to periodic runs missed during downtime.
 type MissedPolicy int
 
+// Supported policies for periodic runs missed during downtime.
 const (
 	MissedSkip MissedPolicy = iota
 	MissedRunOnce
@@ -99,6 +104,7 @@ func (p MissedPolicy) String() string {
 	}
 }
 
+// ParseMissedPolicy parses the wire spelling of a missed-run policy.
 func ParseMissedPolicy(value string) (MissedPolicy, bool) {
 	switch value {
 	case "skip":

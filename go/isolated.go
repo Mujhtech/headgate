@@ -15,6 +15,7 @@ import (
 	"time"
 )
 
+// Isolated worker protocol constants.
 const (
 	IsolatedProtocolPrefix  = "HEADGATE/1 "
 	defaultMaxProcessOutput = int64(64 * 1024)
@@ -38,12 +39,15 @@ type IsolatedRequest struct {
 	DeadlineMs    int64  `json:"deadline_ms"`
 }
 
+// Payload decodes the request's base64 payload.
 func (r IsolatedRequest) Payload() ([]byte, error) {
 	return base64.StdEncoding.DecodeString(r.PayloadBase64)
 }
 
+// IsolatedOutcome is the portable result returned by a child process.
 type IsolatedOutcome string
 
+// Outcomes supported by the isolated worker protocol.
 const (
 	IsolatedSuccess     IsolatedOutcome = "success"
 	IsolatedRetry       IsolatedOutcome = "retry"
@@ -204,18 +208,18 @@ func executeIsolated(ctx context.Context, cfg IsolatedProcessConfig, claim Claim
 	return isolatedResponseError(response)
 }
 
-func readProcessOutput(r io.Reader, max int64) ([]byte, bool, error) {
+func readProcessOutput(r io.Reader, maxBytes int64) ([]byte, bool, error) {
 	var kept bytes.Buffer
-	n, err := io.Copy(&kept, io.LimitReader(r, max+1))
+	n, err := io.Copy(&kept, io.LimitReader(r, maxBytes+1))
 	if err != nil {
 		return nil, false, err
 	}
-	overflow := n > max
+	overflow := n > maxBytes
 	if overflow {
 		if _, err := io.Copy(io.Discard, r); err != nil {
 			return nil, true, err
 		}
-		return kept.Bytes()[:max], true, nil
+		return kept.Bytes()[:maxBytes], true, nil
 	}
 	return kept.Bytes(), false, nil
 }

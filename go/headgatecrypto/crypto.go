@@ -20,16 +20,19 @@ var magic = []byte{'H', 'G', 'E', 'C', 1}
 
 const nonceLen = 12
 
+// KeyProvider supplies the active encryption key and resolves historical keys by ID.
 type KeyProvider interface {
 	ActiveKey() (id string, key [32]byte, err error)
 	Key(id string) ([32]byte, error)
 }
 
+// StaticKeyring is an immutable in-memory KeyProvider.
 type StaticKeyring struct {
 	active string
 	keys   map[string][32]byte
 }
 
+// NewStaticKeyring copies and validates a static key set.
 func NewStaticKeyring(active string, keys map[string][32]byte) (*StaticKeyring, error) {
 	if _, ok := keys[active]; active == "" || !ok {
 		return nil, errors.New("headgate encrypted: active encryption key is missing")
@@ -41,10 +44,12 @@ func NewStaticKeyring(active string, keys map[string][32]byte) (*StaticKeyring, 
 	return &StaticKeyring{active: active, keys: copyKeys}, nil
 }
 
+// ActiveKey returns the configured write key.
 func (r *StaticKeyring) ActiveKey() (string, [32]byte, error) {
 	return r.active, r.keys[r.active], nil
 }
 
+// Key resolves a decryption key by ID.
 func (r *StaticKeyring) Key(id string) ([32]byte, error) {
 	key, ok := r.keys[id]
 	if !ok {
@@ -74,6 +79,7 @@ func EncryptEnvelope(keys KeyProvider, env headgate.Envelope) (headgate.Envelope
 	return env, err
 }
 
+// DecryptEnvelope authenticates and decrypts an encrypted envelope payload.
 func DecryptEnvelope(keys KeyProvider, env headgate.Envelope) ([]byte, error) {
 	if len(env.Payload) < len(magic)+2+nonceLen+16 || string(env.Payload[:len(magic)]) != string(magic) {
 		return nil, errors.New("headgate encrypted: payload is not a headgate encrypted envelope")
@@ -139,6 +145,7 @@ func aad(env headgate.Envelope) []byte {
 	return out
 }
 
+// RegisterEncrypted registers a typed handler whose payload is decrypted before decoding.
 func RegisterEncrypted[T headgate.Args](
 	registry *headgate.Registry,
 	keys KeyProvider,

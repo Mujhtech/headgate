@@ -26,6 +26,7 @@ type Extensions struct {
 	values map[reflect.Type]any
 }
 
+// NewExtensions creates an empty concurrency-safe extension map.
 func NewExtensions() *Extensions { return &Extensions{} }
 
 // Set stores value under exactly T and returns its previous value, if present.
@@ -84,6 +85,7 @@ func Extension[T any](extensions *Extensions) (value T, ok bool) {
 	return boxed.(extensionBox[T]).value, true
 }
 
+// RemoveExtension deletes and returns the value stored under exactly T.
 func RemoveExtension[T any](extensions *Extensions) (value T, ok bool) {
 	if extensions == nil {
 		return value, false
@@ -99,6 +101,7 @@ func RemoveExtension[T any](extensions *Extensions) (value T, ok bool) {
 	return boxed.(extensionBox[T]).value, true
 }
 
+// Len returns the number of stored extension types.
 func (extensions *Extensions) Len() int {
 	if extensions == nil {
 		return 0
@@ -141,6 +144,7 @@ func SetJobData[T any](ctx context.Context, value T) error {
 	return nil
 }
 
+// JobData returns attempt-local data stored under exactly T.
 func JobData[T any](ctx context.Context) (value T, ok bool) {
 	data, ok := taskDataFrom(ctx)
 	if !ok {
@@ -149,6 +153,7 @@ func JobData[T any](ctx context.Context) (value T, ok bool) {
 	return Extension[T](data.job)
 }
 
+// WorkerData returns worker-shared data stored under exactly T.
 func WorkerData[T any](ctx context.Context) (value T, ok bool) {
 	data, ok := taskDataFrom(ctx)
 	if !ok {

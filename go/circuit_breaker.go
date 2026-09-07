@@ -10,6 +10,7 @@ import (
 // CircuitState is the observable producer availability state.
 type CircuitState string
 
+// Circuit breaker states.
 const (
 	CircuitClosed   CircuitState = "closed"
 	CircuitOpen     CircuitState = "open"
@@ -34,6 +35,7 @@ func DefaultCircuitBreakerConfig() CircuitBreakerConfig {
 	}
 }
 
+// ErrCircuitRejected identifies enqueue calls rejected before reaching the store.
 var ErrCircuitRejected = errors.New("headgate: enqueue circuit rejected call")
 
 // CircuitOpenError means the store was not called. RetryAfter is positive while open;
@@ -82,6 +84,7 @@ type CircuitBreaker struct {
 	mode circuitMode
 }
 
+// NewCircuitBreaker validates config and creates a closed circuit breaker.
 func NewCircuitBreaker(config CircuitBreakerConfig) (*CircuitBreaker, error) {
 	return newCircuitBreakerWithClock(config, time.Now)
 }

@@ -2,7 +2,7 @@ package headgate
 
 import "testing"
 
-// telemetry and trace context trace context on the envelope (round 32).
+// Trace context on the envelope.
 //
 // These vectors ARE the spec. The Rust core runs this exact table
 // (crates/headgate-core/src/lib.rs, `traceparent_parses_exactly_the_w3c_shape` and

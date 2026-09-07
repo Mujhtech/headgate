@@ -29,6 +29,7 @@ var build embed.FS
 
 const defaultConfig = `window.HEADGATE = window.HEADGATE || {apiBase:"/api/v1",readOnly:false};`
 
+// Config controls how the embedded console reaches the co-mounted control API.
 type Config struct {
 	// APIBase is the browser-visible path where the control API is mounted.
 	APIBase string

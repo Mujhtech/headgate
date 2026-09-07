@@ -24,8 +24,10 @@ func newInsertAttempt(request EnqueueRequest) InsertAttempt {
 // Batch returns an independently owned view of the attempted atomic batch.
 func (a InsertAttempt) Batch() []Envelope { return cloneEnqueueBatch(a.batch) }
 
+// InsertOutcomeKind classifies the result of an enqueue store call.
 type InsertOutcomeKind string
 
+// Insert outcome kinds reported to hooks.
 const (
 	// InsertOutcomeSucceeded includes a new insert and an idempotent same-ID replay;
 	// Store intentionally returns nil for both.
@@ -62,8 +64,10 @@ func classifyInsertOutcome(err error) InsertOutcome {
 	return InsertOutcome{Kind: InsertOutcomeRejected, Err: err}
 }
 
+// InsertHookPhase identifies whether a hook runs before or after the store call.
 type InsertHookPhase string
 
+// Insert hook phases.
 const (
 	InsertHookBegin InsertHookPhase = "begin"
 	InsertHookEnd   InsertHookPhase = "end"
@@ -77,10 +81,13 @@ type InsertHookEvent struct {
 	outcome *InsertOutcome
 }
 
+// Phase returns the hook phase.
 func (e InsertHookEvent) Phase() InsertHookPhase { return e.phase }
 
+// Attempt returns the immutable enqueue attempt.
 func (e InsertHookEvent) Attempt() InsertAttempt { return e.attempt }
 
+// Outcome returns the store outcome for an end event.
 func (e InsertHookEvent) Outcome() (InsertOutcome, bool) {
 	if e.outcome == nil {
 		return InsertOutcome{}, false
@@ -95,8 +102,10 @@ type InsertHook interface {
 	OnInsert(context.Context, InsertHookEvent)
 }
 
+// InsertHookFunc adapts a function to InsertHook.
 type InsertHookFunc func(context.Context, InsertHookEvent)
 
+// OnInsert calls f with the hook event.
 func (f InsertHookFunc) OnInsert(ctx context.Context, event InsertHookEvent) {
 	f(ctx, event)
 }

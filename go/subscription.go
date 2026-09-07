@@ -8,8 +8,10 @@ import (
 	"time"
 )
 
+// JobEventKind identifies a process-local lifecycle notification.
 type JobEventKind string
 
+// Lifecycle event kinds emitted by the runtime.
 const (
 	JobEventCompleted JobEventKind = "completed"
 	JobEventFailed    JobEventKind = "failed"
@@ -40,15 +42,32 @@ func newJobEvent(kind JobEventKind, envelope Envelope, state, errMsg string) Job
 func (e JobEvent) Envelope() Envelope {
 	return Envelope{ID: e.jobID, Kind: e.jobKind, Queue: e.queue, Attempt: e.attempt}
 }
-func (e JobEvent) Kind() JobEventKind   { return e.kind }
-func (e JobEvent) JobID() string        { return e.jobID }
-func (e JobEvent) JobKind() string      { return e.jobKind }
-func (e JobEvent) Queue() string        { return e.queue }
-func (e JobEvent) Attempt() uint32      { return e.attempt }
-func (e JobEvent) State() string        { return e.state }
-func (e JobEvent) ErrorMessage() string { return e.err }
-func (e JobEvent) AtMs() int64          { return e.atMs }
 
+// Kind returns the lifecycle event kind.
+func (e JobEvent) Kind() JobEventKind { return e.kind }
+
+// JobID returns the job identifier.
+func (e JobEvent) JobID() string { return e.jobID }
+
+// JobKind returns the registered job kind.
+func (e JobEvent) JobKind() string { return e.jobKind }
+
+// Queue returns the queue containing the job.
+func (e JobEvent) Queue() string { return e.queue }
+
+// Attempt returns the number of returned-error attempts before this event.
+func (e JobEvent) Attempt() uint32 { return e.attempt }
+
+// State returns the persisted lifecycle state.
+func (e JobEvent) State() string { return e.state }
+
+// ErrorMessage returns the recorded error message, when present.
+func (e JobEvent) ErrorMessage() string { return e.err }
+
+// AtMs returns the process-local event time in Unix milliseconds.
+func (e JobEvent) AtMs() int64 { return e.atMs }
+
+// SubscriptionConfig controls buffering and event-kind filtering for a subscription.
 type SubscriptionConfig struct {
 	// ChanSize defaults to 64. Negative values are invalid.
 	ChanSize int
@@ -70,10 +89,12 @@ type EventBus struct {
 	subscribers map[uint64]*eventSubscriber
 }
 
+// NewEventBus creates an empty process-local lifecycle event bus.
 func NewEventBus() *EventBus {
 	return &EventBus{subscribers: make(map[uint64]*eventSubscriber)}
 }
 
+// Subscribe registers a bounded subscriber until its context or subscription closes.
 func (bus *EventBus) Subscribe(ctx context.Context, cfg SubscriptionConfig) (*Subscription, error) {
 	if bus == nil {
 		return nil, errors.New("headgate: subscription event bus is nil")
@@ -129,6 +150,7 @@ func (bus *EventBus) publish(event JobEvent) {
 	}
 }
 
+// Subscription owns one event stream registered with an EventBus.
 type Subscription struct {
 	bus        *EventBus
 	id         uint64
@@ -136,14 +158,17 @@ type Subscription struct {
 	closeOnce  sync.Once
 }
 
+// Events returns the subscription's lifecycle event stream.
 func (subscription *Subscription) Events() <-chan JobEvent {
 	return subscription.subscriber.events
 }
 
+// Dropped returns the number of events discarded because the buffer was full.
 func (subscription *Subscription) Dropped() uint64 {
 	return subscription.subscriber.dropped.Load()
 }
 
+// Close unregisters the subscription and closes its event stream.
 func (subscription *Subscription) Close() {
 	if subscription == nil {
 		return

@@ -1,7 +1,7 @@
 package headgate
 
 // INVARIANT 7 — "Eviction is never silent. Emit an event and increment a counter,
-// always." Round 32i mutation-tested the whole invariant list and found this one was not
+// always." This regression test verifies the runtime side of that invariant; it was not
 // merely UNCAUGHT but UNIMPLEMENTED, in both languages: the `evicted` Event type is
 // documented on the Event struct (and `Event::Evicted` on the Rust enum) and was
 // CONSTRUCTED NOWHERE, while the retention duty discarded even its own return count with
@@ -12,7 +12,7 @@ package headgate
 // deterministic and needs no database: `runDuty` exists for exactly this (its Rust twin,
 // worker.rs `run_duty`, always has). The store is a stub whose EvictRetained reports a
 // count — the sweep's SQL is asserted elsewhere, in the conformance corpus; what is
-// asserted here is that a non-zero count reaches the telemetry and trace context facade instead of the floor.
+// asserted here is that a non-zero count reaches the telemetry facade instead of being discarded.
 
 import (
 	"bytes"
@@ -178,7 +178,7 @@ func (c *captureTelemetry) eventsOf(typ string) []Event {
 
 func TestMemoryGuardEmitsSampleAndRequestsBoundedRestartAtLimit(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		cap := &captureTelemetry{}
+		telemetry := &captureTelemetry{}
 		r := NewRunner(&evictStub{}, NewRegistry(), Config{
 			DisableDuties:       true,
 			MemoryLimitBytes:    100,
@@ -186,7 +186,7 @@ func TestMemoryGuardEmitsSampleAndRequestsBoundedRestartAtLimit(t *testing.T) {
 			MemorySampler: MemorySamplerFunc(func() (uint64, error) {
 				return 125, nil
 			}),
-			Telemetry: cap,
+			Telemetry: telemetry,
 		})
 		done := make(chan error, 1)
 		go func() { done <- r.Run(context.Background()) }()
@@ -198,7 +198,7 @@ func TestMemoryGuardEmitsSampleAndRequestsBoundedRestartAtLimit(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatal("memory guard did not stop admission and begin shutdown")
 		}
-		events := cap.eventsOf("worker_memory")
+		events := telemetry.eventsOf("worker_memory")
 		if len(events) != 1 {
 			t.Fatalf("got %d memory samples, want the threshold sample", len(events))
 		}
@@ -210,7 +210,7 @@ func TestMemoryGuardEmitsSampleAndRequestsBoundedRestartAtLimit(t *testing.T) {
 
 func TestMemoryGuardSamplesBelowLimitWithoutStoppingWorker(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		cap := &captureTelemetry{}
+		telemetry := &captureTelemetry{}
 		r := NewRunner(&evictStub{}, NewRegistry(), Config{
 			DisableDuties:       true,
 			MemoryLimitBytes:    100,
@@ -218,7 +218,7 @@ func TestMemoryGuardSamplesBelowLimitWithoutStoppingWorker(t *testing.T) {
 			MemorySampler: MemorySamplerFunc(func() (uint64, error) {
 				return 75, nil
 			}),
-			Telemetry: cap,
+			Telemetry: telemetry,
 		})
 		done := make(chan error, 1)
 		go func() { done <- r.Run(context.Background()) }()
@@ -233,7 +233,7 @@ func TestMemoryGuardSamplesBelowLimitWithoutStoppingWorker(t *testing.T) {
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
-		events := cap.eventsOf("worker_memory")
+		events := telemetry.eventsOf("worker_memory")
 		if len(events) == 0 || events[0].RestartRequested {
 			t.Fatalf("below-limit telemetry = %+v", events)
 		}
@@ -269,13 +269,13 @@ func TestRollingRestartDrainIgnoresOrdinaryShutdownTimeout(t *testing.T) {
 }
 
 func TestRetentionSweepIsNeverSilent(t *testing.T) {
-	cap := &captureTelemetry{}
+	telemetry := &captureTelemetry{}
 	store := &evictStub{evicted: 7}
-	r := NewRunner(store, NewRegistry(), Config{Telemetry: cap})
+	r := NewRunner(store, NewRegistry(), Config{Telemetry: telemetry})
 
 	r.runDuty(context.Background(), "retention")
 
-	n, total := cap.countOf("evicted")
+	n, total := telemetry.countOf("evicted")
 	if n != 1 {
 		t.Fatalf("invariant 7: a sweep that deleted 7 rows emitted %d `evicted` events, want 1", n)
 	}
@@ -287,26 +287,25 @@ func TestRetentionSweepIsNeverSilent(t *testing.T) {
 // The other half of "always": a sweep that destroyed NOTHING must not emit either, or the
 // signal is noise and a bridge's counter cannot be read as "rows lost".
 func TestRetentionSweepStaysQuietWhenItEvictsNothing(t *testing.T) {
-	cap := &captureTelemetry{}
-	r := NewRunner(&evictStub{evicted: 0}, NewRegistry(), Config{Telemetry: cap})
+	telemetry := &captureTelemetry{}
+	r := NewRunner(&evictStub{evicted: 0}, NewRegistry(), Config{Telemetry: telemetry})
 
 	r.runDuty(context.Background(), "retention")
 
-	if n, _ := cap.countOf("evicted"); n != 0 {
+	if n, _ := telemetry.countOf("evicted"); n != 0 {
 		t.Fatalf("invariant 7: an empty sweep emitted %d events, want 0", n)
 	}
 	// ...and the witness that the probe can see an event at all, so the zero above is an
 	// assertion rather than a broken harness.
-	r2 := NewRunner(&evictStub{evicted: 1}, NewRegistry(), Config{Telemetry: cap})
+	r2 := NewRunner(&evictStub{evicted: 1}, NewRegistry(), Config{Telemetry: telemetry})
 	r2.runDuty(context.Background(), "retention")
-	if n, _ := cap.countOf("evicted"); n != 1 {
+	if n, _ := telemetry.countOf("evicted"); n != 1 {
 		t.Fatalf("witness: a NON-empty sweep emitted %d events, want 1 — the probe is broken", n)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// telemetry and trace context `rejected`, round 32k — the SECOND dead facade type (round 32i found and fixed the
-// first, `evicted`). Documented on the Event struct in both languages, constructed nowhere.
+// The rejected telemetry event must be emitted, not merely declared on Event.
 //
 // This drives the REAL processOne, not the emission helper: a test that called
 // r.rejected() directly would still pass after someone deleted the call from the
@@ -622,7 +621,7 @@ func TestCompletionTelemetryRequiresDurableAck(t *testing.T) {
 func TestAPolicyRejectionReachesTheFacadeWithItsClause(t *testing.T) {
 	run := func(handlerErr error, isFailure bool, reports ...uint32) ([][3]any, []Outcome, []string, string) {
 		store := &ackStub{}
-		cap := &captureTelemetry{}
+		telemetry := &captureTelemetry{}
 		reg := NewRegistry()
 		if err := RegisterFunc[rjArgs](reg, func(ctx context.Context, _ *Job[rjArgs]) error {
 			for _, actual := range reports {
@@ -635,7 +634,7 @@ func TestAPolicyRejectionReachesTheFacadeWithItsClause(t *testing.T) {
 			t.Fatal(err)
 		}
 		r := NewRunner(store, reg, Config{
-			Telemetry: cap,
+			Telemetry: telemetry,
 			IsFailure: func(error) bool { return isFailure },
 		})
 		claim := Claim{
@@ -644,7 +643,7 @@ func TestAPolicyRejectionReachesTheFacadeWithItsClause(t *testing.T) {
 		}
 		steps := newStepState(store, claim)
 		outcome := r.processOne(withStepState(context.Background(), steps), claim, steps)
-		return cap.rejections(), store.acked(), store.actualWeights(), outcome
+		return telemetry.rejections(), store.acked(), store.actualWeights(), outcome
 	}
 
 	evs, acked, actual, outcome := run(ErrRateLimited, true)
@@ -699,7 +698,7 @@ func TestAPolicyRejectionReachesTheFacadeWithItsClause(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// failure classification EMPTY-POLL BACKOFF. Round 32j's evidence linter recorded this row as `none:` —
+// Empty-poll backoff needs direct coverage because configuration-only tests do not prove
 // nextBackoff had no test in any suite, and the tests that mention BackoffConfig only
 // configure a tiny floor so they do not sleep. Asserted here at UNIT level and
 // deliberately so: the behaviour is a pure function of (current delay, config, jitter),
@@ -789,7 +788,7 @@ func TestAnyAdmitThatReturnsWorkResetsTheDelayToTheFloor(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// backlog metrics THE ROLLING window behind the scale-down signal. Round 32j: the row's headline
+// The rolling window behind the scale-down signal must not degrade into a lifetime counter.
 // claim — that this is ROLLING, not a lifetime counter — was untested in both languages;
 // the /cluster fixtures write polls/empty_polls directly, so nothing ever asserted that an
 // old admission falls out of the ring.

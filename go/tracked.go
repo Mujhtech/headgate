@@ -11,6 +11,7 @@ import (
 	"sync"
 )
 
+// Errors returned by tracked-task operations outside their valid attempt lifetime.
 var (
 	ErrTaskTrackerUnavailable = errors.New("headgate: tracked tasks are only available inside a handler")
 	ErrTaskTrackerClosed      = errors.New("headgate: job attempt is no longer accepting tracked tasks")

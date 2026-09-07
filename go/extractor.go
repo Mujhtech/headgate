@@ -27,8 +27,10 @@ type HandlerExtractor[T any] interface {
 	Extract(context.Context) (T, error)
 }
 
+// ExtractorFunc adapts a function to HandlerExtractor.
 type ExtractorFunc[T any] func(context.Context) (T, error)
 
+// Extract calls f with the dispatch context.
 func (f ExtractorFunc[T]) Extract(ctx context.Context) (T, error) { return f(ctx) }
 
 // Metadata is the durable, non-payload envelope metadata visible at dispatch.
@@ -47,6 +49,7 @@ type Attempt struct {
 	MaxAttempts    uint32
 }
 
+// TaskID is the durable identifier of the job being dispatched.
 type TaskID string
 
 // WorkerContext contains stable facts about the runner, not its dependency container.
@@ -112,6 +115,7 @@ func ExtractData[T any]() HandlerExtractor[T] {
 	})
 }
 
+// ExtractMetadata returns the current job's durable non-payload metadata.
 func ExtractMetadata() HandlerExtractor[Metadata] {
 	return ExtractorFunc[Metadata](func(ctx context.Context) (Metadata, error) {
 		scope, ok := extractionScopeFrom(ctx)
@@ -148,6 +152,7 @@ func ExtractMeta[T any](decode func(Metadata) (T, error)) HandlerExtractor[T] {
 	})
 }
 
+// ExtractAttempt returns the current job's attempt counters.
 func ExtractAttempt() HandlerExtractor[Attempt] {
 	return ExtractorFunc[Attempt](func(ctx context.Context) (Attempt, error) {
 		scope, ok := extractionScopeFrom(ctx)
@@ -158,6 +163,7 @@ func ExtractAttempt() HandlerExtractor[Attempt] {
 	})
 }
 
+// ExtractTaskID returns the current job's durable identifier.
 func ExtractTaskID() HandlerExtractor[TaskID] {
 	return ExtractorFunc[TaskID](func(ctx context.Context) (TaskID, error) {
 		scope, ok := extractionScopeFrom(ctx)
@@ -168,6 +174,7 @@ func ExtractTaskID() HandlerExtractor[TaskID] {
 	})
 }
 
+// ExtractWorkerContext returns stable facts about the current runner.
 func ExtractWorkerContext() HandlerExtractor[WorkerContext] {
 	return ExtractorFunc[WorkerContext](func(ctx context.Context) (WorkerContext, error) {
 		scope, ok := extractionScopeFrom(ctx)
@@ -180,6 +187,7 @@ func ExtractWorkerContext() HandlerExtractor[WorkerContext] {
 	})
 }
 
+// ExtractClient returns the producer bound to the current handler.
 func ExtractClient() HandlerExtractor[*JobClient] {
 	return ExtractorFunc[*JobClient](func(ctx context.Context) (*JobClient, error) {
 		client, ok := ClientFromContext(ctx)
@@ -190,8 +198,7 @@ func ExtractClient() HandlerExtractor[*JobClient] {
 	})
 }
 
-// RegisterExtractedN keeps extraction compile-time typed without reflection or a
-// service locator. All N extractors finish before work is called.
+// RegisterExtracted1 registers work with one compile-time typed extractor.
 func RegisterExtracted1[T Args, A any](r *Registry, a HandlerExtractor[A], work func(context.Context, *Job[T], A) error) error {
 	return RegisterFunc[T](r, func(ctx context.Context, job *Job[T]) error {
 		av, err := a.Extract(ctx)
@@ -202,6 +209,7 @@ func RegisterExtracted1[T Args, A any](r *Registry, a HandlerExtractor[A], work 
 	})
 }
 
+// RegisterExtracted2 registers work with two compile-time typed extractors.
 func RegisterExtracted2[T Args, A, B any](r *Registry, a HandlerExtractor[A], b HandlerExtractor[B], work func(context.Context, *Job[T], A, B) error) error {
 	return RegisterFunc[T](r, func(ctx context.Context, job *Job[T]) error {
 		av, err := a.Extract(ctx)
@@ -216,6 +224,7 @@ func RegisterExtracted2[T Args, A, B any](r *Registry, a HandlerExtractor[A], b 
 	})
 }
 
+// RegisterExtracted3 registers work with three compile-time typed extractors.
 func RegisterExtracted3[T Args, A, B, C any](r *Registry, a HandlerExtractor[A], b HandlerExtractor[B], c HandlerExtractor[C], work func(context.Context, *Job[T], A, B, C) error) error {
 	return RegisterFunc[T](r, func(ctx context.Context, job *Job[T]) error {
 		av, err := a.Extract(ctx)
@@ -234,6 +243,7 @@ func RegisterExtracted3[T Args, A, B, C any](r *Registry, a HandlerExtractor[A],
 	})
 }
 
+// RegisterExtracted4 registers work with four compile-time typed extractors.
 func RegisterExtracted4[T Args, A, B, C, D any](r *Registry, a HandlerExtractor[A], b HandlerExtractor[B], c HandlerExtractor[C], d HandlerExtractor[D], work func(context.Context, *Job[T], A, B, C, D) error) error {
 	return RegisterFunc[T](r, func(ctx context.Context, job *Job[T]) error {
 		av, err := a.Extract(ctx)
@@ -256,6 +266,7 @@ func RegisterExtracted4[T Args, A, B, C, D any](r *Registry, a HandlerExtractor[
 	})
 }
 
+// RegisterExtracted5 registers work with five compile-time typed extractors.
 func RegisterExtracted5[T Args, A, B, C, D, E any](r *Registry, a HandlerExtractor[A], b HandlerExtractor[B], c HandlerExtractor[C], d HandlerExtractor[D], e HandlerExtractor[E], work func(context.Context, *Job[T], A, B, C, D, E) error) error {
 	return RegisterFunc[T](r, func(ctx context.Context, job *Job[T]) error {
 		av, err := a.Extract(ctx)

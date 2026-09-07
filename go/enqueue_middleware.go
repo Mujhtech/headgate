@@ -6,6 +6,7 @@ import "context"
 // middleware: changing the field does not turn a direct call into a transactional one.
 type EnqueueOperation string
 
+// Supported enqueue operations.
 const (
 	EnqueueOperationDirect        EnqueueOperation = "direct"
 	EnqueueOperationTransactional EnqueueOperation = "transactional"
@@ -31,6 +32,7 @@ type EnqueueMiddleware interface {
 // EnqueueMiddlewareFunc adapts a function to EnqueueMiddleware.
 type EnqueueMiddlewareFunc func(context.Context, EnqueueRequest, EnqueueNext) error
 
+// HandleEnqueue calls f with the enqueue request and remainder of the chain.
 func (f EnqueueMiddlewareFunc) HandleEnqueue(
 	ctx context.Context,
 	request EnqueueRequest,
@@ -53,6 +55,7 @@ func newEnqueueNext(middlewares []EnqueueMiddleware, terminal enqueueHandler) En
 	return EnqueueNext{middlewares: middlewares, terminal: terminal}
 }
 
+// Run passes request through the remaining middleware and terminal enqueue operation.
 func (n EnqueueNext) Run(ctx context.Context, request EnqueueRequest) error {
 	if len(n.middlewares) == 0 {
 		return n.terminal(ctx, request)

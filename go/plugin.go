@@ -89,6 +89,7 @@ func WithPluginInsertHooks(hooks ...InsertHook) PluginOption {
 	}
 }
 
+// Name returns the plugin's configured identity.
 func (p Plugin) Name() string { return p.name }
 
 // Kinds returns nil for a global plugin and an owned, deterministically sorted slice for

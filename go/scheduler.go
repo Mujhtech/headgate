@@ -59,11 +59,11 @@ func fireSchedule(
 	now int64,
 	hooks []PeriodicEnqueueHook,
 ) (uint64, error) {
-	cap := int(s.BackfillLimit)
-	if cap < 1 {
-		cap = 1
+	limit := int(s.BackfillLimit)
+	if limit < 1 {
+		limit = 1
 	}
-	ticks, err := ScheduleDueTicks(s.Spec, s.NextRunMs, now, cap)
+	ticks, err := ScheduleDueTicks(s.Spec, s.NextRunMs, now, limit)
 	if err != nil {
 		// A broken spec must not hot-loop the sweep: park it an hour out, loudly.
 		slog.Error("headgate: unparseable schedule spec; retrying in 1h",

@@ -118,12 +118,14 @@ var indexes = map[string]struct{}{
 	"headgate_durable_event_recent":   {},
 }
 
+// Namespace contains validated PostgreSQL schema and wakeup-channel identifiers.
 type Namespace struct {
 	name          string
 	quoted        string
 	wakeupChannel string
 }
 
+// NewNamespace validates name and derives its quoted schema and wakeup channel.
 func NewNamespace(name string) (Namespace, error) {
 	if name == "" {
 		return Namespace{}, errors.New("headgate: Postgres schema must not be empty")
@@ -142,17 +144,23 @@ func NewNamespace(name string) (Namespace, error) {
 	}, nil
 }
 
-func (n Namespace) Name() string          { return n.name }
+// Name returns the unquoted PostgreSQL schema name.
+func (n Namespace) Name() string { return n.name }
+
+// WakeupChannel returns the deterministic LISTEN/NOTIFY channel for the namespace.
 func (n Namespace) WakeupChannel() string { return n.wakeupChannel }
 
+// QuoteIdentifier quotes a PostgreSQL identifier.
 func QuoteIdentifier(value string) string {
 	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
 }
 
+// Qualified returns object qualified by the namespace schema.
 func (n Namespace) Qualified(object string) string {
 	return n.quoted + "." + QuoteIdentifier(object)
 }
 
+// Render qualifies Headgate SQL objects and wakeup channels for this namespace.
 func (n Namespace) Render(sql string) string {
 	if n.name == "" {
 		return sql

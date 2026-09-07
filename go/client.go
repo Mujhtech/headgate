@@ -12,6 +12,7 @@ import (
 // client or the HTTP API. Policies never need to infer that distinction from headers.
 type EnqueueSource string
 
+// Enqueue sources supplied to authorization policy.
 const (
 	EnqueueSourceLibrary EnqueueSource = "library"
 	EnqueueSourceHTTP    EnqueueSource = "http"
@@ -75,6 +76,7 @@ type EnqueueAuthorizer interface {
 // EnqueueAuthorizeFunc adapts a function into an EnqueueAuthorizer.
 type EnqueueAuthorizeFunc func(context.Context, EnqueueAuthorization, Envelope) bool
 
+// AuthorizeEnqueue calls f with one envelope from the pending batch.
 func (f EnqueueAuthorizeFunc) AuthorizeEnqueue(
 	ctx context.Context,
 	authorization EnqueueAuthorization,
@@ -87,10 +89,12 @@ func (f EnqueueAuthorizeFunc) AuthorizeEnqueue(
 // remain the embedding application's responsibility.
 type AllowAllEnqueues struct{}
 
+// AuthorizeEnqueue permits every enqueue request.
 func (AllowAllEnqueues) AuthorizeEnqueue(context.Context, EnqueueAuthorization, Envelope) bool {
 	return true
 }
 
+// ErrEnqueueForbidden identifies requests rejected by enqueue authorization.
 var ErrEnqueueForbidden = errors.New("headgate: enqueue forbidden")
 
 // EnqueueForbiddenError is a typed policy rejection. It is neither a store outage nor a
@@ -163,6 +167,7 @@ type Completion struct {
 	Error  string
 }
 
+// ErrWaitUnsupported identifies clients that cannot observe durable completion.
 var ErrWaitUnsupported = errors.New("headgate: insert-and-await is unsupported")
 
 // WithEventBus installs the same process-local bus configured on the worker. Events
@@ -251,6 +256,7 @@ func NewClient(store Store, options ...ClientOption) *Client {
 	return client
 }
 
+// Enqueue submits an atomic batch as a library-originated request.
 func (c *Client) Enqueue(ctx context.Context, batch []Envelope) error {
 	return c.EnqueueWithSource(ctx, EnqueueSourceLibrary, batch)
 }

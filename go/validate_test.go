@@ -165,14 +165,14 @@ func (vkBadAlias) KindAliases() []string { return []string{"old kind"} }
 
 func TestRegistrationEnforcesTheKindFormatRule(t *testing.T) {
 	r := NewRegistry()
-	if err := RegisterFunc[vkGood](r, func(c context.Context, j *Job[vkGood]) error { return nil }); err != nil {
+	if err := RegisterFunc[vkGood](r, func(context.Context, *Job[vkGood]) error { return nil }); err != nil {
 		t.Fatalf("single-character kind must register: %v", err)
 	}
-	err := RegisterFunc[vkBadKind](r, func(c context.Context, j *Job[vkBadKind]) error { return nil })
+	err := RegisterFunc[vkBadKind](r, func(context.Context, *Job[vkBadKind]) error { return nil })
 	if err == nil || !strings.HasPrefix(err.Error(), "headgate: invalid kind `bad kind`:") {
 		t.Fatalf("bad Kind() must be refused, got %v", err)
 	}
-	err = RegisterFunc[vkBadAlias](r, func(c context.Context, j *Job[vkBadAlias]) error { return nil })
+	err = RegisterFunc[vkBadAlias](r, func(context.Context, *Job[vkBadAlias]) error { return nil })
 	if err == nil || !strings.HasPrefix(err.Error(), "headgate: invalid kind `old kind`:") {
 		t.Fatalf("bad alias must be refused, got %v", err)
 	}

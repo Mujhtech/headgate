@@ -24,6 +24,7 @@ func BulkActionStates(action string) ([]string, bool) {
 	return append([]string(nil), states...), true
 }
 
+// ValidWorkerCommand reports whether command is supported by worker control.
 func ValidWorkerCommand(command string) bool {
 	switch command {
 	case "", "quiet", "resume", "restart", "terminate", "resign":
@@ -33,6 +34,7 @@ func ValidWorkerCommand(command string) bool {
 	}
 }
 
+// FormatGeneratedID returns a stable-width identifier from store time and process state.
 func FormatGeneratedID(nowMs int64, processID int, sequence uint64) string {
 	return fmt.Sprintf("hg%012x%05x%04x", nowMs, processID&0xfffff, sequence&0xffff)
 }

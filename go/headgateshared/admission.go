@@ -2,6 +2,7 @@ package headgateshared
 
 import "strconv"
 
+// AdmissionFacts contains the normalized store state used to explain admission.
 type AdmissionFacts struct {
 	State, Fingerprint, RateClass, Saturation string
 	NowMs, ScheduledAtMs, Weight              int64
@@ -12,6 +13,7 @@ type AdmissionFacts struct {
 	QueuePaused, Quarantined                  bool
 }
 
+// AdmissionEvaluation describes whether a job can run and, when blocked, why.
 type AdmissionEvaluation struct {
 	Admissible bool
 	BlockedBy  string
@@ -19,6 +21,7 @@ type AdmissionEvaluation struct {
 	ETA        *int64
 }
 
+// EvaluateAdmission explains a normalized admission decision without store I/O.
 func EvaluateAdmission(f AdmissionFacts) AdmissionEvaluation {
 	detail := map[string]string{"state": f.State}
 	result := AdmissionEvaluation{Detail: detail}

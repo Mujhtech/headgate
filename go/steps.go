@@ -48,20 +48,18 @@ type stepState struct {
 	actualWeight *uint32
 	result       *JobResult
 
-	// telemetry and trace context the RESERVED traceparent/tracestate headers, parsed ONCE at dispatch.
+	// Reserved traceparent and tracestate headers, parsed once at dispatch.
 	// hasTrace is false when absent OR malformed — see ParseTraceparent.
 	trace    TraceContext
 	hasTrace bool
 }
 
-// TraceContextFrom returns the W3C trace context the PRODUCER put on the envelope,
-// parsed at dispatch (telemetry and trace context). ok is false when the reserved `traceparent` header was
-// absent OR malformed — the two are deliberately indistinguishable, because a handler
-// that behaved differently for a typo'd header would be a worse bug than a missing trace
-// link. Outside a running job (no runner context) it is also false.
+// TraceContextFrom returns the W3C trace context the producer put on the envelope.
+// The context is parsed at dispatch. ok is false when the reserved traceparent header
+// is absent or malformed, and outside a running job.
 //
 // Use it to parent a span, or to propagate the trace into a downstream call:
-// tc.Traceparent() re-emits the producer's exact bytes.
+// tc.Traceparent re-emits the producer's exact bytes.
 func TraceContextFrom(ctx context.Context) (TraceContext, bool) {
 	s, err := stepStateFrom(ctx)
 	if err != nil {
@@ -233,7 +231,7 @@ func stepStateFrom(ctx context.Context) (*stepState, error) {
 	return s, nil
 }
 
-// StaleCheckpointError: the step set changed under the checkpoint (payload versioning × step replay). The
+// StaleCheckpointError reports that the step set changed under a saved checkpoint. The
 // runner acks Undecodable — silently restarting would re-run completed side effects
 // with no signal that a deploy caused it.
 type StaleCheckpointError struct{ Expected, Got string }

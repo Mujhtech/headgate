@@ -22,9 +22,16 @@ func newPeriodicEnqueueAttempt(
 	}
 }
 
+// Schedule returns an owned copy of the durable schedule.
 func (a PeriodicEnqueueAttempt) Schedule() ScheduleEntry { return cloneScheduleEntry(a.schedule) }
-func (a PeriodicEnqueueAttempt) ScheduleID() string      { return a.schedule.ID }
-func (a PeriodicEnqueueAttempt) TickMs() int64           { return a.tickMs }
+
+// ScheduleID returns the durable schedule identifier.
+func (a PeriodicEnqueueAttempt) ScheduleID() string { return a.schedule.ID }
+
+// TickMs returns the scheduled tick in Unix milliseconds.
+func (a PeriodicEnqueueAttempt) TickMs() int64 { return a.tickMs }
+
+// Envelope returns an owned copy of the job produced for this tick.
 func (a PeriodicEnqueueAttempt) Envelope() Envelope {
 	return cloneEnqueueBatch([]Envelope{a.envelope})[0]
 }
@@ -39,8 +46,10 @@ func cloneScheduleEntry(schedule ScheduleEntry) ScheduleEntry {
 	return cloned
 }
 
+// PeriodicEnqueueHookPhase identifies whether a hook runs before or after enqueue.
 type PeriodicEnqueueHookPhase string
 
+// Periodic enqueue hook phases.
 const (
 	PeriodicEnqueueHookBegin PeriodicEnqueueHookPhase = "begin"
 	PeriodicEnqueueHookEnd   PeriodicEnqueueHookPhase = "end"
@@ -53,8 +62,13 @@ type PeriodicEnqueueHookEvent struct {
 	outcome *InsertOutcome
 }
 
+// Phase returns the hook phase.
 func (e PeriodicEnqueueHookEvent) Phase() PeriodicEnqueueHookPhase { return e.phase }
+
+// Attempt returns the immutable schedule enqueue attempt.
 func (e PeriodicEnqueueHookEvent) Attempt() PeriodicEnqueueAttempt { return e.attempt }
+
+// Outcome returns the store outcome for an end event.
 func (e PeriodicEnqueueHookEvent) Outcome() (InsertOutcome, bool) {
 	if e.outcome == nil {
 		return InsertOutcome{}, false
@@ -68,8 +82,10 @@ type PeriodicEnqueueHook interface {
 	OnPeriodicEnqueue(context.Context, PeriodicEnqueueHookEvent)
 }
 
+// PeriodicEnqueueHookFunc adapts a function to PeriodicEnqueueHook.
 type PeriodicEnqueueHookFunc func(context.Context, PeriodicEnqueueHookEvent)
 
+// OnPeriodicEnqueue calls f with the hook event.
 func (f PeriodicEnqueueHookFunc) OnPeriodicEnqueue(
 	ctx context.Context,
 	event PeriodicEnqueueHookEvent,

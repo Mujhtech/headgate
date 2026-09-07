@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS headgate_schema_migration (
   PRIMARY KEY (line, version)
 )`
 
+// PostgresValidation summarizes migration history and schema-manifest checks.
 type PostgresValidation struct {
 	State          InstallationState
 	CurrentVersion int
@@ -26,6 +27,7 @@ type PostgresValidation struct {
 	Messages       []string
 }
 
+// OK reports whether the installed schema matches the embedded manifest.
 func (v PostgresValidation) OK() bool { return len(v.Messages) == 0 }
 
 type pgReader interface {
@@ -135,6 +137,7 @@ func appliedPostgresScoped(
 	return Versioned, applied, nil
 }
 
+// AppliedPostgres reads installation state and history from the current schema.
 func AppliedPostgres(ctx context.Context, conn *pgx.Conn) (InstallationState, []AppliedMigration, error) {
 	namespace, err := postgresNamespace(ctx, conn, nil)
 	if err != nil {
@@ -143,6 +146,7 @@ func AppliedPostgres(ctx context.Context, conn *pgx.Conn) (InstallationState, []
 	return appliedPostgresScoped(ctx, conn, namespace)
 }
 
+// AppliedPostgresInSchema reads installation state and history from schema.
 func AppliedPostgresInSchema(
 	ctx context.Context,
 	conn *pgx.Conn,
@@ -357,6 +361,7 @@ func validatePostgresScoped(
 	}, nil
 }
 
+// ValidatePostgres compares the current schema with the embedded manifest.
 func ValidatePostgres(ctx context.Context, conn *pgx.Conn) (PostgresValidation, error) {
 	namespace, err := postgresNamespace(ctx, conn, nil)
 	if err != nil {
@@ -365,6 +370,7 @@ func ValidatePostgres(ctx context.Context, conn *pgx.Conn) (PostgresValidation, 
 	return validatePostgresScoped(ctx, conn, namespace)
 }
 
+// ValidatePostgresInSchema compares schema with the embedded manifest.
 func ValidatePostgresInSchema(
 	ctx context.Context,
 	conn *pgx.Conn,
@@ -414,6 +420,7 @@ func migratePostgresScoped(
 	return Result{Steps: executed}, nil
 }
 
+// MigratePostgres runs a bounded migration plan in the current schema.
 func MigratePostgres(
 	ctx context.Context,
 	conn *pgx.Conn,
@@ -427,6 +434,7 @@ func MigratePostgres(
 	return migratePostgresScoped(ctx, conn, namespace, direction, options)
 }
 
+// MigratePostgresInSchema runs a bounded migration plan in schema.
 func MigratePostgresInSchema(
 	ctx context.Context,
 	conn *pgx.Conn,
@@ -594,6 +602,7 @@ VALUES ('main', $1, $2, $3,
 	return adopted, err
 }
 
+// AdoptPostgres records history for a validated unversioned current schema.
 func AdoptPostgres(ctx context.Context, conn *pgx.Conn) ([]AppliedMigration, error) {
 	namespace, err := postgresNamespace(ctx, conn, nil)
 	if err != nil {
@@ -602,6 +611,7 @@ func AdoptPostgres(ctx context.Context, conn *pgx.Conn) ([]AppliedMigration, err
 	return adoptPostgresScoped(ctx, conn, namespace)
 }
 
+// AdoptPostgresInSchema records history for a validated unversioned schema.
 func AdoptPostgresInSchema(
 	ctx context.Context,
 	conn *pgx.Conn,

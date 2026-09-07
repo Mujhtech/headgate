@@ -27,7 +27,7 @@ func TestCronTickVectorsMatchRust(t *testing.T) {
 	if len(vectors) < 60 {
 		t.Fatalf("vector file looks truncated: %d", len(vectors))
 	}
-	// Round 32: the timezone vectors must actually BE here. Without this the suite
+	// Assert that timezone vectors are present. Without this the suite
 	// passes just as loudly against a file that lost them, which is the one way a
 	// cross-language pin fails silently.
 	zoned := 0
@@ -66,7 +66,7 @@ func TestCronEdgesTheVectorsCannotEncode(t *testing.T) {
 	}
 }
 
-// Round 32. The vectors pin every ACCEPTED timezone tick; these pin the REJECTIONS and
+// The vectors pin accepted timezone ticks; these cases pin rejections and
 // the error text, which the API serves verbatim as a 400 and the mutation diff compares
 // byte for byte against Rust's.
 func TestCronTimezoneRejections(t *testing.T) {

@@ -55,6 +55,7 @@ func MySQLMigrationLockName(namespace, database string) (string, error) {
 	return namespace + ":h:" + digest[:30], nil
 }
 
+// MySQLValidation summarizes migration history and schema-manifest checks.
 type MySQLValidation struct {
 	State          InstallationState
 	CurrentVersion int
@@ -63,6 +64,7 @@ type MySQLValidation struct {
 	Messages       []string
 }
 
+// OK reports whether the installed schema matches the embedded manifest.
 func (v MySQLValidation) OK() bool { return len(v.Messages) == 0 }
 
 type sqlReader interface {
@@ -102,6 +104,7 @@ SELECT version, name, checksum, applied_at_ms
 	return result, rows.Err()
 }
 
+// AppliedMySQL reads installation state and ordered migration history.
 func AppliedMySQL(ctx context.Context, db *sql.DB) (InstallationState, []AppliedMigration, error) {
 	hasHistory, err := mysqlTableExists(ctx, db, "headgate_schema_migration")
 	if err != nil {
@@ -253,7 +256,7 @@ SELECT trigger_name FROM information_schema.triggers
 SELECT column_type FROM information_schema.columns
  WHERE table_schema = DATABASE()
    AND table_name = 'headgate_job' AND column_name = 'state'`).Scan(&stateType)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		stateType = ""
 	} else if err != nil {
 		return nil, err
@@ -269,7 +272,7 @@ SELECT column_type FROM information_schema.columns
 SELECT column_type FROM information_schema.columns
  WHERE table_schema = DATABASE()
    AND table_name = 'headgate_concurrency_limit' AND column_name = 'on_saturated'`).Scan(&saturationType)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		saturationType = ""
 	} else if err != nil {
 		return nil, err
@@ -284,6 +287,7 @@ SELECT column_type FROM information_schema.columns
 	return missing, nil
 }
 
+// ValidateMySQL compares the selected database with the embedded schema manifest.
 func ValidateMySQL(ctx context.Context, db *sql.DB) (MySQLValidation, error) {
 	state, applied, err := AppliedMySQL(ctx, db)
 	if err != nil {
@@ -325,10 +329,12 @@ func ValidateMySQL(ctx context.Context, db *sql.DB) (MySQLValidation, error) {
 	}, nil
 }
 
+// MigrateMySQL runs a bounded migration plan using the default lock namespace.
 func MigrateMySQL(ctx context.Context, db *sql.DB, direction Direction, options Options) (Result, error) {
 	return MigrateMySQLWithLockNamespace(ctx, db, direction, options, DefaultMySQLLockNamespace)
 }
 
+// MigrateMySQLWithLockNamespace runs a bounded migration plan under a custom lock namespace.
 func MigrateMySQLWithLockNamespace(
 	ctx context.Context,
 	db *sql.DB,
@@ -423,10 +429,12 @@ DELETE FROM headgate_schema_migration WHERE line = 'main' AND version = ?`, step
 	return Result{Steps: executed}, nil
 }
 
+// AdoptMySQL records history for a validated unversioned schema using the default lock namespace.
 func AdoptMySQL(ctx context.Context, db *sql.DB) ([]AppliedMigration, error) {
 	return AdoptMySQLWithLockNamespace(ctx, db, DefaultMySQLLockNamespace)
 }
 
+// AdoptMySQLWithLockNamespace records history for a validated unversioned schema.
 func AdoptMySQLWithLockNamespace(
 	ctx context.Context,
 	db *sql.DB,

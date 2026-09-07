@@ -51,8 +51,8 @@ func ScheduleNextAfter(spec string, afterMs int64) (int64, error) {
 
 // ScheduleDueTicks mirrors Rust's schedule_spec::due_ticks: firstMs (the stored
 // next_run, inclusive) plus every successor up to and including nowMs, capped at the
-// `cap` MOST RECENT ticks, oldest first.
-func ScheduleDueTicks(spec string, firstMs, nowMs int64, cap int) ([]int64, error) {
+// maxTicks most recent ticks, oldest first.
+func ScheduleDueTicks(spec string, firstMs, nowMs int64, maxTicks int) ([]int64, error) {
 	if firstMs > nowMs {
 		return nil, nil
 	}
@@ -67,7 +67,7 @@ func ScheduleDueTicks(spec string, firstMs, nowMs int64, cap int) ([]int64, erro
 			break
 		}
 		ticks = append(ticks, next)
-		if len(ticks) > cap {
+		if len(ticks) > maxTicks {
 			ticks = ticks[1:]
 		}
 		t = next

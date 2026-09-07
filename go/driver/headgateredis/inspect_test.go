@@ -352,7 +352,7 @@ func TestTheInspectSurfaceAnswersOverGoRedis(t *testing.T) {
 	if err := s.CreateOperation(ctx, headgate.BulkOp{ID: "gri-o1", Action: "cancel", Queue: q}); err != nil {
 		t.Fatal(err)
 	}
-	// Round 32h: indexing a NIL map returns 0, and the error was discarded with `_`, so
+	// Check the Counts error because indexing a nil map also returns zero.
 	// "nothing left admissible after bulk cancel" also held for a Counts that failed
 	// outright, for an empty index, and for a bulk cancel that cancelled NOTHING. The
 	// pgx and MySQL twins both pin `op.Affected`; this one did not. Both halves are

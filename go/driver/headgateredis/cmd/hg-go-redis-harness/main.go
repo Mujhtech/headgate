@@ -148,7 +148,7 @@ func run() error {
 					c.Envelope.PartitionKey, c.Envelope.RateClass)
 			}
 		}
-	// telemetry and trace context — see the PG harness for what the three trailing fields prove.
+	// See the PostgreSQL harness for what the three trailing trace fields prove.
 	case "admit_trace":
 		units, err := store.Admit(ctx, headgate.AdmitRequest{
 			Worker:   m["worker"],
@@ -406,7 +406,7 @@ func run() error {
 			parts = append(parts, strconv.FormatInt(p, 10))
 		}
 		fmt.Printf("resumed_from=%d|processed=%s|outcome=%s\n", from, strings.Join(parts, ","), outcome)
-	// backlog metrics the BACKLOG DERIVATIVES over Redis, asserted by nothing previously.
+	// BACKLOG DERIVATIVES over Redis, asserted by nothing previously.
 	case "qstats":
 		insp, ok := any(store).(headgate.InspectStore)
 		if !ok {
@@ -498,7 +498,7 @@ func run() error {
 	return nil
 }
 
-// traceHeaders sets the two RESERVED telemetry and trace context envelope headers verbatim from tp= / ts=.
+// traceHeaders sets the two reserved trace-context envelope headers verbatim from tp= / ts=.
 func traceHeaders(m map[string]string) map[string]string {
 	h := map[string]string{}
 	if tp, ok := m["tp"]; ok {

@@ -1,7 +1,6 @@
 package headgateredis
 
-// The fourth corner of the conformance square: the SAME Go worker runtime, unchanged,
-// over the Redis store — adaptive admission's port test, run for the second language. The Lua scripts
+// This exercises the same Go worker runtime over Redis. The Lua scripts
 // are the byte-identical artifacts the Rust adapter runs, so what this proves is that
 // the thin Go invocation layer parses and drives them identically.
 // Opt-in via HG_TEST_REDIS; skips cleanly without it.

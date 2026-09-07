@@ -50,8 +50,9 @@ var (
 	progressLua   = script("progress")
 )
 
+// Options controls Redis admission and retry behavior.
 type Options struct {
-	// CrashLimit is the crash quarantine quarantine threshold (default 3).
+	// CrashLimit is the crash quarantine threshold (default 3).
 	CrashLimit int64
 	// RetryBaseMs/RetryCapMs shape the default retry backoff (defaults 1000 / 1h).
 	RetryBaseMs, RetryCapMs int64
@@ -70,6 +71,7 @@ func defaults(o Options) Options {
 	return o
 }
 
+// RedisStore implements Headgate storage over a Redis-compatible client.
 type RedisStore struct {
 	rdb       redis.UniversalClient
 	prefix    string
@@ -90,6 +92,7 @@ func New(rdb redis.UniversalClient, prefix string) *RedisStore {
 	return NewWithOptions(rdb, prefix, Options{})
 }
 
+// NewWithOptions wraps rdb with a key prefix and the supplied store options.
 func NewWithOptions(rdb redis.UniversalClient, prefix string, o Options) *RedisStore {
 	return &RedisStore{rdb: rdb, prefix: prefix, opts: defaults(o)}
 }
@@ -153,8 +156,8 @@ func ConnectCluster(addrs []string, prefix string) (*RedisStore, error) {
 
 func validateClusterPrefix(prefix string) error {
 	open := strings.IndexByte(prefix, '{')
-	close := strings.IndexByte(prefix, '}')
-	if open < 0 || close <= open+1 || strings.Contains(prefix[close+1:], "{") {
+	closingBrace := strings.IndexByte(prefix, '}')
+	if open < 0 || closingBrace <= open+1 || strings.Contains(prefix[closingBrace+1:], "{") {
 		return errors.New("headgate: Redis Cluster prefix must contain exactly one non-empty hash tag, for example headgate:{fleet}")
 	}
 	return nil
@@ -226,6 +229,7 @@ func hnum(h map[string]string, k string) int64 {
 
 // ---------- Store ----------
 
+// Admit atomically evaluates policy and leases eligible jobs.
 func (s *RedisStore) Admit(ctx context.Context, req headgate.AdmitRequest) ([]headgate.AdmissionUnit, error) {
 	var err error
 	req, leaseMs, err := headgate.NormalizeAdmitRequest(req)
@@ -271,8 +275,8 @@ func (s *RedisStore) Admit(ctx context.Context, req headgate.AdmitRequest) ([]he
 				PeriodicTickMs:     hnum(h, "periodic_tick_ms"),
 				UniqueStates:       uint32(hnum(h, "unique_states")),
 				UniqueWindowMs:     hnum(h, "unique_window_ms"),
-				// telemetry and trace context the opaque headers ride the claim (admit.lua needed no
-				// change — the store reads the job hash after the atomic claim).
+				// Opaque headers ride the claim; the store reads them from the job hash
+				// after the atomic claim.
 				Headers: headgate.DecodeHeaders([]byte(h["headers"])),
 			},
 			LeaseID:    h["lease_id"],
@@ -291,14 +295,17 @@ func cursorBytes(h map[string]string) []byte {
 	return nil
 }
 
+// Ack records an attempt outcome if lease still identifies the current holder.
 func (s *RedisStore) Ack(ctx context.Context, lease headgate.LeaseRef, outcome headgate.Outcome, errMsg string, delayMs int64) error {
 	return s.AckAttempt(ctx, lease, outcome, errMsg, delayMs, nil)
 }
 
+// AckAttempt records an attempt outcome and its buffered logs.
 func (s *RedisStore) AckAttempt(ctx context.Context, lease headgate.LeaseRef, outcome headgate.Outcome, errMsg string, delayMs int64, logs []string) error {
 	return s.AckAttemptWithActualWeight(ctx, lease, outcome, errMsg, delayMs, logs, nil)
 }
 
+// AckAttemptWithActualWeight records an outcome and reconciles estimated admission cost.
 func (s *RedisStore) AckAttemptWithActualWeight(ctx context.Context, lease headgate.LeaseRef, outcome headgate.Outcome, errMsg string, delayMs int64, logs []string, actualWeight *uint32) error {
 	if err := headgate.ValidateAckRequest(outcome, delayMs); err != nil {
 		return err
@@ -333,6 +340,7 @@ func (s *RedisStore) AckAttemptWithActualWeight(ctx context.Context, lease headg
 	return nil
 }
 
+// AckSuccessWithResult completes a leased job and stores its result atomically.
 func (s *RedisStore) AckSuccessWithResult(ctx context.Context, lease headgate.LeaseRef, logs []string, actualWeight *uint32, result headgate.JobResult) error {
 	if err := headgate.ValidateOpaqueValue("result", result); err != nil {
 		return err
@@ -361,6 +369,7 @@ func (s *RedisStore) AckSuccessWithResult(ctx context.Context, lease headgate.Le
 	return nil
 }
 
+// WriteJobOutput replaces the durable output for the currently leased job.
 func (s *RedisStore) WriteJobOutput(
 	ctx context.Context,
 	lease headgate.LeaseRef,
@@ -397,6 +406,7 @@ func (s *RedisStore) WriteJobOutput(
 	}, nil
 }
 
+// WriteJobProgress records progress for the currently leased job.
 func (s *RedisStore) WriteJobProgress(
 	ctx context.Context,
 	lease headgate.LeaseRef,
@@ -431,6 +441,7 @@ func (s *RedisStore) WriteJobProgress(
 	}, nil
 }
 
+// Renew extends current leases and returns IDs whose lease identity was lost.
 func (s *RedisStore) Renew(ctx context.Context, leases []headgate.LeaseRef, lease time.Duration) ([]string, error) {
 	if len(leases) == 0 {
 		return nil, nil
@@ -447,6 +458,7 @@ func (s *RedisStore) Renew(ctx context.Context, leases []headgate.LeaseRef, leas
 	return renewLua.Run(ctx, s.rdb, []string{s.prefix}, args...).StringSlice()
 }
 
+// Enqueue inserts a batch of jobs atomically.
 func (s *RedisStore) Enqueue(ctx context.Context, batch []headgate.Envelope) error {
 	if len(batch) == 0 {
 		return nil
@@ -473,7 +485,7 @@ func (s *RedisStore) Enqueue(ctx context.Context, batch []headgate.Envelope) err
 			e.Fingerprint, e.Priority, ma, e.ScheduledAtMs, e.TimeoutMs, e.DeadlineMs,
 			e.RetentionMs, string(e.UniqueKey), e.UniqueWindowMs, e.UniqueStates)
 	}
-	// telemetry and trace context the headers ride in a TRAILING block, after every per-job field,
+	// Headers use a trailing block after every per-job field,
 	// so enqueue.lua's `2 + i * F + k` index math is untouched.
 	for _, e := range batch {
 		args = append(args, headgate.EncodeHeaders(e.Headers))
@@ -519,6 +531,7 @@ func (s *RedisStore) Enqueue(ctx context.Context, batch []headgate.Envelope) err
 	return parseTagged(res)
 }
 
+// Checkpoint durably records resumable state after verifying the lease fence.
 func (s *RedisStore) Checkpoint(ctx context.Context, lease headgate.LeaseRef, cp headgate.Checkpoint) error {
 	hasCursor := 0
 	if cp.Cursor != nil {
@@ -539,6 +552,7 @@ func (s *RedisStore) Checkpoint(ctx context.Context, lease headgate.LeaseRef, cp
 	return nil
 }
 
+// ReclaimExpired makes jobs with expired leases eligible for admission again.
 func (s *RedisStore) ReclaimExpired(ctx context.Context, limit int64) ([]headgate.Reclaimed, error) {
 	flat, err := reclaimLua.Run(ctx, s.rdb, []string{s.prefix},
 		limit, s.opts.CrashLimit, s.opts.RetryBaseMs, s.opts.RetryCapMs).StringSlice()
@@ -558,14 +572,17 @@ func (s *RedisStore) ReclaimExpired(ctx context.Context, limit int64) ([]headgat
 	return out, nil
 }
 
+// PromoteDue makes due scheduled and retryable jobs available.
 func (s *RedisStore) PromoteDue(ctx context.Context, limit int64) (int64, error) {
 	return promoteLua.Run(ctx, s.rdb, []string{s.prefix}, limit).Int64()
 }
 
+// EvictRetained removes terminal jobs whose retention deadline has elapsed.
 func (s *RedisStore) EvictRetained(ctx context.Context, limit int64) (int64, error) {
 	return adminLua.Run(ctx, s.rdb, []string{s.prefix}, "evict", limit).Int64()
 }
 
+// ClaimDuty acquires or renews a singleton duty lease for holder.
 func (s *RedisStore) ClaimDuty(ctx context.Context, name, holder string, lease time.Duration) (bool, error) {
 	leaseMs := lease.Milliseconds()
 	if leaseMs <= 0 {
@@ -575,10 +592,12 @@ func (s *RedisStore) ClaimDuty(ctx context.Context, name, holder string, lease t
 	return n == 1, err
 }
 
+// ReleaseDuty releases a singleton duty lease held by holder.
 func (s *RedisStore) ReleaseDuty(ctx context.Context, name, holder string) error {
 	return dutyLua.Run(ctx, s.rdb, []string{s.prefix}, "release", name, holder, 0).Err()
 }
 
+// Caps reports the capabilities enabled for this store.
 func (s *RedisStore) Caps() headgate.Caps {
 	// runtime capability boundary/push wakeups: no Transactional (structurally impossible on Redis). Inspect is
 	// inspect.go; Notifying only when this store can open a pub/sub connection.

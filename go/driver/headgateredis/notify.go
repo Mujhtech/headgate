@@ -1,6 +1,6 @@
 package headgateredis
 
-// push wakeups push wakeup over Redis pub/sub: enqueue.lua PUBLISHes `{prefix}:wake` once per
+// Push wakeup over Redis pub/sub: enqueue.lua PUBLISHes `{prefix}:wake` once per
 // distinct queue; one dedicated auto-reconnecting subscription fans out to WaitWakeup
 // callers. Mirrors the pgx driver's listener and the Rust adapter's Wake — a missed
 // message costs latency, never correctness (the poll fallback stands).
@@ -44,6 +44,7 @@ func (s *RedisStore) WithWake(rdb redis.UniversalClient) *RedisStore {
 
 var _ headgate.NotifyingStore = (*RedisStore)(nil)
 
+// WaitWakeup waits for a notification affecting one of queues or until timeout.
 func (s *RedisStore) WaitWakeup(ctx context.Context, queues []string, timeout time.Duration) (string, bool, error) {
 	w := s.wake
 	if w == nil {

@@ -27,12 +27,6 @@ github.com/jackc/puddle/v2 v2.2.2 h1:PR8nw+E/1w0GLuRFSmiioY6UooMp6KJv0/61nB7icHo
 github.com/jackc/puddle/v2 v2.2.2/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
 github.com/klauspost/cpuid/v2 v2.2.10 h1:tBs3QSyvjDyFTq3uoc/9xFpCuOsJQFNPiAhYdw2skhE=
 github.com/klauspost/cpuid/v2 v2.2.10/go.mod h1:hqwkgyIinND0mEev00jJYCxPNVRVXFQeu1XKlok6oO0=
-github.com/mujhtech/headgate/go/driver/headgatemysql v0.1.7 h1:hae/xf5o6uhkQYiWOPP2/ipsMD23da1IepWqy9RFNsw=
-github.com/mujhtech/headgate/go/driver/headgatemysql v0.1.7/go.mod h1:FV8xIHDnuzKBppuBpGR1ieLh0gAZq1jiXUTg+Si8jwc=
-github.com/mujhtech/headgate/go/driver/headgatepgx v0.1.7 h1:Ba5yywQX338FOgod53qpA5ATcPS4SR6Fa4hks+j0a28=
-github.com/mujhtech/headgate/go/driver/headgatepgx v0.1.7/go.mod h1:RHpyo2uWKS/HCbZtnT7V4YmSWbE+oBmcXQSZ20tHjjw=
-github.com/mujhtech/headgate/go/driver/headgateredis v0.1.7 h1:Y75BERPC+bNceM7qRB0irCNuiIBX5oAWsMBBBfhuChE=
-github.com/mujhtech/headgate/go/driver/headgateredis v0.1.7/go.mod h1:pUOfSEhWxCsluKaCMe5ArLkZThzTZzPbKYWIZ+CKmB8=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/redis/go-redis/v9 v9.22.0 h1:laDvpYXTJtZLloinw1fA5Kqd6HAEH2XKxOkG/PDq2F0=
 github.com/redis/go-redis/v9 v9.22.0/go.mod h1:y2g0Wj8rQvuK0ELM+oxSudcLtC09JScs98I/X9gRWY4=

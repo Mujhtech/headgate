@@ -13,6 +13,7 @@ readonly go_module_dirs=(
   go/headgatectl
   go/headgatemigrate
   go/headgateotel
+  go/headgateprometheus
   go/headgatetest
   go/headgateui
   go/headgateworkflow
@@ -25,6 +26,7 @@ readonly rust_crates=(
   headgate-sql
   headgate-ui
   headgate-otel
+  headgate-prometheus
   headgate-migrate
   headgate
   headgate-testkit

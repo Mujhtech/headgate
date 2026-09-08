@@ -22,6 +22,7 @@ rust	crates/headgate-mysql/tests/outage.rs	1
 rust	crates/headgate-mysql/tests/store.rs	7
 rust	crates/headgate-mysql/tests/unique.rs	5
 rust	crates/headgate-otel/tests/otel.rs	2
+rust	crates/headgate-prometheus/tests/prometheus.rs	2
 rust	crates/headgate-postgres/src/lib.rs	5
 rust	crates/headgate-postgres/tests/bounded_pool.rs	2
 rust	crates/headgate-postgres/tests/multi_instance.rs	1
@@ -105,6 +106,7 @@ go	go/headgatemigrate/live_mysql_test.go	2
 go	go/headgatemigrate/live_postgres_test.go	1
 go	go/headgatemigrate/migrate_test.go	4
 go	go/headgateotel/otel_test.go	2
+go	go/headgateprometheus/prometheus_test.go	3
 go	go/headgateshared/codec_test.go	4
 go	go/headgateshared/json_v2_test.go	2
 go	go/headgateshared/log_test.go	3

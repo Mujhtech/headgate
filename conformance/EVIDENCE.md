@@ -1264,6 +1264,14 @@ NOTE: Go-only operational profiles. The runtime supplies labels; the embedding a
 - go: runtime_test.go::TestAPolicyRejectionReachesTheFacadeWithItsClause
 NOTE: round 32k adds `Rejected` to the observed set — it was declared in both cores and never constructed, the same dead-variant shape as `Evicted` before round 32i. So `Evicted`, `Rejected`, `WorkerSaturation` and `JobSpan` are observed by a test; `Admitted`, `Completed` and `Quarantined` are emitted and asserted nowhere.
 
+### Prometheus adapters
+- rust: crates/headgate-prometheus/tests/prometheus.rs::exports_matching_lifecycle_duration_and_worker_metrics
+- rust: crates/headgate-prometheus/tests/prometheus.rs::duplicate_and_partial_registration_leave_existing_registry_intact
+- go: headgateprometheus/prometheus_test.go::TestTelemetryExportsLifecycleAndWorkerMetrics
+- go: headgateprometheus/prometheus_test.go::TestNewRequiresOwnedNonConflictingRegistry
+- go: headgateprometheus/prometheus_test.go::TestMalformedAndFutureEventsDoNotPanic
+NOTE: both adapter suites use isolated native Prometheus registries. They assert exact representative lifecycle and worker values, a seconds histogram, absence of job-id and fingerprint label values, explicit duplicate-registration failure, and registration rollback behavior. Go additionally proves a malformed negative count and future string event do not panic. `scripts/check-deps.sh` independently proves neither Prometheus client entered its language's core package.
+
 ### Per-queue history
 - rust: crates/headgate-redis/tests/inspect.rs::the_inspect_surface_answers_over_redis
 - go: driver/headgateredis/inspect_test.go::TestTheInspectSurfaceAnswersOverGoRedis

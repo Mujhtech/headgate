@@ -12,6 +12,7 @@ use (
 	./go/headgatectl
 	./go/headgatemigrate
 	./go/headgateotel
+	./go/headgateprometheus
 	./go/headgatetest
 	./go/headgateui
 	./go/headgateworkflow

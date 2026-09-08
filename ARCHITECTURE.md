@@ -1264,6 +1264,7 @@ headgate/
     ├── headgate-mysql/           # adapter
     ├── headgate-redis/           # adapter
     ├── headgate-otel/            # telemetry adapter (opt-in)
+    ├── headgate-prometheus/      # native Prometheus metrics adapter (opt-in)
     ├── headgate-api/             # the control API (§10.1) as a tower::Service
     ├── headgate-ui/              # embeds the shared SPA assets, serves headgate-api
     ├── headgate-testkit/         # assert-enqueued + execute-a-worker, à la rivertest
@@ -1311,6 +1312,7 @@ headgate/
 ├── headgateui/go.mod             # embeds the shared SPA assets, serves headgateapi
 ├── headgatetest/go.mod           # testing helpers
 ├── headgateotel/go.mod           # telemetry adapter
+├── headgateprometheus/go.mod     # Prometheus metrics adapter
 ├── headgatemigrate/go.mod        # schema migrations for the SQL drivers
 └── conformance/go.mod            # the same corpus as crates/headgate-conformance
 ```

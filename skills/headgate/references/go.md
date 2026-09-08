@@ -13,6 +13,7 @@ Drivers are separate modules under that prefix:
 | Workflows | `/headgateworkflow` |
 | Payload encryption | `/headgatecrypto` |
 | OpenTelemetry | `/headgateotel` |
+| Prometheus metrics | `/headgateprometheus` |
 | Migrations | `/headgatemigrate` |
 | Test helpers | `/headgatetest` |
 | Control API / embedded console | `/headgateapi` / `/headgateui` |
@@ -96,6 +97,15 @@ assuming a generic `*sql.Tx` is accepted by every driver.
 - Use `headgate.Step` / `StepCursor` for durable intra-job resumption and
   `headgateworkflow.RegisterCoordinator` for cross-job DAG coordination. They are not
   interchangeable mechanisms. Read the relevant feature guide before wiring them.
+- Use `headgateworkflow.InspectWorkflow`, `WorkflowDependencies`, and
+  `WorkflowDependents` for read-only graph queries. Prefer one snapshot and its in-memory
+  relation methods when several graph questions must be answered consistently.
+- Use `EmitSignalWith` for idempotent workflow signals carrying JSON payload and source
+  context. The source is untrusted caller metadata unless the application fills it from
+  an authenticated boundary.
+- Attach `headgateprometheus.New(appRegistry)` to `headgate.Config.Telemetry` for native
+  Prometheus metrics. The application owns the registry, `/metrics` handler, access
+  control, and shutdown; do not register it implicitly on the global registry.
 
 ## Test the integration
 

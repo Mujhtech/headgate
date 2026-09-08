@@ -14,9 +14,10 @@ uses. PostgreSQL is the reference backend; MySQL and Redis share the core admiss
 
 ```toml Cargo.toml
 [dependencies]
-headgate = "0.1.7"
-headgate-postgres = "0.1.7" # or headgate-mysql / headgate-redis
-# Optional: headgate-workflow, headgate-crypto, headgate-otel, headgate-ui
+headgate = "0.1.8"
+headgate-postgres = "0.1.8" # or headgate-mysql / headgate-redis
+# Optional: headgate-workflow, headgate-crypto, headgate-otel,
+#           headgate-prometheus, headgate-ui
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
@@ -24,7 +25,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
   </Tab>
   <Tab title="Go" icon="box">
 
-Use Go 1.25 or newer for Headgate v0.1.7. The updated PostgreSQL driver and Unicode
+Use Go 1.27 or newer for Headgate v0.1.8. The updated PostgreSQL driver and Unicode
 dependencies require this minimum version; use a current Go patch release in production.
 
 ```bash
@@ -34,6 +35,7 @@ go get github.com/mujhtech/headgate/go/driver/headgatepgx
 # Optional standalone modules:
 # go get github.com/mujhtech/headgate/go/headgateworkflow
 # go get github.com/mujhtech/headgate/go/headgatecrypto
+# go get github.com/mujhtech/headgate/go/headgateprometheus
 ```
 
   </Tab>

@@ -1,0 +1,207 @@
+---
+title: "Prometheus"
+description: "Expose Headgate worker lifecycle, latency, saturation, and memory metrics from Rust or Go."
+---
+
+The Rust `headgate-prometheus` crate and Go `headgateprometheus` module translate the
+worker's exporter-neutral telemetry events into the same native Prometheus collectors.
+They do not start a server, use the default global registry, or scrape the Headgate store.
+Your application owns the registry, HTTP endpoint, and access to that endpoint.
+
+## Install
+
+<CodeGroup>
+```toml Rust
+[dependencies]
+headgate = "0.1.8"
+headgate-prometheus = "0.1.8"
+prometheus = "0.14"
+```
+
+```bash Go
+go get github.com/mujhtech/headgate/go/headgateprometheus@v0.1.8
+go get github.com/prometheus/client_golang
+```
+</CodeGroup>
+
+## Attach it to a worker
+
+Use a dedicated application registry and construct one Headgate adapter for it. If one
+process runs multiple workers, share that adapter through `Arc` in Rust or its pointer in
+Go rather than registering the same metric names again.
+
+### Rust
+
+Pass the adapter through `WorkerConfig::telemetry`. The same registry is later gathered
+by the application's HTTP handler.
+
+```rust
+use std::sync::Arc;
+
+use headgate::{Worker, WorkerConfig};
+use prometheus::{Encoder, Registry, TextEncoder};
+
+let metrics_registry = Registry::new();
+let telemetry = headgate_prometheus::Telemetry::new(&metrics_registry)?;
+let config = WorkerConfig {
+    telemetry: Arc::new(telemetry),
+    ..WorkerConfig::default()
+};
+
+let (worker, handle) = Worker::new(store, tasks, config);
+// Wire `handle` into normal application shutdown before awaiting the worker.
+worker.run().await?;
+
+// Call this from the application's authenticated/internal metrics route.
+fn encode_metrics(registry: &Registry) -> prometheus::Result<Vec<u8>> {
+    let mut body = Vec::new();
+    TextEncoder::new().encode(&registry.gather(), &mut body)?;
+    Ok(body)
+}
+```
+
+Set the response `Content-Type` from `TextEncoder::format_type()` in the selected HTTP
+framework. Headgate deliberately does not choose or start that framework.
+
+### Go
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "net/http"
+
+    "github.com/mujhtech/headgate/go"
+    "github.com/mujhtech/headgate/go/headgateprometheus"
+    "github.com/prometheus/client_golang/prometheus"
+    "github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+func run(ctx context.Context, store headgate.Store, tasks *headgate.Registry) error {
+    metricsRegistry := prometheus.NewRegistry()
+    telemetry, err := headgateprometheus.New(metricsRegistry)
+    if err != nil {
+        return err
+    }
+
+    runner := headgate.NewRunner(store, tasks, headgate.Config{
+        Queues: map[string]headgate.QueueConfig{
+            "default": {MaxWorkers: 10},
+        },
+        Telemetry: telemetry,
+    })
+
+    mux := http.NewServeMux()
+    mux.Handle("GET /metrics", promhttp.HandlerFor(metricsRegistry, promhttp.HandlerOpts{
+        EnableOpenMetrics: true,
+    }))
+    server := &http.Server{Addr: ":9090", Handler: mux}
+
+    go func() {
+        if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+            log.Printf("metrics server stopped: %v", err)
+        }
+    }()
+    defer server.Shutdown(context.Background())
+
+    return runner.Run(ctx)
+}
+```
+
+The adapter belongs on Rust `WorkerConfig.telemetry` or Go `headgate.Config.Telemetry`,
+which means it observes worker execution. A producer-only client does not run jobs and has
+no worker metrics to emit.
+
+<Warning>
+  Do not expose `/metrics` directly to the public internet. Bind it to an internal
+  listener or protect it with the same network and authentication controls used for
+  other operational endpoints.
+</Warning>
+
+## Exported metrics
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `headgate_jobs_admitted_total` | Counter | `queue` | Jobs admitted for execution |
+| `headgate_jobs_rejected_total` | Counter | `queue`, `policy` | Runtime-visible policy rejections |
+| `headgate_jobs_completed_total` | Counter | `kind` | Fence-verified durable completions |
+| `headgate_jobs_quarantined_total` | Counter | none | Jobs moved to quarantine |
+| `headgate_jobs_evicted_total` | Counter | `queue` | Terminal jobs removed by retention |
+| `headgate_job_attempt_duration_seconds` | Histogram | `queue`, `kind`, `outcome` | Duration of every attempt, including retries and lease loss |
+| `headgate_worker_utilization_ratio` | Gauge | `worker` | In-flight jobs divided by capacity |
+| `headgate_worker_empty_poll_ratio` | Gauge | `worker` | Empty polls divided by polls in the current runtime window |
+| `headgate_worker_inflight` | Gauge | `worker` | Jobs currently executing |
+| `headgate_worker_capacity` | Gauge | `worker` | Configured execution slots |
+| `headgate_worker_memory_bytes` | Gauge | `worker` | Last process-memory sample |
+| `headgate_worker_memory_limit_bytes` | Gauge | `worker` | Configured memory guard limit |
+| `headgate_worker_restart_requests_total` | Counter | `worker` | Memory-guard drain/restart requests |
+
+`headgate_jobs_rejected_total` currently covers the handler-declared rate-limit path.
+The admission gate evaluates queue pause, fairness, quarantine, and fleet concurrency
+inside the store and does not return rejected candidates merely to feed a counter.
+
+## Useful PromQL
+
+Jobs completed per second by kind:
+
+```promql
+sum by (kind) (rate(headgate_jobs_completed_total[5m]))
+```
+
+P99 attempt time by queue and kind:
+
+```promql
+histogram_quantile(
+  0.99,
+  sum by (le, queue, kind) (
+    rate(headgate_job_attempt_duration_seconds_bucket[5m])
+  )
+)
+```
+
+Fleet utilization:
+
+```promql
+sum(headgate_worker_inflight) / sum(headgate_worker_capacity)
+```
+
+Quarantine activity worth paging or investigating:
+
+```promql
+increase(headgate_jobs_quarantined_total[10m]) > 0
+```
+
+Memory-guard restart activity:
+
+```promql
+increase(headgate_worker_restart_requests_total[15m]) > 0
+```
+
+For backlog age, arrival rate, drain rate, and time-to-drain, use the bounded control API
+queue statistics. Those values are store-wide aggregates; this process-local adapter
+cannot derive them truthfully from one runner.
+
+## Cardinality and privacy
+
+The adapter labels metrics only with queue, kind, policy, outcome, and worker identity.
+It deliberately excludes job IDs, fingerprints, partition or tenant keys, payloads,
+headers, results, errors, and logs. Adding those values as labels creates an unbounded
+time-series count and can turn normal queue traffic into a Prometheus incident.
+
+## Registration behavior
+
+Rust `headgate_prometheus::Telemetry::new` requires an explicit `&prometheus::Registry`;
+Go `headgateprometheus.New` requires an explicit `prometheus.Registerer`. Calling either
+twice with the same registry returns a duplicate-registration error instead of reusing
+unknown collectors or panicking. If registration fails partway through, collectors added
+by that call are removed before the error is returned.
+
+If an application deliberately needs a prefix or constant labels, wrap its registry with
+Prometheus's registerer helpers before passing it to `New`. Keep constant labels bounded
+to deployment metadata such as service or cluster; never use a job or tenant identifier.
+
+<Card title="OpenTelemetry" icon="activity" href="/docs/operations/observability">
+  Export traces and metrics through application-owned OpenTelemetry providers.
+</Card>

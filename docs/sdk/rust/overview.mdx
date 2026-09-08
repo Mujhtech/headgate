@@ -10,14 +10,15 @@ steps, scheduling, plugins, and test helpers.
 
 ```toml
 [dependencies]
-headgate = "0.1.7"
-headgate-postgres = "0.1.7"
+headgate = "0.1.8"
+headgate-postgres = "0.1.8"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
-Add `headgate-workflow` for durable DAGs or `headgate-crypto` for client-side encrypted
-payloads. Both are opt-in layers and keep database drivers out of core.
+Add `headgate-workflow` for durable DAGs, `headgate-crypto` for client-side encrypted
+payloads, `headgate-otel` for OpenTelemetry, or `headgate-prometheus` for native Prometheus
+metrics. These opt-in layers keep drivers and exporters out of core.
 
 ## Main types
 

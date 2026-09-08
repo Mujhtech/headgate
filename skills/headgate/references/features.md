@@ -10,10 +10,12 @@ signatures and backend requirements rather than guessing APIs from a different q
 | Fleet-wide limit / tenant fairness | Store admission policy, rate class, and partition key; not an in-process semaphore. |
 | Repeated work on a schedule | Durable periodic definition with explicit missed-run policy and an active scheduler duty. |
 | Resume one job after failure | Named steps or cursor steps; external effects may still replay after a crash. |
-| Coordinate several jobs | Immutable workflow DAG plus registered coordinator; ordinary retries belong to child jobs. |
+| Coordinate several jobs | Workflow DAG with durable signals, timers, CEL conditions, additive task grafts, child bundles, and opt-in failed-subgraph retry. |
 | Commit application data and enqueue | PostgreSQL/MySQL transaction adapter; not Redis. |
 | Secure stored payloads | Optional crypto layer before enqueue and encrypted handler registration. |
 | Diagnose execution | Admission explanation, attempt history, progress/results, checkpoint, and structured logs. |
+| Inspect orchestration | Workflow snapshot and dependency/dependent reads from either SDK, the control API, or the console. |
+| Expose Prometheus metrics | `headgate-prometheus` (Rust) or `headgateprometheus` (Go) on the worker telemetry port with an application-owned registry. |
 
 ## Documentation routes
 
@@ -30,13 +32,16 @@ signatures and backend requirements rather than guessing APIs from a different q
 - [Resumable work](https://headgate.mintlify.app/docs/guides/resumable-work) and
   [transactions](https://headgate.mintlify.app/docs/guides/transactions-and-orms): checkpoint
   compatibility and transactionally guarded effects.
-- [Workflows](https://headgate.mintlify.app/docs/guides/workflows): prepare the coordinator
-  and children atomically, register all handlers, and serve all required queues.
+- [Workflows](https://headgate.mintlify.app/docs/guides/workflows): graph inspection,
+  signals with payload/source history, dependency-anchored timers, CEL waits, additive
+  grafts, atomic child bundles, retry/repair, and the remaining mutation boundaries.
 - [Periodic jobs](https://headgate.mintlify.app/docs/guides/periodic-jobs): `@every` uses
   milliseconds; cron, time zones, missed runs, tick identity, and enqueue-event history.
-- [Plugins and middleware](https://headgate.mintlify.app/docs/guides/plugins-and-middleware)
-  and [OpenTelemetry](https://headgate.mintlify.app/docs/operations/observability): producer
-  hooks, execution observers, application-owned providers, exporter setup, and shutdown.
+- [Plugins and middleware](https://headgate.mintlify.app/docs/guides/plugins-and-middleware),
+  [OpenTelemetry](https://headgate.mintlify.app/docs/operations/observability), and
+  [Prometheus](https://headgate.mintlify.app/docs/operations/prometheus): producer hooks,
+  execution observers, application-owned providers or registries, exporter setup, and
+  shutdown.
 - [Logs, results, progress](https://headgate.mintlify.app/docs/guides/results-and-progress):
   logs persist at attempt acknowledgement. Mid-run output/progress are distinct APIs.
 - [Encryption](https://headgate.mintlify.app/docs/guides/encryption-at-rest): encrypt payload
@@ -52,9 +57,19 @@ signatures and backend requirements rather than guessing APIs from a different q
 
 ## Avoid false guarantees
 
-The v0.1.7 workflow layer does not claim signals, workflow timers, dynamic graph mutation,
-nested workflows, or workflow-level retries. A scheduled job is not a workflow timer.
-Check the installed release before promising later or experimental capabilities.
+The v0.1.8 workflow layer supports durable signals, absolute and dependency-anchored
+timers, bounded CEL conditions, additive ordinary-task grafts, atomic parent/child bundles,
+and failed-subgraph retry generations. These APIs remain experimental. It does not support
+replacement, deletion, renaming, or rewiring of accepted nodes; grafting signals, timers,
+conditions, or child links; or general mutation after the coordinator becomes terminal.
+Failed-subgraph retry is the narrow terminal recovery exception and must be enabled on the
+workflow before enqueue. The console inspects these features but intentionally provides no
+signal, graft, or retry mutation controls yet.
+
+Rich signal emission accepts arbitrary JSON payload and source metadata plus an idempotency
+key. Source is caller-supplied context, not authenticated identity. History is newest-first,
+bounded to 100 emissions per workflow, and therefore also bounds the idempotency horizon.
+Use the store-stamped history for diagnosis; do not claim indefinite audit retention.
 
 The in-memory store is a test backend, not a substitute for PostgreSQL/MySQL/Redis in
 durable deployments. Redis does not provide transactional application effects, and MySQL
@@ -74,11 +89,13 @@ the console or log secrets under the assumption that payload encryption protects
    registered task kind/schema version.
 2. Check worker heartbeats, served queues, maintenance duties, and admission explanations.
    Terminal jobs no longer compete for admission; that is not an unknown policy block.
-3. Inspect attempt errors, crash counts, and checkpoints as needed. Request payload bytes
+3. For workflows, inspect the graph snapshot, revision, retry generation, dependencies,
+   dependents, coordinator state, and relevant signal history before proposing mutation.
+4. Inspect attempt errors, crash counts, and checkpoints as needed. Request payload bytes
    only when needed and authorized, never by default in list requests.
-4. Distinguish archived jobs (dead-letter queue), fingerprint quarantine, and undecodable
+5. Distinguish archived jobs (dead-letter queue), fingerprint quarantine, and undecodable
    payloads/step schemas. Fix the cause before proposing redrive or quarantine release.
-5. Explain the proposed action and its scope. For authorized HTTP mutations, use the
+6. Explain the proposed action and its scope. For authorized HTTP mutations, use the
    required `Idempotency-Key`, bounded selectors, and available dry-run behavior.
 
 The console and API inherit authentication from the host application. Bind local examples

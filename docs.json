@@ -110,6 +110,7 @@
               "docs/operations/migrations",
               "docs/operations/testing",
               "docs/operations/observability",
+              "docs/operations/prometheus",
               "docs/operations/connection-budget",
               "docs/operations/multi-instance",
               "docs/operations/queue-and-runtime-management",

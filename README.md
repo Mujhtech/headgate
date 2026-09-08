@@ -29,7 +29,7 @@ fleet—not independently in each process.
 - **Scheduling and orchestration:** delayed and periodic jobs, resumable steps, progress,
   results, and durable workflow DAGs.
 - **Production controls:** queue management, quarantine and redrive, worker control,
-  OpenTelemetry, a control API, CLI, and an embedded web UI.
+  OpenTelemetry, Prometheus metrics, a control API, CLI, and an embedded web UI.
 - **Security by default:** payloads are redacted from inspection unless requested and can
   be encrypted at rest with client-managed keys.
 
@@ -78,8 +78,8 @@ Install the runtime and one backend:
 
 ```toml
 [dependencies]
-headgate = "0.1.7"
-headgate-postgres = "0.1.7" # or headgate-mysql / headgate-redis
+headgate = "0.1.8"
+headgate-postgres = "0.1.8" # or headgate-mysql / headgate-redis
 ```
 
 See the [Rust SDK guide](https://headgate.mintlify.app/docs/sdk/rust/overview) for client,

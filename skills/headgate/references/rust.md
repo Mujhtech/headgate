@@ -5,16 +5,17 @@
 Use `headgate` as the application facade and add only the selected backend:
 `headgate-postgres`, `headgate-mysql`, or `headgate-redis`.
 Optional layers are `headgate-workflow`, `headgate-crypto`, `headgate-otel`,
-`headgate-migrate`, `headgate-testkit`, `headgate-api`, and `headgate-ui`.
+`headgate-prometheus`, `headgate-migrate`, `headgate-testkit`, `headgate-api`, and
+`headgate-ui`.
 Rust imports use underscores, for example `headgate_workflow`.
 
 Preserve the application's dependency policy and check version compatibility. A new
-v0.1.7 PostgreSQL integration would include:
+v0.1.8 PostgreSQL integration would include:
 
 ```toml
 [dependencies]
-headgate = "0.1.7"
-headgate-postgres = "0.1.7"
+headgate = "0.1.8"
+headgate-postgres = "0.1.8"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
@@ -101,8 +102,17 @@ complete implementation and reader-before-writer rollout.
   requires a transactional backend; it does not make arbitrary external APIs exactly once.
 - Workflows need `headgate_workflow::register_coordinator` and workers serving the
   coordinator queue as well as task queues. Read the workflow guide before defining a DAG.
+- Use `headgate_workflow::inspect_workflow`, `workflow_dependencies`, and
+  `workflow_dependents` for read-only graph queries. Use `emit_signal_with` when a signal
+  needs an idempotency key, JSON payload, and source context; source remains caller-supplied
+  metadata unless populated at an authenticated boundary.
 - `ctx.logger()` supports structured attempt logs; `ctx.log()` supports plain text.
   Logs are persisted at acknowledgement, not streamed live.
+
+Attach `headgate_prometheus::Telemetry::new(&app_registry)` to
+`WorkerConfig::telemetry` for native Prometheus collectors. The application owns the
+registry, scrape endpoint, access control, and server lifecycle. Use `headgate-otel`
+instead when the application needs traces or an OpenTelemetry pipeline as well as metrics.
 
 ## Test the integration
 

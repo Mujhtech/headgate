@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-router";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { consolePublicAssetUrl } from "@/lib/mount-path";
 import { queryClient } from "@/lib/query";
 import { themeBootstrapScript } from "@/lib/theme";
 import appCss from "../styles.css?url";
@@ -22,7 +23,11 @@ export const Route = createRootRoute({
     ],
     links: [
       { rel: "stylesheet", href: appCss },
-      { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
+      {
+        rel: "icon",
+        href: consolePublicAssetUrl("favicon.svg"),
+        type: "image/svg+xml",
+      },
     ],
   }),
   shellComponent: RootDocument,

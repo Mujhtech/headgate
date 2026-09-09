@@ -13,9 +13,9 @@ For changes inside Headgate, follow that checkout's `AGENTS.md` and architecture
 
 - Inspect the application's manifests, locked Headgate versions, selected backend, and
   existing worker lifecycle before choosing APIs. Preserve its runtime and database choices.
-- These examples target v0.1.8. Check version-matched source or SDK documentation before
+- These examples target v0.1.9. Check version-matched source or SDK documentation before
   using them with another version; do not upgrade dependencies just because this skill is newer.
-  The v0.1.8 Go SDK needs Go 1.27+. Rust uses the `headgate` facade and optional adapter crates.
+  The v0.1.9 Go SDK needs Go 1.27+. Rust uses the `headgate` facade and optional adapter crates.
 - Determine whether the task needs a producer, a worker, the control API, or a combination.
   Do not add an HTTP server or a second database merely to enqueue jobs.
 - Install only the backend and optional modules the task needs. Prefer `Client` for
@@ -60,7 +60,7 @@ does not prove its backend works. Do not point destructive test cleanup at appli
 For the requested feature, verify a meaningful success path and its relevant failure or
 retry path; compile any supplied integration example against the application's versions.
 State the backend, required migrations/configuration, tested behavior, and remaining limits.
-v0.1.8 adds migration 13 for durable workflow events; apply the complete version-matched
+v0.1.8 added migration 13 for durable workflow events; apply the complete version-matched
 migration set rather than selecting that migration by hand.
 Do not deploy, publish, redrive jobs, alter fleet policy, or apply destructive migrations
 without authorization for those operations.

@@ -8,7 +8,10 @@ export default defineConfig({
   build: { outDir: ".tanstack" },
   plugins: [
     tailwindcss(),
-    tanstackStart({ spa: { enabled: true } }),
+    tanstackStart({
+      client: { entry: "client.tsx" },
+      spa: { enabled: true },
+    }),
     viteReact(),
   ],
   resolve: { tsconfigPaths: true },

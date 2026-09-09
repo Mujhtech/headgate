@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/sidebar";
 import { api } from "@/lib/api";
 import { config } from "@/lib/config";
+import { consolePublicAssetUrl } from "@/lib/mount-path";
 
 interface RuntimeMeta {
   version?: string;
@@ -71,7 +72,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
                 alt=""
                 className="size-8 shrink-0"
                 height="32"
-                src="/favicon.svg"
+                src={consolePublicAssetUrl("favicon.svg")}
                 width="32"
               />
               <div className="grid flex-1 text-left leading-tight">

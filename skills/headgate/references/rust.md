@@ -10,12 +10,12 @@ Optional layers are `headgate-workflow`, `headgate-crypto`, `headgate-otel`,
 Rust imports use underscores, for example `headgate_workflow`.
 
 Preserve the application's dependency policy and check version compatibility. A new
-v0.1.8 PostgreSQL integration would include:
+v0.1.9 PostgreSQL integration would include:
 
 ```toml
 [dependencies]
-headgate = "0.1.8"
-headgate-postgres = "0.1.8"
+headgate = "0.1.9"
+headgate-postgres = "0.1.9"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```

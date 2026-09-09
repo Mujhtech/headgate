@@ -1,0 +1,1 @@
+import{o as e}from"./react-dom-DS7j_hNE.js";import{s as t}from"./console-JAO6PrU3.js";import{n}from"./workflows-DVKqLgOe.js";var r=e();function i(){return(0,r.jsx)(n,{...t()})}export{i as component};

@@ -115,6 +115,8 @@ func metaBackend(store string) string {
 		return "redis"
 	case "mysql":
 		return "mysql"
+	case "sqlite":
+		return "sqlite"
 	default:
 		return "postgres"
 	}

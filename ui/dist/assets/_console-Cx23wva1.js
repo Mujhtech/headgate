@@ -1,1 +1,0 @@
-import{t as e}from"./console-D-LyNPD5.js";var t=e;export{t as component};

@@ -315,6 +315,9 @@ func TestNotifyWakesAWaitingSubscriber(t *testing.T) {
 	if !s.Caps().Has(headgate.CapNotifying) {
 		t.Fatal("Connect() must enable LISTEN")
 	}
+	if err := headgate.ValidateAdvertisedCapabilities(s); err != nil {
+		t.Fatal(err)
+	}
 	// Prime the lazy listener; the first window may elapse before LISTEN is up.
 	_, _, _ = s.WaitWakeup(ctx, []string{"gonfy-q"}, 300*time.Millisecond)
 

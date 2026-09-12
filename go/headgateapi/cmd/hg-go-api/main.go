@@ -1,7 +1,7 @@
 // Command hg-go-api serves the control API and embedded console for any InspectStore backend.
 //
-//	HG_STORE = "pg" (default) | "redis" | "mysql"
-//	HG_PG = conninfo (pg), HG_REDIS = url + HG_REDIS_PREFIX (redis), HG_MYSQL = url
+//	HG_STORE = "pg" (default) | "redis" | "mysql" | "sqlite"
+//	HG_SQLITE = database path (sqlite; default headgate.db)
 //	HG_API_ADDR = listen address (default 127.0.0.1:8092)
 package main
 
@@ -16,6 +16,7 @@ import (
 	headgatemysql "github.com/mujhtech/headgate/go/driver/headgatemysql"
 	headgatepgx "github.com/mujhtech/headgate/go/driver/headgatepgx"
 	headgateredis "github.com/mujhtech/headgate/go/driver/headgateredis"
+	headgatesqlite "github.com/mujhtech/headgate/go/driver/headgatesqlite"
 	headgateapi "github.com/mujhtech/headgate/go/headgateapi"
 	headgateui "github.com/mujhtech/headgate/go/headgateui"
 )
@@ -66,8 +67,19 @@ func main() {
 			log.Fatal(err)
 		}
 		store = s
+	case "sqlite":
+		path := os.Getenv("HG_SQLITE")
+		if path == "" {
+			path = "headgate.db"
+		}
+		s, err := headgatesqlite.Open(context.Background(), path)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer s.Close() //nolint:errcheck
+		store = s
 	default:
-		log.Fatalf("HG_STORE must be pg, redis, or mysql, got %q", backend)
+		log.Fatalf("HG_STORE must be pg, redis, mysql, or sqlite, got %q", backend)
 	}
 	readOnly := os.Getenv("HG_READ_ONLY") == "1"
 	// Refuse an unauthenticated console beyond loopback unless the operator explicitly

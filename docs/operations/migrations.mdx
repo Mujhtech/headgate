@@ -11,7 +11,8 @@ Headgate ships the same embedded migration line in two independently usable pack
   `go/headgatemigrate/cmd/hg-migrate` command.
 
 Both packages support PostgreSQL and MySQL. Redis has no DDL schema and is deliberately
-not presented as a migration backend.
+not presented as a migration backend. SQLite installs its byte-gated embedded schema when
+the adapter opens, so it does not use the server-oriented migration CLI.
 
 ## Migration contract
 

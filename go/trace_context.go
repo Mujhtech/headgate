@@ -459,9 +459,12 @@ type LeaseRef struct {
 	Fence   uint64
 }
 
-// Store is the whole port. Four methods, deliberately coarse: the admission decision
-// must be atomic inside the store, so a fine-grained get/set/claim port would force the
-// gate back into the worker — which is the mistake this design exists to avoid.
+// Store is the mandatory worker port. It is deliberately coarse: admission, lifecycle
+// transitions, lease maintenance, bounded sweeps, and singleton duties must remain
+// atomic inside the store. Every production driver has a compile-time assertion against
+// this interface, so adding a mandatory method here breaks every incomplete adapter at
+// build time. Optional control, transaction, result, output, progress, and notification
+// surfaces remain separate capability interfaces below.
 type Store interface {
 	Admit(ctx context.Context, req AdmitRequest) ([]AdmissionUnit, error)
 	// Ack applies the transition table. delayMs: required for OutcomeSnooze (> 0); for

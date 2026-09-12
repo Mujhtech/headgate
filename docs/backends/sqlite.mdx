@@ -1,0 +1,60 @@
+---
+title: "SQLite"
+description: "Embedded durable storage with transactional policy admission and bounded inspection."
+icon: "database"
+---
+
+SQLite implements Headgate's complete worker store in both Rust and Go. It evaluates
+policy, selects work, spends rate capacity, and writes the state, lease, and fence inside
+one `BEGIN IMMEDIATE` transaction. The adapter is intended for embedded applications,
+local development, and small fleets whose write load fits SQLite's single-writer model.
+
+<CodeGroup>
+
+```rust Rust
+let store = std::sync::Arc::new(
+    headgate_sqlite::SqliteStore::open("headgate.db").await?
+);
+```
+
+```go Go
+store, err := headgatesqlite.Open(ctx, "headgate.db")
+if err != nil {
+    return err
+}
+defer store.Close()
+```
+
+</CodeGroup>
+
+## Capabilities
+
+SQLite advertises transactions and inspection. This includes transactional enqueue and
+completion, effects and checkpoints, results, output, progress, schedules, durable events,
+workers, queue controls, quarantine, and bounded bulk operations.
+
+SQLite deliberately does not advertise notifications. Workers use Headgate's bounded
+poll/backoff loop; pretending a polling table were push notification would make the
+capability contract misleading.
+
+## Connection behavior
+
+- File databases use WAL, foreign keys, and a bounded busy timeout.
+- `:memory:` uses one physical connection so the database is not split across a pool.
+- Store time—not caller time—drives leases, scheduling, token refill, and duties.
+- A bare Go filename is converted to a SQLite file URI before driver options are added.
+- The matching embedded schema is installed when the adapter opens. Rust and Go schema
+  bytes are checked for drift by the repository verification gate.
+
+## Standalone control API
+
+Set `HG_STORE=sqlite` and optionally `HG_SQLITE=/path/to/headgate.db`. Both standalone APIs
+serve the same control API and embedded console as the other inspection-capable backends.
+
+<Note>
+The shared cross-language corpus runs SQLite through both store implementations and covers
+fleet-wide rate limiting, fairness under a 5,000-job tenant flood, quarantine, atomic
+leases, store-clock behavior, and concurrent no-double-claim admission.
+</Note>
+
+<Card title="SQLite implementation contract" icon="file-check" href="https://github.com/mujhtech/headgate/blob/main/docs/sqlite-store.md" />

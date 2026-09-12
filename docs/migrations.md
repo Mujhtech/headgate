@@ -162,7 +162,8 @@ MySQL callers that need a non-default named-lock boundary use Rust
 delegate to the documented `headgate` default.
 
 See [`multi-instance.md`](multi-instance.md) for store construction and the isolation
-contract across Postgres, MySQL, and Redis.
+contract across Postgres, MySQL, Redis, and SQLite. SQLite installs its byte-gated embedded
+schema when the adapter opens and does not use the server migration CLI.
 
 The live tests create isolated temporary namespaces and exercise fresh up, validation,
 dry-run, destructive down, reinstall, checksum tampering, unversioned refusal, adoption,

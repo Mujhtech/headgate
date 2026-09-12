@@ -30,6 +30,7 @@ tracing = "0.1"
 headgate-postgres = { workspace = true }
 headgate-redis = { workspace = true }
 headgate-mysql = { workspace = true }
+headgate-sqlite = { workspace = true }
 headgate-ui = { workspace = true }
 
 [[bin]]

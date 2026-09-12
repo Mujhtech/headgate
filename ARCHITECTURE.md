@@ -119,7 +119,7 @@ type TxClient interface {
 
 ```rust
 // Rust: same idea via a marker the Redis backend does not implement.
-pub trait Backend { /* everything all three can do */ }
+pub trait Backend { /* everything all four can do */ }
 pub trait Transactional: Backend {
     type Tx<'a>;
     fn enqueue_in<'a, T: Task>(&self, tx: &mut Self::Tx<'a>, task: T) -> impl Future<…>;
@@ -141,7 +141,7 @@ named evidence that actually ran.
 
 ### 3.2 The conformance suite is the product
 
-A shared wire format across two languages and three stores is a claim, and claims decay.
+A shared wire format across two languages and four stores is a claim, and claims decay.
 The suite is not a test directory — it is the definition of the system, and both
 implementations are measured against it.
 
@@ -273,7 +273,7 @@ permanent lock), and lifecycle uniqueness must survive a worker kill with no lea
 `Envelope.id` is neither: it is the primary key, the caller always supplies it, and it is
 never released while the row exists. asynq is the only surveyed queue that separates the
 two — `Unique(ttl)` versus `TaskID(id)` + `ErrTaskIDConflict` — and it is right to.
-headgate declares **one contract, identical on all three backends**:
+headgate declares **one contract, identical on all four backends**:
 
 - **Id exists, content MATCHES** → *idempotent success.* The row is not rewritten, no
   counter moves, no wakeup fires, and the job is not duplicated. This is what makes a
@@ -389,13 +389,15 @@ admit(worker_identity, capacity, queues) -> [claimed jobs]
 ```
 
 Steps 2–4 must be in the same atomic unit as step 3, or the limits are advisory. That is
-implementable on all three backends and is the main reason the store-side layer is nontrivial:
+implementable on all four backends and is the main reason the store-side layer is nontrivial:
 
 - **Redis** — one Lua script. Token buckets are hash fields with a stored refill timestamp,
   refilled lazily on read. Everything is already single-threaded, so atomicity is free.
-- **Postgres / MySQL** — one statement. The candidate CTE joins against a policy table and
+- **Postgres / MySQL** — one SQL admission transaction. The candidate query joins against a policy table and
   filters before `FOR UPDATE SKIP LOCKED`, so a job blocked by policy is never locked and
   never blocks another worker.
+- **SQLite** — one `BEGIN IMMEDIATE` transaction. Writers serialize, while rejected jobs
+  remain unchanged and visible to inspectors and later polls.
 
 **Fleet-wide rate limiting** falls out of the token-bucket step.
 
@@ -429,7 +431,7 @@ implementable on all three backends and is the main reason the store-side layer 
 >   per hour AND no more than 5 per minute'"*; Oban exposes one `rate_limit` per queue.
 >   Nobody surveyed composes. Admitting a job should require **every** applicable budget
 >   to have capacity, and that is a property of putting evaluation in the claim.
-> - **Free, and on all three backends.** Oban and Sidekiq both paywall it. Substrate
+> - **Free, and on all four backends.** Oban and Sidekiq both paywall it. Substrate
 >   independence is the harder half — see §11.3 on not letting a capability depend on
 >   which store you picked.
 
@@ -945,28 +947,28 @@ proof uses 5,000 such rows. See [`docs/sticky-routing.md`](docs/sticky-routing.m
 
 ---
 
-## 6. The three backends, honestly
+## 6. The four backends, honestly
 
 The survey's clearest lesson is that spreading thin is fatal — apalis supports six backends
 and its MySQL crate saw 435 downloads in 90 days, meaning it is essentially untested in the
 field, while its Redis backend silently lost orphan recovery between 0.7.4 and 1.0-rc
 without anyone noticing.
 
-Three backends is defensible only with declared, enforced tiers. The pleasant surprise:
+Four backends is defensible only with declared, enforced tiers. The pleasant surprise:
 **MySQL sits in the same tier as Postgres for the feature that matters most.** InnoDB
 transactions make transactional enqueue work identically there. This is not a
 Postgres-only idea.
 
-| | Postgres | MySQL 8.0+ | Redis |
-|---|---|---|---|
-| Transactional enqueue / completion | ✅ | ✅ | ❌ structurally impossible |
-| Atomic claim via `SKIP LOCKED` | ✅ | ✅ | n/a — Lua is atomic |
-| Push wakeup | `LISTEN/NOTIFY` | ❌ **poll only** | pub/sub |
-| Partial unique index | ✅ native | ⚠️ generated column that is `NULL` when inactive | `SETNX` + TTL |
-| Admission gate | SQL CTE | SQL CTE | Lua |
-| **Job `priority` as an ordering key** | ✅ `ORDER BY priority DESC, scheduled_at_ms, id` | ✅ same | ✅ bounded due draw, then the same order inside Lua |
-| Throughput ceiling | medium | medium | highest |
-| Operational tax | autovacuum on a high-churn table; PgBouncer breaks `LISTEN` | polling latency floor | memory ceiling; no transactions |
+| | Postgres | MySQL 8.0+ | Redis | SQLite |
+|---|---|---|---|---|
+| Transactional enqueue / completion | ✅ | ✅ | ❌ structurally impossible | ✅ |
+| Atomic claim | `SKIP LOCKED` | `SKIP LOCKED` | Lua | `BEGIN IMMEDIATE` single writer |
+| Push wakeup | `LISTEN/NOTIFY` | ❌ **poll only** | pub/sub | ❌ **poll only** |
+| Partial unique index | ✅ native | ⚠️ generated column that is `NULL` when inactive | `SETNX` + TTL | ✅ native |
+| Admission gate | SQL CTE | SQL transaction | Lua | SQL transaction |
+| **Job `priority` as an ordering key** | ✅ `ORDER BY priority DESC, scheduled_at_ms, id` | ✅ same | ✅ bounded due draw, then the same order inside Lua | ✅ same |
+| Throughput ceiling | medium | medium | highest | embedded/small fleets |
+| Operational tax | autovacuum on a high-churn table; PgBouncer breaks `LISTEN` | polling latency floor | memory ceiling; no transactions | serialized writes; polling latency floor |
 
 Two consequences to document loudly rather than bury:
 
@@ -985,12 +987,12 @@ set is due?” Once drawn, `admit.lua` reads each candidate's priority and sorts
 `priority DESC, scheduled_at_ms, id` before policy and queue-weight selection. This avoids
 encoding two ordering dimensions into a lossy floating-point score while matching both SQL
 gates and both memstores. The explicit opposite-order fixture added in round 32j remains:
-all three gates now return `pb1,pc1,pa1`, and a regression to scheduled-time or id order is
-visible immediately.
+the three original live gates return `pb1,pc1,pa1`, while SQLite's driver suites pin the
+same priority ordering; a regression to scheduled-time or id order is visible immediately.
 
 **Tiering rule:** Postgres is the reference implementation. A capability lands there first,
-then MySQL, then Redis — and it is not announced until every backend that declares it passes
-its scenarios. A backend that cannot support a capability declares that permanently and
+then the other applicable backends — and it is not announced until every backend that
+declares it passes its scenarios. A backend that cannot support a capability declares that permanently and
 loudly (§3.1), which is the whole point.
 
 ---
@@ -1100,9 +1102,13 @@ type Store interface {
 }
 ```
 
-Four methods. Postgres implements `admit` as one SQL CTE, Redis as one Lua script, MySQL as
-one statement — each natively, none pretending to be the other. The coarse boundary is what
-makes them genuinely interchangeable: no storage semantics leak through it.
+The original four operations grew into the complete mandatory worker lifecycle: bounded
+sweeps and singleton duties now sit on the same port because every worker backend must
+honor them. PostgreSQL implements admission as one SQL CTE, Redis as one Lua script, and
+MySQL and SQLite as store transactions — each natively, none pretending to be the other. The
+coarse boundary is what makes them genuinely interchangeable: no storage semantics leak
+through it. Optional inspection, caller-owned transactions, results, output, progress,
+and notifications remain separate capability traits/interfaces under §8.2.
 
 ### 8.2 Capabilities: compile-time by default, runtime when needed
 
@@ -1154,7 +1160,7 @@ not code, picks the backend.
 
 | Port | Default adapter | Notes |
 |---|---|---|
-| **Store** | — | Postgres, MySQL, Redis. §8.1. |
+| **Store** | — | Postgres, MySQL, Redis, SQLite. §8.1. |
 | **Payload codec** | JSON | Per task type, not global — one job can be protobuf while its neighbor is JSON. |
 | **Telemetry** | no-op | §8.4. |
 | **Clock** | system | Injectable time is what makes scheduling and lease expiry testable. River has this; apalis does not, and it shows in what each can test. |
@@ -1163,7 +1169,7 @@ not code, picks the backend.
 | **Policy source** | static config | The admission gate reads limits from somewhere; default is config, but a dynamic source (a control plane, a feature flag service) is the same port. |
 
 **Deliberately not pluggable:** the envelope wire format and the state machine. Those are the
-contract that makes two languages and three stores one system — §3.2 exists to enforce them.
+contract that makes two languages and four stores one system — §3.2 exists to enforce them.
 The distinction people conflate is *envelope* versus *payload*: the envelope is fixed, the
 payload codec is yours.
 
@@ -1335,7 +1341,7 @@ client, err := headgate.NewClient(headgatepgx.New(pool), &headgate.Config{
 
 `proto/headgate.proto` and `api/headgate.openapi.yaml` are one file each, shared, as is the
 compiled `ui/` bundle. The conformance corpus is one set of scenario definitions, run by both
-languages against all three stores. CI runs the cross-language
+languages against all four stores. CI runs the cross-language
 matrix — Go enqueues, Rust executes, and the reverse — plus the keyspace diff from §3.2.
 
 The failure mode to design against is the two implementations drifting into cousins that
@@ -2060,7 +2066,7 @@ row visibly terminalized by a saturation strategy) advance the ledger. A runtime
 change rescales `dispatch_count` by `new_weight / old_weight` in the same policy write, so
 the queue retains its current virtual position rather than receiving an accidental burst
 or penalty. The ledger and its update are inside the store's atomic admission unit on all
-three backends.
+four backends.
 
 ### 11.4 What is still genuinely unclaimed
 
@@ -2077,7 +2083,7 @@ Shorter than §5 originally implied, and worth building the project around:
 4. **Backlog derivatives as a queryable API.** Oban Pro computes drain rate internally to
    drive autoscaling but never exposes it; SQS exposes age but not rate.
 5. **Missed-schedule policy.** Universally absent.
-6. **All of it free, in Go and Rust, on three backends.** Oban and Sidekiq paywall most of
+6. **All of it free, in Go and Rust, on four backends.** Oban and Sidekiq paywall most of
    it; Hatchet is a server you must operate; SQS is a managed service.
 
 ## 12. Scope

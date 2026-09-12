@@ -7,6 +7,7 @@ use (
 	./go/driver/headgatemysql
 	./go/driver/headgatepgx
 	./go/driver/headgateredis
+	./go/driver/headgatesqlite
 	./go/headgateapi
 	./go/headgatecrypto
 	./go/headgatectl

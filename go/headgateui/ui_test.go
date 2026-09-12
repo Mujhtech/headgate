@@ -10,10 +10,10 @@ import (
 
 func TestServesShellFallbackWithInjectedConfig(t *testing.T) {
 	handler := NewHandler(Config{APIBase: "/x/api", ReadOnly: true})
-	for requestPath, assetPrefix := range map[string]string{
-		"/":               "./assets/",
-		"/queues":         "./assets/",
-		"/some/deep/link": "../../assets/",
+	for requestPath, prefixes := range map[string][2]string{
+		"/":               {"./assets/", "./favicon.svg"},
+		"/queues":         {"./assets/", "./favicon.svg"},
+		"/some/deep/link": {"../../assets/", "../../favicon.svg"},
 	} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, requestPath, nil))
@@ -27,8 +27,14 @@ func TestServesShellFallbackWithInjectedConfig(t *testing.T) {
 		if !strings.Contains(body, `window.HEADGATE = {"apiBase":"/x/api","readOnly":true};`) {
 			t.Fatal("missing injected config")
 		}
-		if !strings.Contains(body, assetPrefix) {
+		if !strings.Contains(body, prefixes[0]) {
 			t.Fatalf("asset URLs must resolve from %s", requestPath)
+		}
+		if !strings.Contains(body, `href="`+prefixes[1]+`"`) {
+			t.Fatalf("favicon URL must resolve from %s", requestPath)
+		}
+		if strings.Contains(body, "file://") {
+			t.Fatalf("shell for %s contains a local file URL", requestPath)
 		}
 	}
 }

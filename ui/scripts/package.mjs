@@ -17,12 +17,13 @@ await rename(
 
 const indexPath = join(canonicalBuild, "index.html");
 const index = await readFile(indexPath, "utf8");
-await writeFile(
-  indexPath,
-  index
-    .replace("<!DOCTYPE html>", "<!doctype html><!-- headgate console -->")
-    .replaceAll("/./assets/", "./assets/")
-);
+const packagedIndex = index
+  .replace("<!DOCTYPE html>", "<!doctype html><!-- headgate console -->")
+  .replaceAll("/./assets/", "./assets/");
+if (packagedIndex.includes("file://")) {
+  throw new Error("generated console shell contains a local file URL");
+}
+await writeFile(indexPath, packagedIndex);
 
 await rm(goBuild, { force: true, recursive: true });
 await cp(canonicalBuild, goBuild, { recursive: true });

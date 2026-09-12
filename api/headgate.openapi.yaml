@@ -367,7 +367,7 @@ paths:
                 properties:
                   plaintext: {type: string, contentEncoding: base64}
         '403': {description: The application reveal policy rejected the caller.}
-        '404': {description: No such job, or payload reveal is not configured.}
+        '404': {description: "No such job, or payload reveal is not configured."}
         '422': {description: The stored payload cannot be decrypted or decoded.}
         '503': {description: The application decryption service is unavailable.}
         '500': {description: The application reveal callback failed.}
@@ -1105,8 +1105,8 @@ components:
         id: {type: integer, minimum: 1}
         signal: {type: string}
         idempotency_key: {type: string}
-        payload: {description: Arbitrary JSON value supplied by the emitter, limited to 64 KiB after canonical serialization.}
-        source: {description: Caller-supplied JSON describing the emitter or calling system, limited to 16 KiB; it is not proof of identity by itself.}
+        payload: {description: "Arbitrary JSON value supplied by the emitter, limited to 64 KiB after canonical serialization."}
+        source: {description: "Caller-supplied JSON describing the emitter or calling system, limited to 16 KiB; it is not proof of identity by itself."}
         recorded_at_ms: {type: integer, description: Timestamp assigned by the backing store.}
     State:
       type: string

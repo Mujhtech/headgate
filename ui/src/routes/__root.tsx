@@ -7,7 +7,7 @@ import {
 } from "@tanstack/react-router";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { consolePublicAssetUrl } from "@/lib/mount-path";
+import { configBootstrapScript } from "@/lib/config-bootstrap";
 import { queryClient } from "@/lib/query";
 import { themeBootstrapScript } from "@/lib/theme";
 import appCss from "../styles.css?url";
@@ -25,7 +25,9 @@ export const Route = createRootRoute({
       { rel: "stylesheet", href: appCss },
       {
         rel: "icon",
-        href: consolePublicAssetUrl("favicon.svg"),
+        // Keep the static shell and the first browser render byte-identical. The
+        // embedded handlers rewrite this path for nested routes and mount prefixes.
+        href: "./favicon.svg",
         type: "image/svg+xml",
       },
     ],
@@ -69,8 +71,10 @@ function RootDocument({ children }: { children: React.ReactNode }) {
         <script id="headgate-theme" suppressHydrationWarning>
           {themeBootstrapScript}
         </script>
-        <script id="headgate-config" suppressHydrationWarning>
-          {`window.HEADGATE = window.HEADGATE || {apiBase:"/api/v1",readOnly:false};`}
+        <script id="headgate-config">
+          {configBootstrapScript(
+            typeof window === "undefined" ? undefined : window.HEADGATE
+          )}
         </script>
       </head>
       <body className="scrollbar-thin console-scrollbar">

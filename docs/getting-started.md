@@ -15,8 +15,9 @@ run; they do not reimplement rate limits, fairness, concurrency limits, or quara
 
 Create or upgrade the schema with the matching migrator. See [migrations.md](migrations.md)
 for CLI and library forms, adoption of existing installations, and rollback rules.
-Postgres is used below; MySQL and Redis expose the same core store contract, with the
-capabilities recorded in the conformance register.
+Postgres is used below; MySQL, Redis, and SQLite expose the same core store contract, with
+their optional capabilities recorded in the conformance register. SQLite installs its
+embedded schema when the adapter opens and is the simplest local, single-writer option.
 
 Every duration crossing an API boundary is expressed in milliseconds and must be at
 least one millisecond. Use a unique job ID for each logical enqueue. A repeated ID is an

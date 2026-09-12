@@ -179,6 +179,7 @@ async fn the_worker_runtime_runs_unchanged_over_redis() {
         "Redis must not claim Notifying yet"
     );
     assert_eq!(store.caps(), headgate_core::Caps::INSPECT);
+    headgate_core::validate_store_capabilities(store.as_ref()).unwrap();
 }
 
 /// surveyed policy behavior over Redis: with Inspect answered, the worker's SCHEDULER duty activates —

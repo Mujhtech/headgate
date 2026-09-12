@@ -15,6 +15,11 @@ ROOT = Path(__file__).resolve().parent.parent
 
 PAIRS = [
     (
+        "SQLite Rust driver ↔ Go driver v1",
+        "crates/headgate-sqlite/migrations/0001_init.sql",
+        "go/driver/headgatesqlite/migrations/0001_init.sql",
+    ),
+    (
         "Postgres driver ↔ Rust migrator up v1",
         "crates/headgate-postgres/migrations/0001_init.sql",
         "crates/headgate-migrate/migrations/postgres/0001_init.up.sql",

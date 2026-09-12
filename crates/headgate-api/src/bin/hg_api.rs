@@ -1,7 +1,7 @@
 //! Serve the control API contract control API — the router speaks only to the Inspect port, so the
 //! same binary fronts any backend.
-//!   HG_STORE = "pg" (default) | "redis" | "mysql"
-//!   HG_PG = conninfo (pg), HG_REDIS = url + HG_REDIS_PREFIX (redis), HG_MYSQL = url
+//!   HG_STORE = "pg" (default) | "redis" | "mysql" | "sqlite"
+//!   HG_SQLITE = database path (sqlite; default headgate.db)
 //!   HG_API_ADDR = listen address (default 127.0.0.1:8091)
 
 use std::sync::Arc;
@@ -11,6 +11,7 @@ use headgate_core::Inspect;
 use headgate_mysql::MysqlStore;
 use headgate_postgres::PgStore;
 use headgate_redis::RedisStore;
+use headgate_sqlite::SqliteStore;
 
 #[tokio::main]
 async fn main() {
@@ -23,6 +24,7 @@ async fn main() {
     let meta_backend: &'static str = match backend.as_str() {
         "redis" => "redis",
         "mysql" => "mysql",
+        "sqlite" => "sqlite",
         _ => "postgres",
     };
     let inspect: Arc<dyn Inspect> = match backend.as_str() {
@@ -45,7 +47,11 @@ async fn main() {
                 .unwrap_or_else(|_| "mysql://root:hg@127.0.0.1:3307/hg".into());
             Arc::new(MysqlStore::connect(&url).expect("connect mysql"))
         }
-        other => panic!("HG_STORE must be pg, redis, or mysql, got `{other}`"),
+        "sqlite" => {
+            let path = std::env::var("HG_SQLITE").unwrap_or_else(|_| "headgate.db".into());
+            Arc::new(SqliteStore::open(path).await.expect("connect sqlite"))
+        }
+        other => panic!("HG_STORE must be pg, redis, mysql, or sqlite, got `{other}`"),
     };
     let read_only = std::env::var("HG_READ_ONLY").ok().as_deref() == Some("1");
     // authorization boundary an unauthenticated queue console reachable beyond loopback is a breach

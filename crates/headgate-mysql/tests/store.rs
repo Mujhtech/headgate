@@ -511,6 +511,7 @@ async fn gate_fairness_rate_limit_and_lifecycle() {
     // runtime capability boundary honesty: Transactional yes (InnoDB), Inspect yes (src/inspect.rs),
     // Notifying NEVER (no LISTEN/NOTIFY).
     assert_eq!(store.caps(), Caps(Caps::TRANSACTIONAL.0 | Caps::INSPECT.0));
+    headgate_core::validate_store_capabilities(store.as_ref()).unwrap();
     assert!(store.as_transactional().is_some());
     assert!(
         store.as_notifying().is_none(),

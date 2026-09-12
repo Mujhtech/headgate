@@ -77,6 +77,22 @@ billing, err := headgateredis.Connect(url, "billing-jobs")
 Use a unique, stable prefix per production instance. Do not use `FLUSHDB` for cleanup;
 the test helpers clean only `{prefix}:*` keys with cursor-based scans.
 
+## SQLite: one file per instance
+
+SQLite's instance boundary is the database file:
+
+```rust
+let billing = SqliteStore::open("/var/lib/app/billing-jobs.db").await?;
+```
+
+```go
+billing, err := headgatesqlite.Open(ctx, "/var/lib/app/billing-jobs.db")
+```
+
+The adapter initializes every durable object in that file and enables WAL for file-backed
+databases. Give each logical instance its own path. File ownership and permissions provide
+the security boundary; `:memory:` is process-local and suited to tests or ephemeral use.
+
 ## Permissions and security boundary
 
 The Postgres migration role needs permission to create/drop objects in each configured
@@ -84,7 +100,7 @@ schema; the runtime role needs access only to its schema. The MySQL role needs a
 its selected database. Redis ACLs should restrict each deployment to its prefix where the
 server supports key patterns.
 
-Separate schemas/databases/prefixes prevent accidental queue-state collision. They are
+Separate schemas/databases/prefixes/files prevent accidental queue-state collision. They are
 not, by themselves, a hostile-tenant security boundary when the same credentials can read
 all instances. Use distinct least-privilege credentials when cross-instance reads must be
 forbidden even after an application compromise.

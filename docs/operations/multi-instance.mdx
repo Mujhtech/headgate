@@ -78,9 +78,27 @@ billing, err := headgateredis.Connect(url, "billing-jobs")
 Use a unique, stable production prefix. Never use `FLUSHDB` for cleanup; test helpers scan
 and remove only keys owned by their generated prefix.
 
+## SQLite files
+
+SQLite uses one database file per installation:
+
+<CodeGroup>
+```rust Rust
+let billing = SqliteStore::open("/var/lib/app/billing-jobs.db").await?;
+```
+
+```go Go
+billing, err := headgatesqlite.Open(ctx, "/var/lib/app/billing-jobs.db")
+```
+</CodeGroup>
+
+Do not point separate logical installations at the same file. The adapter initializes all
+durable objects in that file and uses WAL for file-backed databases. File permissions are
+the security boundary; `:memory:` is process-local and intended for tests or ephemeral use.
+
 ## Security boundary
 
-Separate schemas, databases, or prefixes prevent accidental queue-state collision. They
+Separate schemas, databases, prefixes, or SQLite files prevent accidental queue-state collision. They
 are not a hostile-tenant security boundary when the same credential can read all
 installations. Use distinct least-privilege credentials when cross-installation reads
 must remain impossible after an application compromise.

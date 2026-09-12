@@ -1,13 +1,6 @@
-export interface HeadgateConfig {
-  apiBase: string;
-  readOnly: boolean;
-}
+import type { HeadgateConfig } from "./config-bootstrap";
 
-declare global {
-  interface Window {
-    HEADGATE?: Partial<HeadgateConfig>;
-  }
-}
+export type { HeadgateConfig } from "./config-bootstrap";
 
 export const config: HeadgateConfig = {
   apiBase: window.HEADGATE?.apiBase ?? "/api/v1",

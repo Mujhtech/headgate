@@ -730,6 +730,40 @@ impl Caps {
     }
 }
 
+/// Verify that a store's advertised capability bits and runtime upcasts agree.
+///
+/// Keeping this check in core gives every adapter—built-in or third-party—the same
+/// executable contract. A bit without an upcast makes callers discover an unsupported
+/// operation after capability discovery; an upcast without a bit silently disables a
+/// feature that the store actually implements.
+pub fn validate_store_capabilities(store: &dyn Store) -> Result<(), StoreError> {
+    let checks = [
+        (
+            "transactional",
+            store.caps().has(Caps::TRANSACTIONAL),
+            store.as_transactional().is_some(),
+        ),
+        (
+            "notifying",
+            store.caps().has(Caps::NOTIFYING),
+            store.as_notifying().is_some(),
+        ),
+        (
+            "inspect",
+            store.caps().has(Caps::INSPECT),
+            store.as_inspect().is_some(),
+        ),
+    ];
+    for (name, advertised, available) in checks {
+        if advertised != available {
+            return Err(StoreError::Invalid(format!(
+                "store capability `{name}` is advertised={advertised} but available={available}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The whole port. Coarse on purpose — the admission decision must stay atomic inside
 /// the store, so a fine-grained port would force the gate back into the worker.
 ///

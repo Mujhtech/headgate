@@ -234,8 +234,15 @@ func TestTheGoRuntimeRunsUnchangedOverGoRedis(t *testing.T) {
 	if s.Caps() != headgate.CapInspect|headgate.CapNotifying {
 		t.Fatalf("Connect caps: %b", s.Caps())
 	}
-	if New(rdb, "grt").Caps() != headgate.CapInspect {
+	if err := headgate.ValidateAdvertisedCapabilities(s); err != nil {
+		t.Fatal(err)
+	}
+	pollOnly := New(rdb, "grt")
+	if pollOnly.Caps() != headgate.CapInspect {
 		t.Fatal("a client-supplied store must not claim Notifying")
+	}
+	if err := headgate.ValidateAdvertisedCapabilities(pollOnly); err != nil {
+		t.Fatal(err)
 	}
 }
 

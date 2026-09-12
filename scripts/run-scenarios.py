@@ -17,8 +17,9 @@ against every backend, in BOTH languages". A runner written in Rust proves the R
 a runner written in Go proves the Go store; neither proves the claim the file makes. What
 already exists in both languages, with ONE identical CLI grammar and ONE identical output
 format, is the harness binaries the shell suite drives (`hg-pg-harness` / `hg-go-harness`,
-`hg-redis-harness` / `hg-go-redis-harness`). Driving those from a third language covers
-2 languages x 2 backends with zero new dependencies in either implementation language —
+`hg-redis-harness` / `hg-go-redis-harness`, and the SQLite pair). Driving those from a
+third language covers
+2 languages x 3 backends with zero new dependencies in either implementation language —
 and adding a YAML dependency to the Rust workspace or the Go core is exactly the kind of
 thing invariant 8 exists to prevent creeping in. python3 + PyYAML is already a hard
 dependency of `scripts/verify.sh`.
@@ -60,6 +61,7 @@ import re
 import subprocess
 import sys
 import time
+import sqlite3
 
 import yaml
 
@@ -265,8 +267,80 @@ class RedisBackend:
         return n
 
 
+class SqliteBackend:
+    name = "sqlite"
+    path = "target/conformance/sqlite.db"
+
+    def __init__(self):
+        self.env = {"HG_SQLITE": self.path}
+
+    def connect(self):
+        connection = sqlite3.connect(self.path, timeout=30)
+        connection.execute("PRAGMA busy_timeout=30000")
+        return connection
+
+    def reset(self):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.remove(self.path + suffix)
+            except FileNotFoundError:
+                pass
+        schema = open("crates/headgate-sqlite/migrations/0001_init.sql").read()
+        with self.connect() as db:
+            db.executescript(schema)
+
+    def seed_rate_class(self, c):
+        tokens = c.get("tokens", c.get("burst", c["limit"]))
+        with self.connect() as db:
+            db.execute("INSERT INTO headgate_rate_bucket(name,tokens,burst,limit_per_window,window_ms,refilled_at_ms,paused) VALUES(?,?,?,?,?,?,0)",
+                       (c["name"], tokens, c.get("burst", c["limit"]), c["limit"], c["window_ms"], c.get("refilled_at_ms", 1000)))
+
+    def empty_bucket_at_store_now(self, c):
+        with self.connect() as db:
+            db.execute("INSERT INTO headgate_rate_bucket(name,tokens,burst,limit_per_window,window_ms,refilled_at_ms,paused) VALUES(?,0,?,?,?,?,0)",
+                       (c["name"], c.get("burst", c["limit"]), c["limit"], c["window_ms"], self.store_now_ms()))
+
+    def seed_quarantine(self, fps):
+        with self.connect() as db:
+            for fp in fps:
+                db.execute("INSERT OR IGNORE INTO headgate_quarantine(fingerprint,crash_count,quarantined_at_ms) VALUES(?,3,1000)", (fp,))
+
+    def scalar(self, sql, values=()):
+        with self.connect() as db:
+            row = db.execute(sql, values).fetchone()
+            return row[0] if row else None
+
+    def bucket_tokens(self, name):
+        return self.scalar("SELECT tokens FROM headgate_rate_bucket WHERE name=?", (name,))
+
+    def store_now_ms(self):
+        return int(self.scalar("SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER)"))
+
+    def states_of_fingerprint(self, fp):
+        with self.connect() as db:
+            return ",".join(row[0] for row in db.execute("SELECT DISTINCT state FROM headgate_job WHERE fingerprint=? ORDER BY state", (fp,)))
+
+    def leases_outside_running(self):
+        return self.scalar("SELECT count(*) FROM headgate_job WHERE lease_id IS NOT NULL AND state<>'running'")
+
+    def lease_expiry(self, job_id):
+        return self.scalar("SELECT lease_expires_at_ms FROM headgate_job WHERE id=?", (job_id,))
+
+    def running_count(self):
+        return self.scalar("SELECT count(*) FROM headgate_job WHERE state='running'")
+
+
+class RustSqliteBackend(SqliteBackend):
+    path = "target/conformance/sqlite-rust.db"
+
+
+class GoSqliteBackend(SqliteBackend):
+    path = "target/conformance/sqlite-go.db"
+
+
 # --------------------------------------------------------------------------
-# The four (language, backend) cells. Both harnesses in a pair take the SAME
+# The six (language, backend) cells. Both harnesses in a pair take the SAME
 # arguments and print the SAME `id|lease_id|fence|partition_key|rate_class`
 # line, which is what makes one runner able to drive both.
 # --------------------------------------------------------------------------
@@ -275,7 +349,12 @@ CELLS = [
     ("go", PgBackend, "target/debug/hg-go-harness"),
     ("rust", RedisBackend, "target/debug/hg-redis-harness"),
     ("go", RedisBackend, "target/debug/hg-go-redis-harness"),
+    ("rust", RustSqliteBackend, "target/debug/hg-sqlite-harness"),
+    ("go", GoSqliteBackend, "target/debug/hg-go-sqlite-harness"),
 ]
+requested_backends = {v for v in os.environ.get("HG_SCENARIO_BACKENDS", "").split(",") if v}
+if requested_backends:
+    CELLS = [cell for cell in CELLS if cell[1]().name in requested_backends]
 
 
 def harness(bin_path, backend, *args):
@@ -488,10 +567,15 @@ def main():
 
     # Preflight, the same rule the shell suite runs on: a runner that goes green because
     # the store is unreachable is worse than no runner.
+    required_bins = {binp for _, _, binp in CELLS}
     for path, why in [("target/debug/hg-pg-harness", "cargo build -p headgate-postgres --bin hg-pg-harness"),
                       ("target/debug/hg-redis-harness", "cargo build -p headgate-redis --bin hg-redis-harness"),
                       ("target/debug/hg-go-harness", "go build -o target/debug/hg-go-harness ./driver/headgatepgx/cmd/hg-go-harness"),
-                      ("target/debug/hg-go-redis-harness", "go build -o target/debug/hg-go-redis-harness ./driver/headgateredis/cmd/hg-go-redis-harness")]:
+                      ("target/debug/hg-go-redis-harness", "go build -o target/debug/hg-go-redis-harness ./driver/headgateredis/cmd/hg-go-redis-harness"),
+                      ("target/debug/hg-sqlite-harness", "cargo build -p headgate-sqlite --bin hg-sqlite-harness"),
+                      ("target/debug/hg-go-sqlite-harness", "go build -o target/debug/hg-go-sqlite-harness ./driver/headgatesqlite/cmd/hg-go-sqlite-harness")]:
+        if path not in required_bins:
+            continue
         if not os.path.exists(path):
             print(f"FATAL: {path} missing — build it with: {why}")
             return 2

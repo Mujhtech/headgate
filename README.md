@@ -5,7 +5,8 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/mujhtech/headgate/go.svg)](https://pkg.go.dev/github.com/mujhtech/headgate/go)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Headgate runs reliable background jobs in Go and Rust using PostgreSQL, MySQL, or Redis.
+Headgate runs reliable background jobs in Go and Rust using PostgreSQL, MySQL, Redis, or
+embedded SQLite.
 
 Define a typed job, enqueue it from your application, and let Headgate handle retries,
 scheduling, workflows, progress, results, and worker coordination. Its rate limits, tenant
@@ -79,7 +80,7 @@ Install the runtime and one backend:
 ```toml
 [dependencies]
 headgate = "0.1.9"
-headgate-postgres = "0.1.9" # or headgate-mysql / headgate-redis
+headgate-postgres = "0.1.9" # or headgate-mysql / headgate-redis / headgate-sqlite
 ```
 
 See the [Rust SDK guide](https://headgate.mintlify.app/docs/sdk/rust/overview) for client,
@@ -110,7 +111,7 @@ Install the runtime and one backend:
 ```bash
 go get github.com/mujhtech/headgate/go
 go get github.com/mujhtech/headgate/go/driver/headgatepgx
-# or driver/headgatemysql / driver/headgateredis
+# or driver/headgatemysql / driver/headgateredis / driver/headgatesqlite
 ```
 
 See the [Go SDK guide](https://headgate.mintlify.app/docs/sdk/go/overview) for runner,
@@ -123,10 +124,12 @@ client, and enqueue setup.
 | PostgreSQL | You want the reference backend, transactional enqueueing, and notifications. |
 | MySQL | Your application already runs on MySQL and polling fits your deployment. |
 | Redis | You want a low-latency Redis-native fleet and do not need SQL transactions. |
+| SQLite | You want an embedded durable store for local use or a small fleet. |
 
 Backend packages are separate, so applications only pull in the driver they use. Start
-with the [installation guide](https://headgate.mintlify.app/docs/installation) and apply
-the matching migrations before starting workers.
+with the [installation guide](https://headgate.mintlify.app/docs/installation). Apply the
+matching server migrations before starting PostgreSQL or MySQL workers; SQLite initializes
+its embedded schema when opened.
 
 ## Operations console
 
@@ -153,7 +156,7 @@ Then open `http://127.0.0.1:8080`. For production mounting and security guidance
 - Workflow fan-out/fan-in, named resumable steps, cursor iteration, and batch handlers
 - Job progress, results, attempt history, mid-run output, subscriptions, and test helpers
 - Producer middleware, authorization, insert hooks, backpressure, and circuit breaking
-- PostgreSQL, MySQL, and Redis implementations with matching core behavior
+- PostgreSQL, MySQL, Redis, and SQLite implementations with matching core behavior
 
 See the [feature index](https://headgate.mintlify.app/docs/reference/feature-index) for the
 full list and the documented boundaries of each backend.

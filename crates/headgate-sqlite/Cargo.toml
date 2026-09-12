@@ -1,0 +1,29 @@
+[package]
+name = "headgate-sqlite"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "SQLite storage adapter for the Headgate policy-aware job queue."
+homepage.workspace = true
+documentation.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+
+[dependencies]
+headgate-core = { workspace = true }
+headgate-shared = { workspace = true }
+async-trait = "0.1"
+tokio-rusqlite = "0.8"
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "macros", "rt"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tempfile = "3"
+
+[[bin]]
+name = "hg-sqlite-harness"
+path = "src/bin/hg_sqlite_harness.rs"

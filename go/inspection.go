@@ -448,3 +448,30 @@ const (
 
 // Has reports whether all bits in x are present.
 func (c Caps) Has(x Caps) bool { return c&x != 0 }
+
+// ValidateAdvertisedCapabilities verifies that every capability bit a store reports has
+// a corresponding optional interface. The reverse is intentionally not required: a Go
+// type may implement an interface while a particular instance has that facility disabled
+// (for example, a PostgreSQL store constructed without LISTEN configuration).
+func ValidateAdvertisedCapabilities(store Store) error {
+	checks := []struct {
+		name      string
+		cap       Caps
+		available bool
+	}{
+		{"transactional", CapTransactional, implements[TransactionalStore](store)},
+		{"notifying", CapNotifying, implements[NotifyingStore](store)},
+		{"inspect", CapInspect, implements[InspectStore](store)},
+	}
+	for _, check := range checks {
+		if store.Caps().Has(check.cap) && !check.available {
+			return Invalidf("store advertises capability `%s` without implementing its interface", check.name)
+		}
+	}
+	return nil
+}
+
+func implements[T any](value any) bool {
+	_, ok := value.(T)
+	return ok
+}

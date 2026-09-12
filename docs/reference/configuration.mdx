@@ -27,6 +27,25 @@ event bus belong to the producer client. They do not change fleet admission poli
 Rate classes, queue pauses and weights, enqueue limits, concurrency ceilings, quarantine,
 and schedules live in the store and are writable through the control API.
 
+## Standalone API configuration
+
+The Rust and Go control-API binaries select the same backend vocabulary:
+
+| Setting | Meaning |
+| --- | --- |
+| `HG_STORE` | `pg`, `mysql`, `redis`, or `sqlite` |
+| `HG_PG` | PostgreSQL connection string when `HG_STORE=pg` |
+| `HG_MYSQL` | MySQL URL when `HG_STORE=mysql` |
+| `HG_REDIS` | Redis URL when `HG_STORE=redis` |
+| `HG_REDIS_PREFIX` | Installation key prefix for Redis |
+| `HG_SQLITE` | SQLite database path; defaults to `headgate.db` |
+| `HG_API_ADDR` | Loopback listen address unless remote binding is explicitly allowed |
+| `HG_READ_ONLY` | Set to `1` to enforce read-only API behavior |
+| `HG_API_ALLOW_REMOTE` | Set to `1` only when an external authentication layer protects a non-loopback bind |
+
+SQLite and MySQL use the worker's bounded polling path. PostgreSQL and Redis may also wake
+workers through their advertised notification capabilities.
+
 <Warning>
 Durations crossing public boundaries are milliseconds and must be at least one millisecond.
 Never silently round sub-millisecond values to zero.

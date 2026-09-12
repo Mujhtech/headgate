@@ -23,9 +23,9 @@ For changes inside Headgate, follow that checkout's `AGENTS.md` and architecture
 
 Read only the relevant supporting reference:
 
-- [Go integrations](references/go.md): module paths, typed handlers, producer, runner, tests.
-- [Rust integrations](references/rust.md): crates, task derive, producer, worker, tests.
-- [Features and operations](references/features.md): feature selection, troubleshooting,
+- Go integrations (`references/go.md`): module paths, typed handlers, producer, runner, tests.
+- Rust integrations (`references/rust.md`): crates, task derive, producer, worker, tests.
+- Features and operations (`references/features.md`): feature selection, troubleshooting,
   privacy, backend constraints, and links to focused documentation.
 
 ## Preserve the execution contract

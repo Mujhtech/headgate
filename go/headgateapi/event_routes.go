@@ -2,12 +2,23 @@ package headgateapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
 	headgate "github.com/mujhtech/headgate/go"
 )
+
+const eventStreamWriteTimeout = 30 * time.Second
+
+func refreshEventStreamWriteDeadline(controller *http.ResponseController) error {
+	err := controller.SetWriteDeadline(time.Now().Add(eventStreamWriteTimeout))
+	if errors.Is(err, http.ErrNotSupported) {
+		return nil
+	}
+	return err
+}
 
 func (a *api) events(w http.ResponseWriter, r *http.Request) {
 	_, ok := w.(http.Flusher)
@@ -17,8 +28,15 @@ func (a *api) events(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.WriteHeader(200)
 	controller := http.NewResponseController(w)
+	// http.Server.WriteTimeout is an absolute response deadline. Refresh it for
+	// each SSE write so a healthy long-lived stream is not cut off after one
+	// server timeout while a stalled client still has a bounded write.
+	if err := refreshEventStreamWriteDeadline(controller); err != nil {
+		errJSON(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	w.WriteHeader(200)
 	if err := controller.Flush(); err != nil {
 		return
 	}
@@ -49,6 +67,9 @@ func (a *api) events(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-keepalive.C:
+			if err := refreshEventStreamWriteDeadline(controller); err != nil {
+				return
+			}
 			if _, err := fmt.Fprint(w, ": hb\n\n"); err != nil {
 				return
 			}
@@ -82,6 +103,9 @@ func (a *api) events(w http.ResponseWriter, r *http.Request) {
 				names = append(names, q)
 			}
 			data, _ := json.Marshal(map[string]any{"queues": names})
+			if err := refreshEventStreamWriteDeadline(controller); err != nil {
+				return
+			}
 			if _, err := fmt.Fprintf(w, "event: queue_activity\ndata: %s\n\n", data); err != nil {
 				return
 			}

@@ -1,1 +1,0 @@
-import{u as e}from"./react-dom-JhYZ7nPg.js";import{s as t}from"./console-D-LyNPD5.js";import{n}from"./workflows-VyhjczsT.js";var r=e();function i(){return(0,r.jsx)(n,{...t()})}export{i as component};

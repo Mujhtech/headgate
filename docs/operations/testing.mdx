@@ -1,6 +1,6 @@
 ---
 title: "Testing"
-description: "Use the in-memory runtime path or isolated live PostgreSQL, MySQL, and Redis resources."
+description: "Use the in-memory runtime path, embedded SQLite, or isolated live server resources."
 icon: "flask-conical"
 ---
 
@@ -11,6 +11,7 @@ can truthfully exercise the behavior.
 | --- | --- | --- |
 | Handler, retry, fence, clock, steps, runner | `headgate_testkit::MemStore` | `headgatetest.MemStore` |
 | Transactions, SQL, Lua, migrations, inspection, notifications | `PostgresTestDatabase`, `MysqlTestDatabase`, `RedisTestNamespace` | `Create*TestDatabase`, `Require*TestDatabase`, `CreateRedisTestNamespace`, `RequireRedisTestNamespace` |
+| Embedded durable SQL behavior | `headgate_sqlite::SqliteStore::open` with a temporary path | `headgatesqlite.Open` with `t.TempDir()` |
 
 <CodeGroup>
 
@@ -42,6 +43,8 @@ Every helper creates a boundary that no sibling test owns:
 - MySQL creates and migrates a generated database, then returns ready-to-use options or a DSN.
 - Redis creates a generated key prefix. Cleanup uses `SCAN` and bounded `DEL` batches;
   it never runs `KEYS`, `FLUSHDB`, or `FLUSHALL`.
+- SQLite tests own a file under the test's temporary directory. Opening the adapter installs
+  its embedded schema; deleting the temporary directory removes the isolated database.
 
 Generated names contain the process ID and an atomic process-local sequence. A stale SQL
 namespace makes creation fail instead of silently sharing state.

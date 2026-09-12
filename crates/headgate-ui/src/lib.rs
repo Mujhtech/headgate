@@ -22,8 +22,7 @@ use axum::routing::get;
 use include_dir::{Dir, include_dir};
 
 static ASSETS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../ui/dist");
-const DEFAULT_CONFIG: &str =
-    r#"window.HEADGATE = window.HEADGATE || {apiBase:"/api/v1",readOnly:false};"#;
+const DEFAULT_CONFIG: &str = r#"window.HEADGATE = {"apiBase":"/api/v1","readOnly":false};"#;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -83,9 +82,12 @@ fn serve(path: &str, cfg: &Config) -> Response<Body> {
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
     let injected = format!("window.HEADGATE = {config_json};");
+    let asset_prefix = relative_asset_prefix(path);
+    let public_prefix = asset_prefix.trim_end_matches("assets/");
     let page = template
         .replacen(DEFAULT_CONFIG, &injected, 1)
-        .replace("./assets/", &relative_asset_prefix(path));
+        .replace("./assets/", &asset_prefix)
+        .replace("./favicon.svg", &format!("{public_prefix}favicon.svg"));
     response(
         StatusCode::OK,
         "text/html; charset=utf-8",

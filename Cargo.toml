@@ -1,12 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/headgate-core", "crates/headgate-postgres", "crates/headgate", "crates/headgate-proto", "crates/headgate-macros", "crates/headgate-api", "crates/headgate-redis", "crates/headgate-testkit", "crates/headgate-mysql", "crates/headgate-ui", "crates/headgate-migrate", "crates/headgate-shared", "crates/headgate-sql", "crates/headgate-workflow", "crates/headgate-crypto", "crates/headgate-otel", "crates/headgate-prometheus", "examples/rust"]
+members = ["crates/headgate-core", "crates/headgate-postgres", "crates/headgate", "crates/headgate-proto", "crates/headgate-macros", "crates/headgate-api", "crates/headgate-redis", "crates/headgate-testkit", "crates/headgate-mysql", "crates/headgate-sqlite", "crates/headgate-ui", "crates/headgate-migrate", "crates/headgate-shared", "crates/headgate-sql", "crates/headgate-workflow", "crates/headgate-crypto", "crates/headgate-otel", "crates/headgate-prometheus", "examples/rust"]
 
 [workspace.package]
 version = "0.1.9"
 edition = "2024"
 authors = ["The headgate Authors"]
-description = "A policy-aware distributed job queue with PostgreSQL, MySQL, and Redis backends."
+description = "A policy-aware job queue with PostgreSQL, MySQL, Redis, and SQLite backends."
 homepage = "https://github.com/mujhtech/headgate"
 repository = "https://github.com/mujhtech/headgate"
 documentation = "https://headgate.mintlify.app"
@@ -25,6 +25,7 @@ headgate-migrate = { version = "0.1.9", path = "crates/headgate-migrate" }
 headgate-mysql = { version = "0.1.9", path = "crates/headgate-mysql" }
 headgate-postgres = { version = "0.1.9", path = "crates/headgate-postgres" }
 headgate-redis = { version = "0.1.9", path = "crates/headgate-redis" }
+headgate-sqlite = { version = "0.1.9", path = "crates/headgate-sqlite" }
 headgate-shared = { version = "0.1.9", path = "crates/headgate-shared" }
 headgate-sql = { version = "0.1.9", path = "crates/headgate-sql" }
 headgate-testkit = { version = "0.1.9", path = "crates/headgate-testkit" }

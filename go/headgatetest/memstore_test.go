@@ -15,6 +15,22 @@ import (
 	headgate "github.com/mujhtech/headgate/go"
 )
 
+type overclaimStore struct{ *MemStore }
+
+func (s *overclaimStore) Caps() headgate.Caps { return headgate.CapTransactional }
+
+func TestMemStore_AdvertisedCapabilities(t *testing.T) {
+	t.Parallel()
+
+	store := New()
+	if err := headgate.ValidateAdvertisedCapabilities(store); err != nil {
+		t.Fatalf("honest caps: %v", err)
+	}
+	if err := headgate.ValidateAdvertisedCapabilities(&overclaimStore{MemStore: store}); err == nil {
+		t.Fatal("an advertised capability without its interface must fail validation")
+	}
+}
+
 type tMsg struct {
 	Mode string `json:"mode"`
 }

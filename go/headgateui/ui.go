@@ -27,7 +27,7 @@ import (
 //go:embed all:dist
 var build embed.FS
 
-const defaultConfig = `window.HEADGATE = window.HEADGATE || {apiBase:"/api/v1",readOnly:false};`
+const defaultConfig = `window.HEADGATE = {"apiBase":"/api/v1","readOnly":false};`
 
 // Config controls how the embedded console reaches the co-mounted control API.
 type Config struct {
@@ -72,9 +72,16 @@ func NewHandler(cfg Config) http.Handler {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
-		routePage := strings.ReplaceAll(page, "./assets/", relativeAssetPrefix(r.URL.Path))
+		routePage := strings.NewReplacer(
+			"./assets/", relativeAssetPrefix(r.URL.Path),
+			"./favicon.svg", relativePublicFile(r.URL.Path, "favicon.svg"),
+		).Replace(page)
 		_, _ = w.Write([]byte(routePage))
 	})
+}
+
+func relativePublicFile(requestPath, name string) string {
+	return strings.TrimSuffix(relativeAssetPrefix(requestPath), "assets/") + name
 }
 
 func relativeAssetPrefix(requestPath string) string {

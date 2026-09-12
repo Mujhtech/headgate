@@ -26,10 +26,10 @@ async fn serves_shell_fallback_with_injected_config() {
         api_base: "/x/api".into(),
         read_only: true,
     };
-    for (path, asset_prefix) in [
-        ("/", "./assets/"),
-        ("/queues", "./assets/"),
-        ("/some/deep/link", "../../assets/"),
+    for (path, asset_prefix, favicon) in [
+        ("/", "./assets/", "./favicon.svg"),
+        ("/queues", "./assets/", "./favicon.svg"),
+        ("/some/deep/link", "../../assets/", "../../favicon.svg"),
     ] {
         let (status, headers, body) = get(headgate_ui::router(cfg.clone()), path).await;
         assert_eq!(status, StatusCode::OK);
@@ -41,6 +41,11 @@ async fn serves_shell_fallback_with_injected_config() {
             body.contains(asset_prefix),
             "assets must resolve from {path}"
         );
+        assert!(
+            body.contains(&format!(r#"href="{favicon}""#)),
+            "favicon must resolve from {path}"
+        );
+        assert!(!body.contains("file://"), "shell contains a local file URL");
     }
 }
 

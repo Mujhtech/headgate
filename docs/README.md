@@ -3,7 +3,8 @@
 Start with the [Mintlify documentation portal](introduction.mdx) or the plain
 [Rust and Go getting-started guide](getting-started.md). Operational guides cover
 [migrations](migrations.md), [testing](testing.md),
-[connection budgets](connection-budget.md), and the [embedded console](console.md).
+[connection budgets](connection-budget.md), the [SQLite implementation contract](sqlite-store.md),
+and the [embedded console](console.md).
 Feature guides in this directory describe the public contract and link to executable
 tests where appropriate.
 

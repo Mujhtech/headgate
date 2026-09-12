@@ -544,6 +544,9 @@ func TestTheGoRuntimeRunsUnchangedOverGoMysql(t *testing.T) {
 	if s.Caps() != headgate.CapTransactional|headgate.CapInspect {
 		t.Fatalf("caps: %b", s.Caps())
 	}
+	if err := headgate.ValidateAdvertisedCapabilities(s); err != nil {
+		t.Fatal(err)
+	}
 
 	// Transactional enqueue + Once commit as one (the reason MySQL is in the PG tier).
 	tx, err := s.BeginTx(ctx)

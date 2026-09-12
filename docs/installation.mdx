@@ -5,7 +5,8 @@ icon: "package-plus"
 ---
 
 Headgate separates its runtime from database drivers. Install only the adapter your service
-uses. PostgreSQL is the reference backend; MySQL and Redis share the core admission contract.
+uses. PostgreSQL is the reference backend; MySQL, Redis, and SQLite share the core admission
+contract.
 
 ## Packages
 
@@ -15,7 +16,7 @@ uses. PostgreSQL is the reference backend; MySQL and Redis share the core admiss
 ```toml Cargo.toml
 [dependencies]
 headgate = "0.1.9"
-headgate-postgres = "0.1.9" # or headgate-mysql / headgate-redis
+headgate-postgres = "0.1.9" # or headgate-mysql / headgate-redis / headgate-sqlite
 # Optional: headgate-workflow, headgate-crypto, headgate-otel,
 #           headgate-prometheus, headgate-ui
 serde = { version = "1", features = ["derive"] }
@@ -31,7 +32,7 @@ dependencies require this minimum version; use a current Go patch release in pro
 ```bash
 go get github.com/mujhtech/headgate/go
 go get github.com/mujhtech/headgate/go/driver/headgatepgx
-# or driver/headgatemysql / driver/headgateredis
+# or driver/headgatemysql / driver/headgateredis / driver/headgatesqlite
 # Optional standalone modules:
 # go get github.com/mujhtech/headgate/go/headgateworkflow
 # go get github.com/mujhtech/headgate/go/headgatecrypto
@@ -48,16 +49,19 @@ go get github.com/mujhtech/headgate/go/driver/headgatepgx
 | PostgreSQL | Reference deployment and transactional application work | Transactions, inspection, notifications |
 | MySQL | Existing MySQL infrastructure | Transactions and inspection; polling only |
 | Redis | Low-latency Redis-native fleets | Atomic Lua admission; no SQL transactions |
+| SQLite | Embedded applications, local development, and small fleets | Transactions and inspection; polling only |
 
 <Warning>
-Run migrations before workers or the control API. Do not apply individual migration files
-manually or copy SQL between languages; the migration libraries embed verified assets.
+Run migrations before workers or the control API on PostgreSQL and MySQL. SQLite installs
+its verified embedded schema when the adapter opens. Do not copy SQL between languages;
+the repository gate checks matching schema assets byte-for-byte.
 </Warning>
 
 ## Continue
 
-<CardGroup cols={3}>
+<CardGroup cols={2}>
   <Card title="PostgreSQL" icon="database" href="/docs/backends/postgres" />
   <Card title="MySQL" icon="database" href="/docs/backends/mysql" />
   <Card title="Redis" icon="database" href="/docs/backends/redis" />
+  <Card title="SQLite" icon="database" href="/docs/backends/sqlite" />
 </CardGroup>

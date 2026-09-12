@@ -49,6 +49,30 @@ evidence-debt: 0
 
 <!-- Populated round 32j. Format: `### <row name>` then one `- kind: value` per citation. -->
 
+### SQLite durable backend
+- rust: crates/headgate-sqlite/src/lib.rs::implements_worker_lifecycle_with_fencing_and_checkpoint_resume
+- rust: crates/headgate-sqlite/src/lib.rs::reclaims_to_quarantine_and_coordinates_duties
+- rust: crates/headgate-sqlite/src/lib.rs::admission_is_fair_and_work_conserving
+- rust: crates/headgate-sqlite/src/lib.rs::persists_fenced_result_output_and_progress
+- rust: crates/headgate-sqlite/src/lib.rs::transactional_commit_rollback_checkpoint_and_effects
+- rust: crates/headgate-sqlite/src/lib.rs::admission_enforces_pause_rate_concurrency_and_queue_weight
+- rust: crates/headgate-sqlite/src/lib.rs::bounded_inspection_controls_schedules_workers_and_bulk_operations
+- go: driver/headgatesqlite/lifecycle_test.go::TestSqliteStore_AdmissionAckAndFence
+- go: driver/headgatesqlite/lifecycle_test.go::TestSqliteStore_ReclaimQuarantineDutyAndEviction
+- go: driver/headgatesqlite/lifecycle_test.go::TestSqliteStore_AdmissionIsFairAndWorkConserving
+- go: driver/headgatesqlite/values_test.go::TestSqliteStore_ResultOutputProgressAreFenced
+- go: driver/headgatesqlite/values_test.go::TestSqliteStore_TransactionalCommitRollbackAndEffects
+- go: driver/headgatesqlite/policy_test.go::TestSqliteStore_AdmissionPolicyGate
+- go: driver/headgatesqlite/policy_test.go::TestSqliteStore_WeightedQueuesDoNotMixWithPriority
+- go: driver/headgatesqlite/inspect_test.go::TestSqliteStore_BoundedInspectionControlSchedulesAndWorkers
+- scenario: conformance/scenarios/admission.yaml#rate_limit_is_fleet_wide
+- scenario: conformance/scenarios/admission.yaml#fairness_survives_a_flooding_tenant
+- scenario: conformance/scenarios/admission.yaml#quarantined_fingerprint_is_skipped
+- scenario: conformance/scenarios/admission.yaml#no_double_claim_under_concurrency
+- scenario: conformance/scenarios/admission.yaml#lease_is_atomic_with_claim
+- scenario: conformance/scenarios/admission.yaml#lease_expiry_ignores_worker_clocks
+NOTE: SQLite is intentionally poll-only; this row does not claim the optional Notifying capability.
+
 ### **Sticky routing to a worker**
 - rust: crates/headgate-postgres/tests/store.rs::sticky_routing_is_strict_bounded_and_survives_requeue
 - rust: crates/headgate-redis/tests/inspect.rs::sticky_routing_is_strict_bounded_and_survives_requeue

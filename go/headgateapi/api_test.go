@@ -109,6 +109,42 @@ func TestEventStreamHeartbeatCoalescingAndCancellation(t *testing.T) {
 	})
 }
 
+func TestEventStreamOutlivesServerWriteTimeout(t *testing.T) {
+	const serverWriteTimeout = 50 * time.Millisecond
+
+	store := &streamAPIStore{wake: make(chan string, 1), stopped: make(chan struct{})}
+	server := httptest.NewUnstartedServer(Handler(store))
+	server.Config.WriteTimeout = serverWriteTimeout
+	server.Start()
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/api/v1/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	// Cross the host server's absolute response deadline before asking the SSE
+	// handler to write. Without its rolling deadline this closes as a truncated
+	// HTTP 200 response before the queue activity frame can be delivered.
+	time.Sleep(2 * serverWriteTimeout)
+	store.wake <- "critical"
+
+	scanner := bufio.NewScanner(resp.Body)
+	if !scanner.Scan() || scanner.Text() != "event: queue_activity" {
+		t.Fatalf("event line = %q, scan error = %v", scanner.Text(), scanner.Err())
+	}
+	if !scanner.Scan() || scanner.Text() != `data: {"queues":["critical"]}` {
+		t.Fatalf("data line = %q, scan error = %v", scanner.Text(), scanner.Err())
+	}
+}
+
 // errStore answers every Inspect call the API can make with one canned error. It
 // exists to exercise the arms of storeErr that need a BROKEN store — the ones no
 // conformance run can reach while Postgres is up, and which therefore went four rounds

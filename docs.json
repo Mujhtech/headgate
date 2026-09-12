@@ -145,7 +145,8 @@
             "pages": [
               "docs/backends/postgres",
               "docs/backends/mysql",
-              "docs/backends/redis"
+              "docs/backends/redis",
+              "docs/backends/sqlite"
             ]
           }
         ]

@@ -38,9 +38,9 @@ echo "== ui =="           && pnpm --dir ui check
 echo "== rust =="         && RUST_TEST_THREADS=1 cargo test --workspace -q -- --nocapture 2>&1 | tee "$RUSTLOG"
 # Go only reports skip lines in verbose mode. Keep the complete transcript while showing
 # a compact summary in the terminal.
-echo "== go =="           && (cd go && go vet ./... ./driver/headgatepgx/... ./driver/headgatemysql/... ./driver/headgateredis/... ./headgatecrypto/... ./headgateapi/... ./headgatemigrate/... ./headgatetest/... ./headgateui/... ./headgateworkflow/... ./headgatectl/... ./headgateotel/... ./headgateprometheus/... \
-                                    && go build ./... ./driver/headgatepgx/... ./driver/headgatemysql/... ./driver/headgateredis/... ./headgatecrypto/... ./headgateapi/... ./headgatemigrate/... ./headgatetest/... ./headgateui/... ./headgateworkflow/... ./headgatectl/... ./headgateotel/... ./headgateprometheus/... \
-                                    && go test -p 1 -v ./... ./driver/headgatepgx/... ./driver/headgatemysql/... ./driver/headgateredis/... ./headgatecrypto/... ./headgateapi/... ./headgatemigrate/... ./headgatetest/... ./headgateui/... ./headgateworkflow/... ./headgatectl/... ./headgateotel/... ./headgateprometheus/... 2>&1 \
+echo "== go =="           && (cd go && go vet ./... ./driver/headgatepgx/... ./driver/headgatemysql/... ./driver/headgateredis/... ./driver/headgatesqlite/... ./headgatecrypto/... ./headgateapi/... ./headgatemigrate/... ./headgatetest/... ./headgateui/... ./headgateworkflow/... ./headgatectl/... ./headgateotel/... ./headgateprometheus/... \
+                                    && go build ./... ./driver/headgatepgx/... ./driver/headgatemysql/... ./driver/headgateredis/... ./driver/headgatesqlite/... ./headgatecrypto/... ./headgateapi/... ./headgatemigrate/... ./headgatetest/... ./headgateui/... ./headgateworkflow/... ./headgatectl/... ./headgateotel/... ./headgateprometheus/... \
+                                    && go test -p 1 -v ./... ./driver/headgatepgx/... ./driver/headgatemysql/... ./driver/headgateredis/... ./driver/headgatesqlite/... ./headgatecrypto/... ./headgateapi/... ./headgatemigrate/... ./headgatetest/... ./headgateui/... ./headgateworkflow/... ./headgatectl/... ./headgateotel/... ./headgateprometheus/... 2>&1 \
                                        | tee "$GOLOG" \
                                        | awk '/^(---|===) (SKIP|FAIL)/ || /^(ok|FAIL|\?)[ \t]/ || /^ *--- SKIP/ {print}')
 echo "== examples =="     && ./scripts/test-examples.sh
@@ -60,8 +60,10 @@ echo "== deps =="         && ./scripts/check-deps.sh
 # of the tree, and a suite must not go green merely because its assertions disappeared.
 echo "== test inventory ==" && python3 ./scripts/check-inventory.py
 echo "== admission =="    && ./scripts/test-admission.sh
-# The scenario runner follows the admission suite because that suite builds the four
-# language/backend harness binaries it drives.
+# The admission suite builds the PostgreSQL and Redis harnesses. Build SQLite's two
+# harnesses here so the same scenario runner covers all six language/backend cells.
+echo "== sqlite harnesses ==" && cargo build -q -p headgate-sqlite --bin hg-sqlite-harness \
+                                  && (cd go && go build -o ../target/debug/hg-go-sqlite-harness ./driver/headgatesqlite/cmd/hg-go-sqlite-harness)
 echo "== scenarios =="    && python3 ./scripts/run-scenarios.py
 # Resolve every declared capability to a named assertion or test in the transcripts above.
 # A capability cannot be declared unless its evidence ran in this verification pass.

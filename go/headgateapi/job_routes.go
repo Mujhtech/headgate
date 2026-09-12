@@ -307,6 +307,40 @@ func (a *api) getJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, jobJSON(*j))
 }
 
+func (a *api) revealPayload(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if a.payloadRevealer == nil {
+		errJSON(w, http.StatusNotFound, "payload reveal is not available")
+		return
+	}
+	job, err := a.store.GetJob(r.Context(), r.PathValue("id"), true)
+	if err != nil {
+		storeErr(w, err)
+		return
+	}
+	if job == nil {
+		errJSON(w, http.StatusNotFound, "no such job")
+		return
+	}
+	plaintext, err := a.payloadRevealer.RevealPayload(r.Context(), *job)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrPayloadRevealForbidden):
+			errJSON(w, http.StatusForbidden, "payload reveal forbidden")
+		case errors.Is(err, ErrPayloadCannotBeRevealed):
+			errJSON(w, http.StatusUnprocessableEntity, "payload cannot be revealed")
+		case errors.Is(err, ErrPayloadRevealUnavailable):
+			errJSON(w, http.StatusServiceUnavailable, "payload reveal unavailable")
+		default:
+			errJSON(w, http.StatusInternalServerError, "payload reveal failed")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"plaintext": base64.StdEncoding.EncodeToString(plaintext),
+	})
+}
+
 func (a *api) getJobResult(w http.ResponseWriter, r *http.Request) {
 	results, ok := a.store.(headgate.ResultInspectStore)
 	if !ok {

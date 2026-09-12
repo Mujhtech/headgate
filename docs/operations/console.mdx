@@ -42,7 +42,11 @@ not carry cursor bytes.
 
 Encrypted payloads are detected from Headgate's versioned envelope header. The console
 shows the encryption version, key ID, and copyable ciphertext, but never receives a key or
-decrypts the payload in the browser.
+decrypts the payload in the browser. When the embedding application advertises the optional
+`payload_reveal` capability, an explicit reveal button asks the server-side authorization
+and decryption callback for plaintext. That response is non-cacheable and held only in the
+open job view; closing, hiding, or navigating clears it. Reveal is an inspection operation,
+so it remains available in a read-only console and never changes the stored job.
 
 Periodic schedule event selection is URL-backed as `?events=<schedule-id>`, so an event
 view can be shared, refreshed, and traversed with browser history. Missed-run policies use

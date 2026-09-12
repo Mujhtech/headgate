@@ -9,6 +9,8 @@
 //! readyz. Still to come: /jobs/bulk + /operations (async op infra), /workers,
 //! /events (SSE), /periodic, the `q` search grammar, reschedule, and payload edit.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -27,6 +29,56 @@ use headgate_core::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+/// Trusted request context supplied to an application's payload reveal policy.
+/// Authentication remains the embedding application's responsibility; Headgate never
+/// constructs an identity from request headers.
+#[derive(Clone, Debug, Default)]
+pub struct PayloadRevealContext {
+    pub identity: Option<headgate::EnqueueIdentity>,
+}
+
+/// A deliberately small, non-leaking error taxonomy for sensitive payload inspection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PayloadRevealError {
+    Forbidden,
+    CannotReveal,
+    Unavailable,
+    Internal,
+}
+
+impl std::fmt::Display for PayloadRevealError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Forbidden => "payload reveal forbidden",
+            Self::CannotReveal => "payload cannot be revealed",
+            Self::Unavailable => "payload reveal unavailable",
+            Self::Internal => "payload reveal failed",
+        })
+    }
+}
+
+impl std::error::Error for PayloadRevealError {}
+
+pub type PayloadRevealFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Vec<u8>, PayloadRevealError>> + Send + 'a>>;
+
+/// Application-owned authorization and decryption boundary for console payload reveal.
+/// The complete job is passed by value so async KMS implementations need not borrow API
+/// state. Implementations must return plaintext only; the API never receives key material.
+pub trait PayloadRevealer: Send + Sync + 'static {
+    fn reveal(&self, context: PayloadRevealContext, job: JobSummary) -> PayloadRevealFuture<'_>;
+}
+
+impl<F, Fut> PayloadRevealer for F
+where
+    F: Fn(PayloadRevealContext, JobSummary) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<Vec<u8>, PayloadRevealError>> + Send + 'static,
+{
+    fn reveal(&self, context: PayloadRevealContext, job: JobSummary) -> PayloadRevealFuture<'_> {
+        Box::pin((self)(context, job))
+    }
+}
+
 pub struct ApiConfig {
     pub backend: &'static str,
     pub version: &'static str,
@@ -34,6 +86,10 @@ pub struct ApiConfig {
     /// support staff without a delete button; the UI reads this posture and disables
     /// its buttons, but THIS is the enforcement.
     pub read_only: bool,
+    /// Optional application-owned authorization + decryption callback for explicit,
+    /// read-only console inspection. `None` keeps the endpoint unavailable and omits
+    /// `payload_reveal` from `/meta`.
+    pub payload_revealer: Option<Arc<dyn PayloadRevealer>>,
     /// Per-kind enqueue policy. The backward-compatible default allows every kind;
     /// embedding applications should install a policy when untrusted callers can reach
     /// enqueue routes. Authentication happens upstream and supplies EnqueueIdentity as
@@ -58,6 +114,7 @@ impl Default for ApiConfig {
             backend: "postgres",
             version: env!("CARGO_PKG_VERSION"),
             read_only: false,
+            payload_revealer: None,
             enqueue_authorizer: Arc::new(headgate::AllowAllEnqueues),
             enqueue_circuit_breaker: None,
             enqueue_middleware: Vec::new(),
@@ -121,6 +178,7 @@ pub fn router(store: Arc<dyn Inspect>, cfg: ApiConfig) -> Router {
         .route("/jobs/{id}/promote", post(promote_job))
         .route("/jobs/{id}/reschedule", post(reschedule))
         .route("/jobs/{id}/payload", put(edit_payload))
+        .route("/jobs/{id}/payload/reveal", get(reveal_payload))
         .route("/jobs/{id}/admission", get(admission))
         .route("/operations/{id}", get(get_operation))
         .route("/periodic", get(list_periodic))
@@ -732,6 +790,9 @@ async fn meta(State(s): State<ApiState>) -> Response {
     if caps.has(headgate_core::Caps::INSPECT) {
         capabilities.push("inspect");
     }
+    if s.cfg.payload_revealer.is_some() {
+        capabilities.push("payload_reveal");
+    }
     Json(json!({
         "version": s.cfg.version,
         "backend": s.cfg.backend,
@@ -1228,6 +1289,67 @@ async fn get_job(
         Some(j) => Ok(Json(job_json(&j)).into_response()),
         None => Err(err_response(StatusCode::NOT_FOUND, "no such job")),
     }
+}
+
+async fn reveal_payload(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+    identity: Option<Extension<headgate::EnqueueIdentity>>,
+) -> ApiResult {
+    let Some(revealer) = &s.cfg.payload_revealer else {
+        return Err(no_store(err_response(
+            StatusCode::NOT_FOUND,
+            "payload reveal is not available",
+        )));
+    };
+    let Some(job) = s
+        .store
+        .get_job(&id, true)
+        .await
+        .map_err(|error| no_store(store_err(error)))?
+    else {
+        return Err(no_store(err_response(StatusCode::NOT_FOUND, "no such job")));
+    };
+    let plaintext = revealer
+        .reveal(
+            PayloadRevealContext {
+                identity: identity.map(|Extension(value)| value),
+            },
+            job,
+        )
+        .await
+        .map_err(|error| {
+            no_store(match error {
+                PayloadRevealError::Forbidden => {
+                    err_response(StatusCode::FORBIDDEN, "payload reveal forbidden")
+                }
+                PayloadRevealError::CannotReveal => err_response(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "payload cannot be revealed",
+                ),
+                PayloadRevealError::Unavailable => err_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "payload reveal unavailable",
+                ),
+                PayloadRevealError::Internal => {
+                    err_response(StatusCode::INTERNAL_SERVER_ERROR, "payload reveal failed")
+                }
+            })
+        })?;
+    Ok(no_store(
+        Json(json!({
+            "plaintext": base64::engine::general_purpose::STANDARD.encode(plaintext),
+        }))
+        .into_response(),
+    ))
+}
+
+fn no_store(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store"),
+    );
+    response
 }
 
 async fn get_job_result(State(s): State<ApiState>, Path(id): Path<String>) -> ApiResult {

@@ -341,6 +341,36 @@ paths:
       summary: Edit-then-retry. Supplying a schema_version with no upcast path is a 422.
       parameters: [{$ref: '#/components/parameters/Id'}]
       responses: {'204': {description: Updated}, '422': {description: No upcast path}}
+  /jobs/{id}/payload/reveal:
+    get:
+      summary: Explicitly reveal an encrypted payload through application policy.
+      description: |
+        Optional, read-only inspection capability. An embedding application supplies one
+        callback that both authorizes the established request identity and decrypts the
+        complete stored job. Headgate never receives key material and the browser never
+        performs decryption. The route fetches payload bytes only after confirming the
+        capability is configured; it never edits, re-encrypts, retries, or otherwise
+        mutates the job. Every successful plaintext response is `Cache-Control: no-store`.
+        When the callback is absent, `/meta` omits `payload_reveal` and this route is 404.
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200':
+          description: Application-authorized plaintext bytes. Never cache this response.
+          headers:
+            Cache-Control:
+              schema: {type: string, enum: [no-store]}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [plaintext]
+                properties:
+                  plaintext: {type: string, contentEncoding: base64}
+        '403': {description: The application reveal policy rejected the caller.}
+        '404': {description: No such job, or payload reveal is not configured.}
+        '422': {description: The stored payload cannot be decrypted or decoded.}
+        '503': {description: The application decryption service is unavailable.}
+        '500': {description: The application reveal callback failed.}
 
   /rate-classes:
     get:
@@ -534,7 +564,7 @@ paths:
                   backend:  {type: string, enum: [postgres, mysql, redis]}
                   capabilities:
                     type: array
-                    items: {type: string, enum: [transactional, notifying, inspect, aggregation]}
+                    items: {type: string, enum: [transactional, notifying, inspect, aggregation, payload_reveal]}
                   limits:
                     type: object
                     properties:

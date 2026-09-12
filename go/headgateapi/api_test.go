@@ -140,6 +140,24 @@ type outputAPIStore struct {
 	checkpoint *headgate.Checkpoint
 }
 
+type revealAPIStore struct {
+	errStore
+	payload []byte
+	gets    int
+}
+
+func (s *revealAPIStore) GetJob(_ context.Context, id string, includePayload bool) (*headgate.JobSummary, error) {
+	s.gets++
+	if id == "missing" {
+		return nil, nil
+	}
+	job := &headgate.JobSummary{ID: id, Kind: "secret.report", SchemaVersion: 3, State: "available"}
+	if includePayload {
+		job.Payload = append([]byte(nil), s.payload...)
+	}
+	return job, nil
+}
+
 type queuePageStore struct{ errStore }
 
 type workflowAPIStore struct{ errStore }
@@ -387,6 +405,60 @@ func TestMidRunOutputHasAnExplicitPayloadEndpoint(t *testing.T) {
 	metadata, _ := job["metadata"].(map[string]any)
 	if job["payload"] != "eyJyZWNpcGllbnQiOiJvcHNAZXhhbXBsZS5jb20ifQ==" || metadata["customer_id"] != "cus-42" {
 		t.Fatalf("explicit job detail omitted payload or metadata: %#v", job)
+	}
+}
+
+func TestPayloadRevealIsOptionalAuthorizedReadOnlyAndNoStore(t *testing.T) {
+	without := &revealAPIStore{payload: []byte("ciphertext")}
+	h := Handler(without)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/jobs/j1/payload/reveal", nil))
+	if w.Code != http.StatusNotFound || w.Body.String() != `{"error":"payload reveal is not available"}` {
+		t.Fatalf("disabled reveal = %d %s", w.Code, w.Body.String())
+	}
+	if without.gets != 0 {
+		t.Fatalf("disabled capability reached the store %d times", without.gets)
+	}
+
+	stored := []byte("ciphertext-that-must-not-change")
+	store := &revealAPIStore{payload: append([]byte(nil), stored...)}
+	revealer := PayloadRevealFunc(func(ctx context.Context, job headgate.JobSummary) ([]byte, error) {
+		identity, ok := headgate.EnqueueIdentityFromContext(ctx)
+		if !ok || identity.Subject != "operator:ada" {
+			return nil, ErrPayloadRevealForbidden
+		}
+		if job.ID != "j1" || job.Kind != "secret.report" || job.SchemaVersion != 3 || string(job.Payload) != string(stored) {
+			t.Fatalf("revealer received wrong job: %#v", job)
+		}
+		return []byte(`{"account":"historical"}`), nil
+	})
+	base := HandlerWithConfig(store, Config{ReadOnly: true, PayloadRevealer: revealer})
+	h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		base.ServeHTTP(w, r.WithContext(headgate.WithEnqueueIdentity(r.Context(), headgate.EnqueueIdentity{Subject: "operator:ada"})))
+	})
+
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/meta", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"payload_reveal"`) {
+		t.Fatalf("meta did not advertise configured reveal: %d %s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/jobs/j1/payload/reveal", nil))
+	if w.Code != http.StatusOK || w.Header().Get("Cache-Control") != "no-store" ||
+		w.Body.String() != `{"plaintext":"eyJhY2NvdW50IjoiaGlzdG9yaWNhbCJ9"}` {
+		t.Fatalf("reveal = %d headers=%v body=%s", w.Code, w.Header(), w.Body.String())
+	}
+	if string(store.payload) != string(stored) || store.gets != 1 {
+		t.Fatalf("stored payload changed or read shape drifted: payload=%q gets=%d", store.payload, store.gets)
+	}
+
+	failing := HandlerWithConfig(store, Config{PayloadRevealer: PayloadRevealFunc(func(context.Context, headgate.JobSummary) ([]byte, error) {
+		return nil, errors.New("kms key prod-secret-42 missing")
+	})})
+	w = httptest.NewRecorder()
+	failing.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/jobs/j1/payload/reveal", nil))
+	if w.Code != http.StatusInternalServerError || w.Body.String() != `{"error":"payload reveal failed"}` || strings.Contains(w.Body.String(), "prod-secret-42") {
+		t.Fatalf("internal reveal leaked details: %d %s", w.Code, w.Body.String())
 	}
 }
 

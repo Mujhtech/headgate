@@ -976,6 +976,7 @@ dependencies = [
  "headgate-mysql",
  "headgate-postgres",
  "headgate-redis",
+ "headgate-testkit",
  "headgate-ui",
  "headgate-workflow",
  "http-body-util",

@@ -3,6 +3,8 @@
 package headgateapi
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"sync/atomic"
 
@@ -14,8 +16,32 @@ type api struct {
 	backend           string
 	enqueueAuthorizer headgate.EnqueueAuthorizer
 	producer          *headgate.Client
+	payloadRevealer   PayloadRevealer
 	seq               atomic.Uint64
 }
+
+// PayloadRevealer is the application-owned authorization and decryption boundary for
+// explicit console inspection. The request context carries any identity installed by
+// trusted upstream middleware. Implementations return plaintext, never key material.
+type PayloadRevealer interface {
+	RevealPayload(context.Context, headgate.JobSummary) ([]byte, error)
+}
+
+// PayloadRevealFunc adapts a function into a PayloadRevealer.
+type PayloadRevealFunc func(context.Context, headgate.JobSummary) ([]byte, error)
+
+// RevealPayload calls f.
+func (f PayloadRevealFunc) RevealPayload(ctx context.Context, job headgate.JobSummary) ([]byte, error) {
+	return f(ctx, job)
+}
+
+// Public sentinels let application policy select a safe HTTP class without exposing
+// KMS, key-id, authorization, or ciphertext-validation details to the browser.
+var (
+	ErrPayloadRevealForbidden   = errors.New("payload reveal forbidden")
+	ErrPayloadCannotBeRevealed  = errors.New("payload cannot be revealed")
+	ErrPayloadRevealUnavailable = errors.New("payload reveal unavailable")
+)
 
 // Config controls the API's serving posture and producer integrations.
 type Config struct {
@@ -23,6 +49,9 @@ type Config struct {
 	// support staff without a delete button. This is the ENFORCEMENT; the UI's
 	// disabled buttons are cosmetics on top.
 	ReadOnly bool
+	// PayloadRevealer optionally authorizes and decrypts explicit read-only inspection.
+	// nil keeps the endpoint unavailable and omits payload_reveal from GET /meta.
+	PayloadRevealer PayloadRevealer
 	// Backend is what GET /meta reports. it was the literal string
 	// "postgres" in BOTH servers, so `/meta` claimed postgres while fronting Redis or
 	// MySQL — and the control API contract byte diff could not see it, because the two servers were
@@ -53,8 +82,14 @@ func Handler(store headgate.InspectStore) http.Handler {
 // HandlerWithConfig mounts the control API with cfg.
 func HandlerWithConfig(store headgate.InspectStore, cfg Config) http.Handler {
 	h := handler(
-		store, cfg.Backend, cfg.EnqueueAuthorizer, cfg.EnqueueCircuitBreaker,
-		cfg.EnqueueMiddleware, cfg.InsertHooks, cfg.Plugins,
+		store,
+		cfg.Backend,
+		cfg.EnqueueAuthorizer,
+		cfg.PayloadRevealer,
+		cfg.EnqueueCircuitBreaker,
+		cfg.EnqueueMiddleware,
+		cfg.InsertHooks,
+		cfg.Plugins,
 	)
 	if !cfg.ReadOnly {
 		return h
@@ -89,6 +124,7 @@ func handler(
 	store headgate.InspectStore,
 	backend string,
 	authorizer headgate.EnqueueAuthorizer,
+	payloadRevealer PayloadRevealer,
 	breaker *headgate.CircuitBreaker,
 	middlewares []headgate.EnqueueMiddleware,
 	insertHooks []headgate.InsertHook,
@@ -109,7 +145,7 @@ func handler(
 	}
 	a := &api{
 		store: store, backend: metaBackend(backend), enqueueAuthorizer: authorizer,
-		producer: headgate.NewClient(store, options...),
+		producer: headgate.NewClient(store, options...), payloadRevealer: payloadRevealer,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -142,6 +178,7 @@ func handler(
 	mux.HandleFunc("POST /api/v1/jobs/{id}/promote", a.promoteJob)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/reschedule", a.reschedule)
 	mux.HandleFunc("PUT /api/v1/jobs/{id}/payload", a.editPayload)
+	mux.HandleFunc("GET /api/v1/jobs/{id}/payload/reveal", a.revealPayload)
 	mux.HandleFunc("GET /api/v1/jobs/{id}/admission", a.admission)
 	mux.HandleFunc("GET /api/v1/operations/{id}", a.getOperation)
 	mux.HandleFunc("GET /api/v1/rate-classes", a.rateClasses)

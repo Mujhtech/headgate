@@ -124,10 +124,34 @@ the other when both have the same key.
 ## Inspect encrypted jobs in the console
 
 The job detail view recognizes the encrypted envelope and labels it as AES-256-GCM. It
-shows the wire-format version, key ID, and copyable Base64 ciphertext. It does not decrypt
-the payload: sending application or KMS keys to a browser would break the client-side
-encryption boundary. Routing metadata, tags, progress, results, output, and errors remain
-visible because this layer encrypts only the payload bytes.
+shows the wire-format version, key ID, and copyable Base64 ciphertext. By default it does
+not offer decryption. An embedding application may opt into read-only reveal by installing
+a `PayloadRevealer` in the Rust or Go control API configuration.
+
+That callback is the authorization and decryption boundary. It receives the established
+request identity/context and a complete job containing ciphertext, and returns plaintext
+bytes—not keys. A typical implementation checks an application role, reconstructs the
+minimal envelope identity (`id`, `kind`, `schema_version`, and `payload`), and calls
+`decrypt_envelope` / `DecryptEnvelope` with its server-side key provider. Map a missing or
+invalid historical key to the public “cannot be revealed” error; do not return KMS or key
+details to the browser.
+
+Once configured, `/meta` advertises `payload_reveal` and the encrypted-payload panel shows
+an explicit **Reveal plaintext** button. `GET /jobs/{id}/payload/reveal` is read-only and
+works when the console itself is in read-only mode. It fetches and decrypts for that
+response only: it never edits, re-encrypts, retries, or changes the stored job. Responses
+carry `Cache-Control: no-store`, and the console keeps plaintext outside its shared query
+cache and clears it on hide, close, navigation, or an aborted request. Neither API logs
+the plaintext; application callbacks must preserve that rule in their own telemetry.
+
+<Warning>
+Installing a revealer does not add authentication. Mount the API behind authentication,
+attach trusted identity in middleware, and make the callback deny anonymous or
+unauthorized callers. Headgate never trusts an identity header.
+</Warning>
+
+Routing metadata, tags, progress, results, output, and errors remain visible because this
+layer encrypts only the payload bytes.
 
 <Card title="Run the encryption example" icon="play" href="/docs/examples/encryption">
   Verify ciphertext, authenticated decoding, and the shared application boundary locally.

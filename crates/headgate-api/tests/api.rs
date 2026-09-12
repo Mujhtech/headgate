@@ -1412,6 +1412,159 @@ async fn read_only_mode_rejects_mutations() {
     assert_eq!(res.status(), 200, "GETs still serve in read-only mode");
 }
 
+#[tokio::test]
+async fn payload_reveal_is_optional_authorized_read_only_and_no_store() {
+    let Ok(conninfo) = std::env::var("HG_TEST_PG") else {
+        eprintln!("HG_TEST_PG not set; skipping payload reveal API proof");
+        return;
+    };
+    let store = Arc::new(PgStore::connect(&conninfo, 2).expect("connect"));
+    let id = format!(
+        "api-reveal-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let ciphertext = b"ciphertext-that-must-not-change".to_vec();
+    store
+        .enqueue(&[Envelope {
+            id: id.clone(),
+            kind: "secret.report".into(),
+            schema_version: 3,
+            payload: ciphertext.clone(),
+            fingerprint: headgate_core::fingerprint("secret.report", b"historical"),
+            scheduled_at_ms: 1,
+            retention_ms: 86_400_000,
+            ..Default::default()
+        }])
+        .await
+        .unwrap();
+
+    let inspect: Arc<dyn Inspect> = store.clone();
+    let disabled = router(inspect, ApiConfig::default());
+    let (status, body) = call(
+        &disabled,
+        Method::GET,
+        &format!("/api/v1/jobs/{id}/payload/reveal"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"], "payload reveal is not available");
+    let (_, meta) = call(&disabled, Method::GET, "/api/v1/meta", None).await;
+    assert!(
+        !meta["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "payload_reveal")
+    );
+
+    let expected_id = id.clone();
+    let expected_ciphertext = ciphertext.clone();
+    let revealer: Arc<dyn headgate_api::PayloadRevealer> = Arc::new(
+        move |context: headgate_api::PayloadRevealContext, job: headgate_core::JobSummary| {
+            let expected_id = expected_id.clone();
+            let expected_ciphertext = expected_ciphertext.clone();
+            async move {
+                if context
+                    .identity
+                    .as_ref()
+                    .map(|value| value.subject.as_str())
+                    != Some("operator:ada")
+                {
+                    return Err(headgate_api::PayloadRevealError::Forbidden);
+                }
+                assert_eq!(job.id, expected_id);
+                assert_eq!(job.kind, "secret.report");
+                assert_eq!(job.schema_version, 3);
+                assert_eq!(job.payload.as_deref(), Some(expected_ciphertext.as_slice()));
+                Ok(br#"{"account":"historical"}"#.to_vec())
+            }
+        },
+    );
+    let inspect: Arc<dyn Inspect> = store.clone();
+    let app = router(
+        inspect,
+        ApiConfig {
+            read_only: true,
+            payload_revealer: Some(revealer.clone()),
+            ..Default::default()
+        },
+    )
+    .layer(axum::Extension(headgate::EnqueueIdentity::new(
+        "operator:ada",
+    )));
+    let (_, meta) = call(&app, Method::GET, "/api/v1/meta", None).await;
+    assert!(
+        meta["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "payload_reveal")
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/jobs/{id}/payload/reveal"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    let body: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["plaintext"], b64(r#"{"account":"historical"}"#));
+    assert_eq!(
+        store.get_job(&id, true).await.unwrap().unwrap().payload,
+        Some(ciphertext),
+        "reveal must not edit, re-encrypt, retry, or otherwise mutate the job"
+    );
+
+    let inspect: Arc<dyn Inspect> = store.clone();
+    let denied = router(
+        inspect,
+        ApiConfig {
+            payload_revealer: Some(revealer),
+            ..Default::default()
+        },
+    );
+    let (status, body) = call(
+        &denied,
+        Method::GET,
+        &format!("/api/v1/jobs/{id}/payload/reveal"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body, json!({"error": "payload reveal forbidden"}));
+
+    let inspect: Arc<dyn Inspect> = store;
+    let failed = router(
+        inspect,
+        ApiConfig {
+            payload_revealer: Some(Arc::new(|_, _| async {
+                Err(headgate_api::PayloadRevealError::Internal)
+            })),
+            ..Default::default()
+        },
+    );
+    let (status, body) = call(
+        &failed,
+        Method::GET,
+        &format!("/api/v1/jobs/{id}/payload/reveal"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body, json!({"error": "payload reveal failed"}));
+}
+
 // ---------------------------------------------------------------------------
 // ROUND 32L, TASK 3.3 — GET /cluster, END TO END from a REAL worker's polling.
 //

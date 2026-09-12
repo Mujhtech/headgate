@@ -1050,6 +1050,11 @@ NOTE: round 32o. Every cited test creates TWO helpers concurrently, proves both 
 - go: headgatecrypto/crypto_test.go::TestWireVector
 NOTE: the Rust live test was run against PostgreSQL, reads the exact persisted payload to prove plaintext is absent, then dispatches the job through the real runtime and observes the original secret in the handler. The independent Rust and Go implementations pin the same deterministic AES-GCM bytes; randomized round trips separately prove production encryption does not reuse that nonce. The controls mutate authenticated identity and ciphertext and remove the historical key. This evidence is intentionally limited to payloads; metadata, results, progress, output and attempt errors are outside the claim.
 
+### Encrypted payload console reveal
+- rust: crates/headgate-api/tests/api.rs::payload_reveal_is_optional_authorized_read_only_and_no_store
+- go: headgateapi/api_test.go::TestPayloadRevealIsOptionalAuthorizedReadOnlyAndNoStore
+NOTE: the Rust test runs against live PostgreSQL and verifies the capability-off 404/meta posture, trusted identity, complete ciphertext-bearing job, successful no-store response while API read-only enforcement is active, generic forbidden/internal failures, and byte-identical persisted ciphertext after reveal. The Go twin uses a call-counting store to prove capability-off returns before store I/O, then pins the same response bytes/header/read-only behavior and proves an arbitrary KMS/key error cannot reach the browser. `ui/src/lib/payload-reveal.test.tsx` additionally proves the browser fetches only on explicit action, clears on close/navigation, and suppresses a response that arrives after close; the evidence checker does not currently resolve TypeScript test citations, so those tests are named here without pretending they are a machine-resolved citation.
+
 ### Payload redaction
 - sh: invariant 9: GET /jobs/{id} withholds the payload by DEFAULT (PII, console at /admin)
 - sh: invariant 9: ...and the LIST endpoint has no opt-in, whatever the caller asks

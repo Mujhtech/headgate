@@ -30,6 +30,9 @@ func (a *api) meta(w http.ResponseWriter, _ *http.Request) {
 	if caps.Has(headgate.CapInspect) {
 		capabilities = append(capabilities, "inspect")
 	}
+	if a.payloadRevealer != nil {
+		capabilities = append(capabilities, "payload_reveal")
+	}
 	writeJSON(w, 200, map[string]any{
 		"version":      headgate.Version,
 		"backend":      a.backend,

@@ -1,4 +1,4 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import {
   CheckIcon,
@@ -67,6 +67,7 @@ import { config } from "@/lib/config";
 import { formatDuration } from "@/lib/format";
 import { type JobAction, jobActionDisabledReason } from "@/lib/job-control";
 import { displayPayload } from "@/lib/payload";
+import { usePayloadReveal } from "@/lib/payload-reveal";
 import { hasResumableCheckpoint, type JobCheckpoint } from "@/lib/resumable";
 import { Route } from "@/routes/_console.jobs";
 
@@ -127,6 +128,9 @@ interface JobProgress {
   message?: string;
   total: number;
   updated_at_ms: number;
+}
+interface RuntimeMeta {
+  capabilities?: string[];
 }
 
 const states = [
@@ -296,6 +300,12 @@ export function JobDrawer({
   const jobPath = id === null ? null : `/jobs/${encodeURIComponent(id)}`;
   const actionMutation = useApiMutation();
   const now = useNow();
+  const metaQuery = useQuery({
+    queryFn: ({ signal }) => api<RuntimeMeta>("/meta", { signal }),
+    queryKey: ["api", "meta"],
+    retry: 1,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
   const jobQuery = useConsoleQuery(
     ["api", "job", id],
     (signal) =>
@@ -361,6 +371,10 @@ export function JobDrawer({
     () => (job?.payload == null ? null : displayPayload(job.payload)),
     [job?.payload]
   );
+  const payloadReveal = usePayloadReveal(id, open);
+  const canRevealPayload =
+    payload?.encrypted != null &&
+    metaQuery.data?.capabilities?.includes("payload_reveal") === true;
   const metadata = job?.metadata ?? null;
   const lifecycleStages = useMemo(
     () => (job ? lifecycle(job, now) : []),
@@ -622,13 +636,71 @@ export function JobDrawer({
                     <p className="font-medium">AES-256-GCM encrypted payload</p>
                     <p className="text-muted-foreground text-xs">
                       Format v{payload.encrypted.version} · key{" "}
-                      <code>{payload.encrypted.keyId}</code>. The console has no
-                      decryption keys; plaintext is available only inside the
-                      encrypted worker handler.
+                      <code>{payload.encrypted.keyId}</code>. Decryption keys
+                      stay server-side.
                     </p>
+                    {canRevealPayload ? (
+                      <Button
+                        className="mt-2"
+                        disabled={payloadReveal.pending}
+                        onClick={() => {
+                          if (payloadReveal.revealed) {
+                            payloadReveal.clear();
+                          } else {
+                            void payloadReveal.reveal();
+                          }
+                        }}
+                        size="sm"
+                        variant="outline"
+                      >
+                        <LockKeyholeIcon />
+                        {payloadReveal.pending
+                          ? "Revealing…"
+                          : payloadReveal.revealed
+                            ? "Hide plaintext"
+                            : "Reveal plaintext"}
+                      </Button>
+                    ) : null}
                   </div>
                 </div>
               )}
+              {payloadReveal.error ? (
+                <div
+                  className="mb-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-destructive text-sm"
+                  role="alert"
+                >
+                  {payloadReveal.error}
+                </div>
+              ) : null}
+              {payloadReveal.revealed ? (
+                <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="font-medium text-sm">Revealed plaintext</p>
+                      <p className="text-muted-foreground text-xs">
+                        Held only in this open job view and cleared when it
+                        closes.
+                      </p>
+                    </div>
+                    <Button
+                      onClick={() =>
+                        void copy(
+                          "Plaintext",
+                          payloadReveal.revealed?.content ?? ""
+                        )
+                      }
+                      size="sm"
+                      variant="ghost"
+                    >
+                      <CopyIcon />
+                      Copy
+                    </Button>
+                  </div>
+                  <pre className="wrap-break-word max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-muted/50 p-3 font-mono text-xs">
+                    {payloadReveal.revealed.content}
+                  </pre>
+                </div>
+              ) : null}
               {payload ? (
                 <pre className="wrap-break-word max-h-80 overflow-auto whitespace-pre-wrap rounded-lg border bg-muted/50 p-3 font-mono text-xs">
                   {payload.content}

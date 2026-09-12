@@ -163,6 +163,7 @@ type workflowCursor struct {
 }
 
 func persistWorkflowCursor(ctx context.Context, cursor workflowCursor) error {
+	cursor.normalize()
 	bytes, err := json.Marshal(cursor)
 	if err != nil {
 		return err
@@ -180,6 +181,9 @@ func (c *workflowCursor) normalize() {
 	}
 	if c.Generation == 0 {
 		c.Generation = 1
+	}
+	if c.Completed == nil {
+		c.Completed = []string{}
 	}
 }
 

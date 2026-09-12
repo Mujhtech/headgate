@@ -237,9 +237,13 @@ export function decodeWorkflowCursor(
   }
   try {
     const value = decodeBase64JSON(cursor) as Record<string, unknown>;
+    // Older Go coordinators encoded an empty completion slice as null. Treat
+    // null and an omitted field as no completed tasks while keeping every
+    // other non-array value invalid.
+    const completed = value.completed == null ? [] : value.completed;
     if (
-      !Array.isArray(value.completed) ||
-      value.completed.some((name) => typeof name !== "string")
+      !Array.isArray(completed) ||
+      completed.some((name) => typeof name !== "string")
     ) {
       throw new Error("missing completed task names");
     }
@@ -263,7 +267,7 @@ export function decodeWorkflowCursor(
       throw new Error("invalid revision or generation");
     }
     return {
-      completed: new Set(value.completed as string[]),
+      completed: new Set(completed as string[]),
       failed: value.failed === true,
       generation,
       grafts: Array.isArray(value.grafts) ? value.grafts.map(workflowNode) : [],

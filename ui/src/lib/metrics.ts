@@ -18,6 +18,14 @@ export interface QueueHistoryBucket {
   failed?: number;
 }
 
+export interface TrafficChartPoint {
+  arrived: number | null;
+  at_ms: number;
+  completed: number | null;
+  depth: number | null;
+  failed: number | null;
+}
+
 export interface QueueSummary {
   arrivalRate: number;
   drainRate: number;
@@ -45,7 +53,13 @@ export function summarizeQueues(queues: QueueMetric[]): QueueSummary {
   let oldest: QueueMetric | null = null;
   let slowestDrain: QueueMetric | null = null;
   let infiniteDrain = false;
-  const states: Record<string, number> = {};
+  // State buckets with no jobs are omitted by the queue-stats response. Keep the
+  // overview's fixed breakdown numeric instead of passing `undefined` to
+  // Intl.NumberFormat, which renders it as "NaN".
+  const states: Record<string, number> = {
+    available: 0,
+    retryable: 0,
+  };
 
   for (const queue of queues) {
     unfinished += queue.unfinished_jobs;
@@ -111,6 +125,67 @@ export function summarizeHistory(buckets: QueueHistoryBucket[]) {
   return { arrived, completed, failed, rejections };
 }
 
+export function historyCapabilities(buckets: QueueHistoryBucket[]) {
+  return {
+    admissionRejections: buckets.some(
+      (bucket) => bucket.admission_rejections !== undefined
+    ),
+    depth: buckets.some((bucket) => bucket.depth !== undefined),
+    failed: buckets.some((bucket) => bucket.failed !== undefined),
+  };
+}
+
+export function buildTrafficChartPoints(
+  buckets: QueueHistoryBucket[],
+  fromMs: number,
+  toMs: number,
+  bucketMs: number
+): TrafficChartPoint[] {
+  if (!(bucketMs > 0) || toMs < fromMs || buckets.length === 0) {
+    return [];
+  }
+
+  const observed = new Map(buckets.map((bucket) => [bucket.at_ms, bucket]));
+  const firstObservedMs = Math.min(...observed.keys());
+  const startBucketMs = Math.floor(fromMs / bucketMs) * bucketMs;
+  const endBucketMs = Math.floor(toMs / bucketMs) * bucketMs;
+  const capabilities = historyCapabilities(buckets);
+  const points: TrafficChartPoint[] = [];
+
+  for (let atMs = startBucketMs; atMs <= endBucketMs; atMs += bucketMs) {
+    const bucket = observed.get(atMs);
+    const hasHistoryCoverage = atMs >= firstObservedMs;
+    const coveredMs = Math.max(
+      1,
+      Math.min(atMs + bucketMs, toMs) - Math.max(atMs, fromMs)
+    );
+    const perMinute = 60_000 / coveredMs;
+
+    points.push({
+      arrived: bucket
+        ? bucket.arrived * perMinute
+        : hasHistoryCoverage
+          ? 0
+          : null,
+      at_ms: atMs,
+      completed: bucket
+        ? bucket.completed * perMinute
+        : hasHistoryCoverage
+          ? 0
+          : null,
+      depth: bucket?.depth ?? null,
+      failed:
+        bucket?.failed === undefined
+          ? capabilities.failed && hasHistoryCoverage
+            ? 0
+            : null
+          : bucket.failed * perMinute,
+    });
+  }
+
+  return points;
+}
+
 export function mergeQueueHistories(
   histories: QueueHistoryBucket[][]
 ): QueueHistoryBucket[] {
@@ -119,25 +194,28 @@ export function mergeQueueHistories(
   for (const history of histories) {
     for (const bucket of history) {
       const current = merged.get(bucket.at_ms) ?? {
-        admission_rejections: {},
         arrived: 0,
         at_ms: bucket.at_ms,
         completed: 0,
-        depth: 0,
-        failed: 0,
       };
       current.arrived += bucket.arrived;
       current.completed += bucket.completed;
-      current.failed = (current.failed ?? 0) + (bucket.failed ?? 0);
-      current.depth = (current.depth ?? 0) + (bucket.depth ?? 0);
-      const admissionRejections = current.admission_rejections ?? {};
-      for (const [policy, count] of Object.entries(
-        bucket.admission_rejections ?? {}
-      )) {
-        admissionRejections[policy] =
-          (admissionRejections[policy] ?? 0) + count;
+      if (bucket.failed !== undefined) {
+        current.failed = (current.failed ?? 0) + bucket.failed;
       }
-      current.admission_rejections = admissionRejections;
+      if (bucket.depth !== undefined) {
+        current.depth = (current.depth ?? 0) + bucket.depth;
+      }
+      if (bucket.admission_rejections !== undefined) {
+        const admissionRejections = current.admission_rejections ?? {};
+        for (const [policy, count] of Object.entries(
+          bucket.admission_rejections
+        )) {
+          admissionRejections[policy] =
+            (admissionRejections[policy] ?? 0) + count;
+        }
+        current.admission_rejections = admissionRejections;
+      }
       merged.set(bucket.at_ms, current);
     }
   }

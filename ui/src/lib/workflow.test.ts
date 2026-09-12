@@ -98,6 +98,20 @@ describe("decodeWorkflowCursor", () => {
     expect(cursor.generation).toBe(1);
     expect(cursor.grafts).toEqual([]);
   });
+
+  it("treats a legacy Go null completion slice as empty", () => {
+    const cursor = decodeWorkflowCursor(
+      "eyJyZXZpc2lvbiI6MSwiY29tcGxldGVkIjpudWxsLCJnZW5lcmF0aW9uIjoxLCJldmVudHMiOlt7InNlcXVlbmNlIjoxLCJldmVudCI6IndvcmtmbG93X3N0YXJ0ZWQiLCJyZXZpc2lvbiI6MSwiZ2VuZXJhdGlvbiI6MX1dfQ=="
+    );
+
+    expect(cursor.completed).toEqual(new Set());
+  });
+
+  it("rejects non-null completion values that are not string arrays", () => {
+    expect(() =>
+      decodeWorkflowCursor(encoded({ completed: "prepare" }))
+    ).toThrow("missing completed task names");
+  });
 });
 
 describe("workflowNodeWait", () => {

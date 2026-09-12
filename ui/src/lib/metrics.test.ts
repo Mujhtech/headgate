@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildTrafficChartPoints,
+  historyCapabilities,
   mergeQueueHistories,
   type QueueMetric,
   resolveQueueSelection,
@@ -77,6 +79,16 @@ describe("overview metrics", () => {
     expect(summary.slowestDrain?.queue).toBe("slow");
   });
 
+  it("defaults omitted overview state buckets to zero", () => {
+    const summary = summarizeQueues([
+      queue({ queue: "mail", unfinished_jobs: 4 }),
+    ]);
+
+    expect(summary.states.available).toBe(0);
+    expect(summary.states.retryable).toBe(0);
+    expect(summary.unfinished).toBe(4);
+  });
+
   it("totals failures and admission rejection reasons across history buckets", () => {
     expect(
       summarizeHistory([
@@ -99,6 +111,85 @@ describe("overview metrics", () => {
       completed: 9,
       failed: 1,
       rejections: { concurrency: 2, rate: 3 },
+    });
+  });
+
+  it("normalizes bucket totals to per-minute rates and preserves the full range", () => {
+    expect(
+      buildTrafficChartPoints(
+        [
+          { arrived: 60, at_ms: 300_000, completed: 30 },
+          { arrived: 30, at_ms: 900_000, completed: 60 },
+        ],
+        0,
+        1_200_000,
+        300_000
+      )
+    ).toEqual([
+      {
+        arrived: null,
+        at_ms: 0,
+        completed: null,
+        depth: null,
+        failed: null,
+      },
+      {
+        arrived: 12,
+        at_ms: 300_000,
+        completed: 6,
+        depth: null,
+        failed: null,
+      },
+      {
+        arrived: 0,
+        at_ms: 600_000,
+        completed: 0,
+        depth: null,
+        failed: null,
+      },
+      {
+        arrived: 6,
+        at_ms: 900_000,
+        completed: 12,
+        depth: null,
+        failed: null,
+      },
+      {
+        arrived: 0,
+        at_ms: 1_200_000,
+        completed: 0,
+        depth: null,
+        failed: null,
+      },
+    ]);
+  });
+
+  it("normalizes a partial current bucket by its elapsed duration", () => {
+    const points = buildTrafficChartPoints(
+      [{ arrived: 10, at_ms: 600_000, completed: 5, failed: 1 }],
+      600_000,
+      660_000,
+      300_000
+    );
+
+    expect(points[0]).toMatchObject({
+      arrived: 10,
+      completed: 5,
+      failed: 1,
+    });
+  });
+
+  it("does not turn unsupported history metrics into zeroes", () => {
+    const merged = mergeQueueHistories([
+      [{ arrived: 2, at_ms: 60_000, completed: 1 }],
+      [{ arrived: 3, at_ms: 60_000, completed: 2 }],
+    ]);
+
+    expect(merged).toEqual([{ arrived: 5, at_ms: 60_000, completed: 3 }]);
+    expect(historyCapabilities(merged)).toEqual({
+      admissionRejections: false,
+      depth: false,
+      failed: false,
     });
   });
 

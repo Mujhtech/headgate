@@ -282,6 +282,18 @@ func TestInspectWorkflowReturnsTopologyAndExecutionState(t *testing.T) {
 	}
 }
 
+func TestWorkflowCursorNormalizesEmptyCompletionSliceForWire(t *testing.T) {
+	cursor := workflowCursor{}
+	cursor.normalize()
+	encoded, err := json.Marshal(cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"completed":[]`) {
+		t.Fatalf("empty workflow cursor = %s, want completed array", encoded)
+	}
+}
+
 func TestRevisionedGraftPersistsGraphBeforePromotingReceipt(t *testing.T) {
 	graft := NewGraft("wf-graft", 1)
 	graft.Add("after", task("task:after"), "root")

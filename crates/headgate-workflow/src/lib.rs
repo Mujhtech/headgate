@@ -11,7 +11,7 @@ use headgate::{CodecError, Control, Envelope, JobCtx, JobError, Registry, Task};
 use headgate_core::{
     DurableEvent, Inspect, JobFilter, MAX_ENQUEUE_BATCH_SIZE, MAX_JOB_IDENTIFIER_LEN,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 const DEFAULT_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const MAX_WORKFLOW_NODES: usize = MAX_ENQUEUE_BATCH_SIZE - 1;
@@ -1837,7 +1837,7 @@ fn workflow_signal(event: DurableEvent) -> Result<WorkflowSignal, WorkflowError>
 struct WorkflowCursor {
     #[serde(default = "initial_workflow_revision")]
     revision: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_completed")]
     completed: Vec<String>,
     #[serde(default)]
     completed_at_ms: HashMap<String, i64>,
@@ -1855,6 +1855,13 @@ struct WorkflowCursor {
     automatic_retry_pending: bool,
     #[serde(default)]
     events: Vec<WorkflowEvent>,
+}
+
+fn deserialize_nullable_completed<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<Vec<String>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 impl Default for WorkflowCursor {
@@ -3339,6 +3346,14 @@ mod tests {
         assert_eq!(cursor.events.len(), MAX_WORKFLOW_EVENTS);
         assert_eq!(cursor.events.first().unwrap().sequence, 8);
         assert_eq!(cursor.events.last().unwrap().sequence, 263);
+    }
+
+    #[test]
+    fn workflow_cursor_accepts_legacy_go_null_completed_slice() {
+        let cursor: WorkflowCursor =
+            serde_json::from_str(r#"{"revision":1,"completed":null,"generation":1,"events":[]}"#)
+                .unwrap();
+        assert!(cursor.completed.is_empty());
     }
 
     #[test]

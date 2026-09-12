@@ -60,6 +60,8 @@ import {
 import { api } from "@/lib/api";
 import { formatDuration, formatPercent } from "@/lib/format";
 import {
+  buildTrafficChartPoints,
+  historyCapabilities,
   mergeQueueHistories,
   type QueueHistoryBucket,
   type QueueMetric,
@@ -90,30 +92,41 @@ const rangeOptions: Array<{
   label: string;
   duration: number;
   bucket: number;
+  tick: number;
 }> = [
-  { bucket: 60_000, duration: 60 * 60_000, label: "Last hour", value: "1h" },
+  {
+    bucket: 60_000,
+    duration: 60 * 60_000,
+    label: "Last hour",
+    tick: 10 * 60_000,
+    value: "1h",
+  },
   {
     bucket: 5 * 60_000,
     duration: 6 * 60 * 60_000,
     label: "Last 6 hours",
+    tick: 60 * 60_000,
     value: "6h",
   },
   {
     bucket: 15 * 60_000,
     duration: 24 * 60 * 60_000,
     label: "Last 24 hours",
+    tick: 4 * 60 * 60_000,
     value: "24h",
   },
   {
     bucket: 2 * 60 * 60_000,
     duration: 7 * 24 * 60 * 60_000,
     label: "Last 7 days",
+    tick: 24 * 60 * 60_000,
     value: "7d",
   },
   {
     bucket: 24 * 60 * 60_000,
     duration: 30 * 24 * 60 * 60_000,
     label: "Last 30 days",
+    tick: 24 * 60 * 60_000,
     value: "30d",
   },
 ];
@@ -128,18 +141,32 @@ const shortTime = new Intl.DateTimeFormat(undefined, {
   hour: "numeric",
   minute: "2-digit",
 });
+const shortDate = new Intl.DateTimeFormat(undefined, {
+  day: "numeric",
+  month: "short",
+});
 const shortDateTime = new Intl.DateTimeFormat(undefined, {
   day: "numeric",
   hour: "numeric",
+  minute: "2-digit",
   month: "short",
 });
 
 const trafficChartConfig = {
-  arrived: { color: "var(--warning)", label: "Arrived" },
-  completed: { color: "var(--success)", label: "Completed" },
+  arrived: { color: "var(--warning)", label: "Arrived/min" },
+  completed: { color: "var(--success)", label: "Completed/min" },
   depth: { color: "var(--primary)", label: "Queue depth" },
-  failed: { color: "var(--destructive)", label: "Failed" },
+  failed: { color: "var(--destructive)", label: "Failed/min" },
 } satisfies ChartConfig;
+
+function chartTicks(fromMs: number, toMs: number, tickMs: number) {
+  const ticks: number[] = [];
+  const first = Math.ceil(fromMs / tickMs) * tickMs;
+  for (let atMs = first; atMs <= toMs; atMs += tickMs) {
+    ticks.push(atMs);
+  }
+  return ticks;
+}
 
 function MetricCard({
   title,
@@ -198,32 +225,39 @@ function MetricCard({
 }
 
 function TrafficChart({
+  bucketMs,
   buckets,
+  fromMs,
   queue,
   range,
+  tickMs,
+  toMs,
 }: {
+  bucketMs: number;
   buckets: QueueHistoryBucket[];
+  fromMs: number;
   queue: string;
   range: OverviewRange;
+  tickMs: number;
+  toMs: number;
 }) {
   if (!buckets.length) {
     return (
       <Empty>No traffic recorded for this queue in the selected range.</Empty>
     );
   }
-  const data = buckets.map((bucket) => ({
-    ...bucket,
-    depth: bucket.depth ?? 0,
-    failed: bucket.failed ?? 0,
-  }));
+  const data = buildTrafficChartPoints(buckets, fromMs, toMs, bucketMs);
+  const capabilities = historyCapabilities(buckets);
+  const showFailures =
+    capabilities.failed && data.some((point) => (point.failed ?? 0) > 0);
   const formatTimestamp = (value: number) =>
-    (range === "7d" || range === "30d" ? shortDateTime : shortTime).format(
+    (range === "7d" || range === "30d" ? shortDate : shortTime).format(
       new Date(value)
     );
 
   return (
     <figure
-      aria-label={`${queue} arrived, completed, failed, and queue depth over ${range}`}
+      aria-label={`${queue} arrival and completion rates over ${range}${capabilities.failed ? ", including failures" : ""}${capabilities.depth ? ", with queue depth" : ""}`}
     >
       <ChartContainer
         className="aspect-auto h-72 w-full"
@@ -252,10 +286,14 @@ function TrafficChart({
           <XAxis
             axisLine={false}
             dataKey="at_ms"
+            domain={[fromMs, toMs]}
             minTickGap={32}
+            scale="time"
             tickFormatter={formatTimestamp}
             tickLine={false}
             tickMargin={10}
+            ticks={chartTicks(fromMs, toMs, tickMs)}
+            type="number"
           />
           <YAxis
             axisLine={false}
@@ -264,14 +302,16 @@ function TrafficChart({
             width={38}
             yAxisId="traffic"
           />
-          <YAxis
-            axisLine={false}
-            orientation="right"
-            tickFormatter={(value: number) => compact.format(value)}
-            tickLine={false}
-            width={38}
-            yAxisId="depth"
-          />
+          {capabilities.depth ? (
+            <YAxis
+              axisLine={false}
+              orientation="right"
+              tickFormatter={(value: number) => compact.format(value)}
+              tickLine={false}
+              width={38}
+              yAxisId="depth"
+            />
+          ) : null}
           <ChartTooltip
             content={
               <ChartTooltipContent
@@ -287,23 +327,19 @@ function TrafficChart({
             cursor={{ stroke: "var(--border)", strokeDasharray: "3 4" }}
           />
           <ChartLegend content={<ChartLegendContent />} />
-          <Area
-            dataKey="depth"
-            fill="url(#queue-depth-fill)"
-            stroke="var(--color-depth)"
-            strokeWidth={2}
-            type="monotone"
-            yAxisId="depth"
-          />
+          {capabilities.depth ? (
+            <Area
+              connectNulls={false}
+              dataKey="depth"
+              fill="url(#queue-depth-fill)"
+              stroke="var(--color-depth)"
+              strokeWidth={2}
+              type="monotone"
+              yAxisId="depth"
+            />
+          ) : null}
           <Line
-            dataKey="arrived"
-            dot={false}
-            stroke="var(--color-arrived)"
-            strokeWidth={2}
-            type="monotone"
-            yAxisId="traffic"
-          />
-          <Line
+            connectNulls={false}
             dataKey="completed"
             dot={false}
             stroke="var(--color-completed)"
@@ -312,18 +348,32 @@ function TrafficChart({
             yAxisId="traffic"
           />
           <Line
-            dataKey="failed"
+            connectNulls={false}
+            dataKey="arrived"
             dot={false}
-            stroke="var(--color-failed)"
+            stroke="var(--color-arrived)"
+            strokeDasharray="5 4"
             strokeWidth={2}
             type="monotone"
             yAxisId="traffic"
           />
+          {showFailures ? (
+            <Line
+              connectNulls={false}
+              dataKey="failed"
+              dot={false}
+              stroke="var(--color-failed)"
+              strokeWidth={2}
+              type="monotone"
+              yAxisId="traffic"
+            />
+          ) : null}
         </ComposedChart>
       </ChartContainer>
       <figcaption className="sr-only">
-        Traffic uses the left axis. Queue depth uses the right axis. Focus the
-        chart to inspect individual buckets.
+        Traffic is shown as jobs per minute on the left axis.
+        {capabilities.depth ? " Queue depth uses the right axis." : ""} Focus
+        the chart to inspect individual buckets.
       </figcaption>
     </figure>
   );
@@ -348,7 +398,8 @@ export function OverviewView({
   const selectedQueue = resolveQueueSelection(requestedQueue, queues);
   const selectedRange =
     rangeOptions.find((item) => item.value === range) ?? rangeOptions[1];
-  const historySince = Date.now() - selectedRange.duration;
+  const historyTo = Date.now();
+  const historySince = historyTo - selectedRange.duration;
   const historyQueues =
     selectedQueue === "all"
       ? queues.map((item) => item.queue)
@@ -406,6 +457,7 @@ export function OverviewView({
       ? mergeQueueHistories(historyQueries.map((query) => query.data ?? []))
       : (historyQueries[0]?.data ?? []);
   const history = summarizeHistory(buckets);
+  const availableHistory = historyCapabilities(buckets);
   const rejectionTotal = Object.values(history.rejections).reduce(
     (total, count) => total + count,
     0
@@ -505,8 +557,7 @@ export function OverviewView({
             <div className="min-w-0 flex-1">
               <CardTitle>Queue Traffic</CardTitle>
               <CardDescription>
-                Arrivals, completions, failures, and depth from maintained
-                history buckets.
+                Arrival and completion rates from maintained history buckets.
               </CardDescription>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -568,9 +619,13 @@ export function OverviewView({
               <Loading />
             ) : selectedQueue ? (
               <TrafficChart
+                bucketMs={selectedRange.bucket}
                 buckets={buckets}
+                fromMs={historySince}
                 queue={selectedQueue === "all" ? "All queues" : selectedQueue}
                 range={range}
+                tickMs={selectedRange.tick}
+                toMs={historyTo}
               />
             ) : (
               <Empty>No queue traffic is available.</Empty>
@@ -593,12 +648,14 @@ export function OverviewView({
                   <p className="text-muted-foreground text-xs">Failed</p>
                   <p
                     className={
-                      history.failed
+                      availableHistory.failed && history.failed
                         ? "font-medium text-destructive tabular-nums"
                         : "font-medium tabular-nums"
                     }
                   >
-                    {integer.format(history.failed)}
+                    {availableHistory.failed
+                      ? integer.format(history.failed)
+                      : "Not reported"}
                   </p>
                 </div>
                 <div>
@@ -607,12 +664,14 @@ export function OverviewView({
                   </p>
                   <p
                     className={
-                      rejectionTotal
+                      availableHistory.admissionRejections && rejectionTotal
                         ? "font-medium text-destructive tabular-nums"
                         : "font-medium tabular-nums"
                     }
                   >
-                    {integer.format(rejectionTotal)}
+                    {availableHistory.admissionRejections
+                      ? integer.format(rejectionTotal)
+                      : "Not reported"}
                   </p>
                 </div>
               </div>
@@ -659,14 +718,22 @@ export function OverviewView({
             <div className="flex gap-3">
               <TriangleAlertIcon
                 aria-hidden
-                className={`mt-0.5 size-4 shrink-0 ${rejectionTotal ? "text-destructive" : "text-success"}`}
+                className={`mt-0.5 size-4 shrink-0 ${
+                  availableHistory.admissionRejections
+                    ? rejectionTotal
+                      ? "text-destructive"
+                      : "text-success"
+                    : "text-muted-foreground"
+                }`}
               />
               <div className="min-w-0">
                 <p className="font-medium text-sm">Admission Policies</p>
                 <p className="text-muted-foreground text-xs">
-                  {rejectionTotal
-                    ? `${integer.format(rejectionTotal)} rejection${rejectionTotal === 1 ? "" : "s"} ${selectedQueue === "all" ? "across all queues" : `for ${selectedQueue}`} in this range.`
-                    : `No policy rejections ${selectedQueue === "all" ? "across all queues" : `for ${selectedQueue ?? "known queues"}`} in this range.`}
+                  {availableHistory.admissionRejections
+                    ? rejectionTotal
+                      ? `${integer.format(rejectionTotal)} rejection${rejectionTotal === 1 ? "" : "s"} ${selectedQueue === "all" ? "across all queues" : `for ${selectedQueue}`} in this range.`
+                      : `No policy rejections ${selectedQueue === "all" ? "across all queues" : `for ${selectedQueue ?? "known queues"}`} in this range.`
+                    : "Policy rejection history is not reported by this backend."}
                 </p>
                 {Object.keys(history.rejections).length ? (
                   <div className="mt-2 flex flex-wrap gap-1">

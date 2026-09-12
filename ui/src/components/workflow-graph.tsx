@@ -1,5 +1,5 @@
 import dagre from "@dagrejs/dagre";
-import { useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import {
   Background,
   BackgroundVariant,
@@ -53,6 +53,14 @@ interface TaskNodeData extends Record<string, unknown> {
 
 type TaskNode = Node<TaskNodeData, "task">;
 type WorkflowNode = TaskNode;
+
+export function workflowNodeLinkOptions(workflowId: string, jobId: string) {
+  return {
+    params: { workflowId },
+    search: { selected: jobId },
+    to: "/workflows/$workflowId" as const,
+  };
+}
 
 const nodeWidth = 176;
 const nodeHeight = 52;
@@ -333,14 +341,14 @@ const TaskCard = memo(function WorkflowTaskCard({ data }: NodeProps<TaskNode>) {
         type="target"
       />
       {data.inspectable ? (
-        <a
+        <Link
           aria-current={data.selected ? "location" : undefined}
           aria-label={`${data.name}, ${data.state}. ${data.dependencyText}`}
           className={className}
-          href={`/workflows/${encodeURIComponent(data.workflowId)}?selected=${encodeURIComponent(data.jobId)}`}
+          {...workflowNodeLinkOptions(data.workflowId, data.jobId)}
         >
           {content}
-        </a>
+        </Link>
       ) : (
         <div className={className}>{content}</div>
       )}
@@ -397,11 +405,10 @@ export function WorkflowGraph({
       ) {
         return;
       }
-      void navigate({
-        params: { workflowId: node.data.workflowId },
-        search: { selected: node.data.jobId },
-        to: "/workflows/$workflowId",
-      });
+      event.preventDefault();
+      void navigate(
+        workflowNodeLinkOptions(node.data.workflowId, node.data.jobId)
+      );
     },
     [navigate]
   );

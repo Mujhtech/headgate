@@ -7,13 +7,13 @@ replace github.com/mujhtech/headgate/go => ../
 replace github.com/mujhtech/headgate/go/headgateworkflow => ../headgateworkflow
 
 require (
-	github.com/mujhtech/headgate/go v0.1.9
-	github.com/mujhtech/headgate/go/driver/headgatemysql v0.1.9
-	github.com/mujhtech/headgate/go/driver/headgatepgx v0.1.9
-	github.com/mujhtech/headgate/go/driver/headgateredis v0.1.9
-	github.com/mujhtech/headgate/go/driver/headgatesqlite v0.1.9
-	github.com/mujhtech/headgate/go/headgateui v0.1.9
-	github.com/mujhtech/headgate/go/headgateworkflow v0.1.9
+	github.com/mujhtech/headgate/go v0.1.10
+	github.com/mujhtech/headgate/go/driver/headgatemysql v0.1.10
+	github.com/mujhtech/headgate/go/driver/headgatepgx v0.1.10
+	github.com/mujhtech/headgate/go/driver/headgateredis v0.1.10
+	github.com/mujhtech/headgate/go/driver/headgatesqlite v0.1.10
+	github.com/mujhtech/headgate/go/headgateui v0.1.10
+	github.com/mujhtech/headgate/go/headgateworkflow v0.1.10
 )
 
 require (

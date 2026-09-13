@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/mujhtech/headgate/go v0.1.9
+	github.com/mujhtech/headgate/go v0.1.10
 )
 
 require (

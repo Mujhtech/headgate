@@ -4,9 +4,9 @@ go 1.27.0
 
 require (
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/mujhtech/headgate/go v0.1.9
-	github.com/mujhtech/headgate/go/headgatemigrate v0.1.9
-	github.com/mujhtech/headgate/go/headgatetest v0.1.9
+	github.com/mujhtech/headgate/go v0.1.10
+	github.com/mujhtech/headgate/go/headgatemigrate v0.1.10
+	github.com/mujhtech/headgate/go/headgatetest v0.1.10
 )
 
 require (

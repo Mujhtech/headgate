@@ -114,7 +114,9 @@ export function WorkersView({ notify }: ViewProps) {
           <div className="flex flex-wrap gap-2">
             <Badge variant="outline">
               workers{"  "}
-              <strong className="ml-1 mr-1">{cluster.workers?.live ?? 0}</strong>{" "}
+              <strong className="mr-1 ml-1">
+                {cluster.workers?.live ?? 0}
+              </strong>{" "}
               live
             </Badge>
             <Badge variant={cluster.workers?.stale ? "destructive" : "outline"}>

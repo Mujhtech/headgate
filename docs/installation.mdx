@@ -15,8 +15,8 @@ contract.
 
 ```toml Cargo.toml
 [dependencies]
-headgate = "0.1.9"
-headgate-postgres = "0.1.9" # or headgate-mysql / headgate-redis / headgate-sqlite
+headgate = "0.1.10"
+headgate-postgres = "0.1.10" # or headgate-mysql / headgate-redis / headgate-sqlite
 # Optional: headgate-workflow, headgate-crypto, headgate-otel,
 #           headgate-prometheus, headgate-ui
 serde = { version = "1", features = ["derive"] }
@@ -26,7 +26,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
   </Tab>
   <Tab title="Go" icon="box">
 
-Use Go 1.27 or newer for Headgate v0.1.9. The updated PostgreSQL driver and Unicode
+Use Go 1.27 or newer for Headgate v0.1.10. The updated PostgreSQL driver and Unicode
 dependencies require this minimum version; use a current Go patch release in production.
 
 ```bash
